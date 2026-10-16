@@ -1,7 +1,7 @@
 # M6b: staggered objective/adjoint verification (D9 addendum §8).
 
 """Staggered MHS test problem with structured T, smooth Bobs and a perturbed state."""
-function sgrad_problem(eos; NX = 16, NY = 14, NZ = 15, lam = (1.0, 1e-3, 1e-6), Bscale = 1.0, apert = 0.3, seed = 3, px = 0, py = 0)
+function sgrad_problem(eos; NX = 16, NY = 14, NZ = 15, lam = (1.0, 1e-3, 1e-6, 1e-2), Bscale = 1.0, apert = 0.3, seed = 3, px = 0, py = 0, dfaces = false)
     par, grid, ops, x, y, z = test_setup(NX, NY, NZ; px = px, py = py)
     b = par.block
     Lx, Ly = 4.0e6, 3.0e6
@@ -19,7 +19,7 @@ function sgrad_problem(eos; NX = 16, NY = 14, NZ = 15, lam = (1.0, 1e-3, 1e-6), 
     for c in 1:3
         H.fill_owned!((i, j, k) -> H.sigma_synth(sqrt(sum(Bo[d][i, j, k]^2 for d in 1:3)), 0.05, 5e-4), sig[c], par)
     end
-    pb = H.SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = 1.0e4, lambda_F = lam[1], lambda_S = lam[2], lambda_U = lam[3])
+    pb = H.SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = 1.0e4, lambda_F = lam[1], lambda_S = lam[2], lambda_U = lam[3], lambda_N = lam[4], data_on_faces = dfaces)
     xs = H.init_state(pb)
     H.set_scales!(pb, xs[1])
     for f in 1:4, k in axes(xs[f], 3), j in 1:b.ny, i in 1:b.nx
@@ -72,13 +72,18 @@ function sgradient_checks(eos, label)
             @test e <= 1e-6
             rank0(par) && @info "staggered FD $label, fields $nm" e
         end
-        for (lam, nm) in (((1.0, 0.0, 0.0), "force"), ((0.0, 1e-3, 0.0), "reg δB"),
-                          ((0.0, 0.0, 1e-6), "reg u"), ((0.0, 0.0, 0.0), "data"))
+        for (lam, nm) in (((1.0, 0.0, 0.0, 0.0), "force"), ((0.0, 1e-3, 0.0, 0.0), "reg δB"),
+                          ((0.0, 0.0, 1e-6, 0.0), "reg u"), ((0.0, 0.0, 0.0, 1e-2), "reg normal Nyquist"),
+                          ((0.0, 0.0, 0.0, 0.0), "data"))
             pb2, xs2, par2 = sgrad_problem(eos; lam = lam)
             e = sfd_error(pb2, xs2, srand_dir(par2, xs2, 1:5))
             @test e <= 1e-6
             rank0(par2) && @info "staggered FD $label, term $nm" e
         end
+        pb3, xs3, par3 = sgrad_problem(eos; dfaces = true)
+        e = sfd_error(pb3, xs3, srand_dir(par3, xs3, 1:5))
+        @test e <= 1e-6
+        rank0(par3) && @info "staggered FD $label, data on faces" e
     end
 end
 
@@ -108,7 +113,7 @@ end
 end
 
 @testset "staggered: GN diagonal positive, A0 data fit" begin
-    pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); apert = 0.0)
+    pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); apert = 0.0, lam = (1.0, 1e-3, 1e-6, 0.0))   # λ_N = 0: exact fit
     w = H.SMHSWork(par)
     x0 = H.init_state(pb)
     H.objective!(pb, w, x0)

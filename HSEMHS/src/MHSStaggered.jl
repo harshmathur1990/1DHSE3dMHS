@@ -5,11 +5,13 @@
 # B = curl A + b̄ ẑ (faces).  b̄ is a scalar stored at [1,1,1] of a 1-level field on rank 0
 # only (zero elsewhere), so that sums over ranks give its value once.
 #
-# Φ = Φ_F + Φ_B + Φ_S + Φ_U   (terms reported as (F, 0, B, S, U) to match the collocated layout)
+# Φ = Φ_F + Φ_N + Φ_B + Φ_S + Φ_U
 #   Φ_F = (λ_F/N_F) Σ_faces w_f |R_f|²/S_f²   on x-, y- and interior z-faces
 #   Φ_B = (1/N_B) Σ ((HB)_c − Bobs_c)²/σ_c²   at centres
 #   Φ_S = (λ_S/N) Σ w Σ_a Σ_c (h_a² ∂²_a δB_c)²/σ_c²,  δB = HB − Bobs
 #   Φ_U = (λ_U/N) Σ w Σ_{a=x,y} (h_a² ∂²_a u)²
+#   Φ_N = (λ_N/N) Σ_faces w_f (¼ δ²_n B_n)²/σ²   (second difference along the face normal; M6c option)
+#   terms are reported as (F, N, B, S, U)
 
 mutable struct SMHSProblem{E}
     par::ParCtx
@@ -28,6 +30,10 @@ mutable struct SMHSProblem{E}
     lamF::Float64
     lamS::Float64
     lamU::Float64
+    lamN::Float64                     # face-normal Nyquist regularizer (M6c option; default 0)
+    dfaces::Bool                      # data term on faces against Bobs interpolated to faces (M6c option)
+    Bobsf::NTuple{3,Field}
+    invsf2::NTuple{3,Field}
     Aref::Float64
     N::Float64
     NF::Float64
@@ -55,7 +61,7 @@ struct SMHSWork
     fX::NTuple{4,Field}               # x-faces: ∂Φ/∂(Jy_f, Jz_f, Bz_f, By_f)
     fY::NTuple{4,Field}               # y-faces: ∂Φ/∂(Jz_f, Jx_f, Bx_f, Bz_f)
     fZ::NTuple{4,Field}               # z-faces: ∂Φ/∂(Jx_f, Jy_f, By_f, Bx_f)
-    qS::NTuple{9,Field}; qU::NTuple{2,Field}
+    qS::NTuple{9,Field}; qU::NTuple{2,Field}; qN::NTuple{3,Field}; gBd::NTuple{3,Field}
     gHB::NTuple{3,Field}; gB::NTuple{3,Field}; gBJ::NTuple{3,Field}; gJ::NTuple{3,Field}; gA::NTuple{3,Field}
     gP::Field
 end
@@ -64,7 +70,7 @@ function SMHSWork(par::ParCtx)
     c() = newfield(par); z() = newfield0(par)
     edges() = (z(), z(), c()); faces() = (c(), c(), z())
     return SMHSWork(c(), c(), c(), c(), edges(), faces(), edges(), (c(), c(), c()), (c(), c(), c()), faces(),
-                    ntuple(_ -> c(), 4), ntuple(_ -> c(), 4), ntuple(_ -> z(), 4), ntuple(_ -> c(), 9), ntuple(_ -> c(), 2),
+                    ntuple(_ -> c(), 4), ntuple(_ -> c(), 4), ntuple(_ -> z(), 4), ntuple(_ -> c(), 9), ntuple(_ -> c(), 2), faces(), faces(),
                     (c(), c(), c()), faces(), faces(), edges(), edges(), c())
 end
 
@@ -75,7 +81,7 @@ Bobs, sigma at centres. S is set by `set_scales!` (from an initial u).
 """
 function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, sigma::NTuple{3,Field}, eos;
                      anchor_plane::Symbol = :bottom, P_ref::Float64, g::Float64 = 274.0,
-                     lambda_F::Float64 = 1.0, lambda_S::Float64 = 1e-3, lambda_U::Float64 = 0.0)
+                     lambda_F::Float64 = 1.0, lambda_S::Float64 = 1e-3, lambda_U::Float64 = 0.0, lambda_N::Float64 = 0.0, data_on_faces::Bool = false)
     ops = Ops(grid, par); s = StagOps(grid, par); b = par.block
     X = newfield(par); fill_owned!((i, j, k) -> log(T[i, j, k]), X, par)
     sig = ntuple(c -> (q = newfield(par); fill_owned!((i, j, k) -> max(sigma[c][i, j, k], 1e-12), q, par); q), 3)
@@ -90,8 +96,19 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
     smed = layer_quantiles(par, sig[1], [0.5])[:, 1]
     Aref = median(smed) * 0.5 * (sum(grid.x.h) / NX + sum(grid.y.h) / NY)
     invS2f = (newfield(par; fill = 1.0), newfield(par; fill = 1.0), newfield0(par; fill = 1.0))
+    # Bobs and 1/σ² interpolated to faces (used when data_on_faces)
+    Bobsf = (newfield(par), newfield(par), newfield0(par)); invsf2 = (newfield(par), newfield(par), newfield0(par))
+    NZ = b.nz
+    fill_owned!((i, j, k) -> 0.5 * (Bobs[1][i, j, k] + Bobs[1][i+1, j, k]), Bobsf[1], par)
+    fill_owned!((i, j, k) -> 1 / (sig[1][i, j, k] * sig[1][i+1, j, k]), invsf2[1], par)
+    fill_owned!((i, j, k) -> 0.5 * (Bobs[2][i, j, k] + Bobs[2][i, j+1, k]), Bobsf[2], par)
+    fill_owned!((i, j, k) -> 1 / (sig[2][i, j, k] * sig[2][i, j+1, k]), invsf2[2], par)
+    kl(k) = clamp(k, 1, NZ); ku(k) = clamp(k + 1, 1, NZ)
+    owned_map!((i, j, k) -> 0.5 * (Bobs[3][i, j, kl(k)] + Bobs[3][i, j, ku(k)]), Bobsf[3], par)
+    owned_map!((i, j, k) -> 1 / (sig[3][i, j, kl(k)] * sig[3][i, j, ku(k)]), invsf2[3], par)
+    NB = data_on_faces ? Float64(NX) * NY * (3NZ + 1) : 3N
     return SMHSProblem(par, grid, s, ops, eos, X, Bobs, sig, invS2f, alpha, ka, log(P_ref), g,
-                       lambda_F, lambda_S, lambda_U, Aref, N, Float64(NX) * NY * (3NZ - 1), 3N, wmean)
+                       lambda_F, lambda_S, lambda_U, lambda_N, data_on_faces, Bobsf, invsf2, Aref, N, Float64(NX) * NY * (3NZ - 1), NB, wmean)
 end
 
 @inline wxf(pb::SMHSProblem, i, j, k) = @inbounds pb.s.dxf[i] * pb.s.dyc[j] * pb.s.hz[k] / pb.wmean
@@ -122,6 +139,32 @@ function anchor_mean(pb::SMHSProblem, v::Field)
         s += pb.alpha[i, j] * v[i, j, pb.ka]
     end
     return MPI.Allreduce(s, +, pb.par.comm)
+end
+
+# Face Lorentz force from the averages M (addendum §4): returns (L, the two J averages, the two B averages)
+@inline function lor_x(J, B, i, j, k)
+    @inbounds begin
+        Jyf = 0.5 * (J[2][i, j, k-1] + J[2][i, j, k]); Jzf = 0.5 * (J[3][i, j-1, k] + J[3][i, j, k])
+        Bzf = 0.25 * (B[3][i, j, k-1] + B[3][i, j, k] + B[3][i+1, j, k-1] + B[3][i+1, j, k])
+        Byf = 0.25 * (B[2][i, j-1, k] + B[2][i, j, k] + B[2][i+1, j-1, k] + B[2][i+1, j, k])
+    end
+    return Jyf * Bzf - Jzf * Byf, Jyf, Jzf, Bzf, Byf
+end
+@inline function lor_y(J, B, i, j, k)
+    @inbounds begin
+        Jzf = 0.5 * (J[3][i-1, j, k] + J[3][i, j, k]); Jxf = 0.5 * (J[1][i, j, k-1] + J[1][i, j, k])
+        Bxf = 0.25 * (B[1][i-1, j, k] + B[1][i, j, k] + B[1][i-1, j+1, k] + B[1][i, j+1, k])
+        Bzf = 0.25 * (B[3][i, j, k-1] + B[3][i, j, k] + B[3][i, j+1, k-1] + B[3][i, j+1, k])
+    end
+    return Jzf * Bxf - Jxf * Bzf, Jzf, Jxf, Bxf, Bzf
+end
+@inline function lor_z(J, B, i, j, k)          # interior z-faces 1 ≤ k ≤ NZ−1
+    @inbounds begin
+        Jxf = 0.5 * (J[1][i, j-1, k] + J[1][i, j, k]); Jyf = 0.5 * (J[2][i-1, j, k] + J[2][i, j, k])
+        Byf = 0.25 * (B[2][i, j-1, k] + B[2][i, j, k] + B[2][i, j-1, k+1] + B[2][i, j, k+1])
+        Bxf = 0.25 * (B[1][i-1, j, k] + B[1][i, j, k] + B[1][i-1, j, k+1] + B[1][i, j, k+1])
+    end
+    return Jxf * Byf - Jyf * Bxf, Jxf, Jyf, Byf, Bxf
 end
 
 # ---------------------------------------------------------------------------------------
@@ -166,15 +209,12 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         fill_owned!((i, j, k) -> HBc[i, j, k] - Bo[i, j, k], w.dB[c], par)
     end
     exchange_halos!(par, collect(w.dB))
-    Bx, By, Bz = B; Jx, Jy, Jz = J
     g = pb.g; lF, lS, lU = pb.lamF, pb.lamS, pb.lamU; N, NF, NB = pb.N, pb.NF, pb.NB
     # ---- x-faces ----
     pX = zeros(b.ny, NZ)
     forrows(1:NZ, par) do i, j, k
-        Jyf = 0.5 * (Jy[i, j, k-1] + Jy[i, j, k]); Jzf = 0.5 * (Jz[i, j-1, k] + Jz[i, j, k])
-        Bzf = 0.25 * (Bz[i, j, k-1] + Bz[i, j, k] + Bz[i+1, j, k-1] + Bz[i+1, j, k])
-        Byf = 0.25 * (By[i, j-1, k] + By[i, j, k] + By[i+1, j-1, k] + By[i+1, j, k])
-        R = (P[i+1, j, k] - P[i, j, k]) / s.dxf[i] - (Jyf * Bzf - Jzf * Byf)
+        L, Jyf, Jzf, Bzf, Byf = lor_x(J, B, i, j, k)
+        R = (P[i+1, j, k] - P[i, j, k]) / s.dxf[i] - L
         wf = wxf(pb, i, j, k) * pb.invS2f[1][i, j, k]
         pX[j, k] += wf * R^2
         a = 2lF * wf * R / NF
@@ -185,10 +225,8 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     # ---- y-faces ----
     pY = zeros(b.ny, NZ)
     forrows(1:NZ, par) do i, j, k
-        Jzf = 0.5 * (Jz[i-1, j, k] + Jz[i, j, k]); Jxf = 0.5 * (Jx[i, j, k-1] + Jx[i, j, k])
-        Bxf = 0.25 * (Bx[i-1, j, k] + Bx[i, j, k] + Bx[i-1, j+1, k] + Bx[i, j+1, k])
-        Bzf = 0.25 * (Bz[i, j, k-1] + Bz[i, j, k] + Bz[i, j+1, k-1] + Bz[i, j+1, k])
-        R = (P[i, j+1, k] - P[i, j, k]) / s.dyf[j] - (Jzf * Bxf - Jxf * Bzf)
+        L, Jzf, Jxf, Bxf, Bzf = lor_y(J, B, i, j, k)
+        R = (P[i, j+1, k] - P[i, j, k]) / s.dyf[j] - L
         wf = wyf(pb, i, j, k) * pb.invS2f[2][i, j, k]
         pY[j, k] += wf * R^2
         a = 2lF * wf * R / NF
@@ -200,11 +238,9 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     pZ = zeros(b.ny, NZ + 1)
     forrows(0:NZ, par) do i, j, k
         if 1 <= k <= NZ - 1
-            Jxf = 0.5 * (Jx[i, j-1, k] + Jx[i, j, k]); Jyf = 0.5 * (Jy[i-1, j, k] + Jy[i, j, k])
-            Byf = 0.25 * (By[i, j-1, k] + By[i, j, k] + By[i, j-1, k+1] + By[i, j, k+1])
-            Bxf = 0.25 * (Bx[i-1, j, k] + Bx[i, j, k] + Bx[i-1, j, k+1] + Bx[i, j, k+1])
+            L, Jxf, Jyf, Byf, Bxf = lor_z(J, B, i, j, k)
             rb = sqrt(w.rho[i, j, k] * w.rho[i, j, k+1])
-            R = (P[i, j, k] - P[i, j, k+1]) / s.dzf[k] + g * rb - (Jxf * Byf - Jyf * Bxf)
+            R = (P[i, j, k] - P[i, j, k+1]) / s.dzf[k] + g * rb - L
             wf = wzf(pb, i, j, k) * pb.invS2f[3][i, j, k]
             pZ[j, k+1] += wf * R^2
             a = 2lF * wf * R / NF
@@ -218,6 +254,43 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
             end
         end
     end
+    # ---- faces: Nyquist regularizer along each face normal (the part of B that H averages away) ----
+    lN = pb.lamN; Bx, By, Bz = B; sg = pb.sig
+    pN = zeros(b.ny, NZ + 1)
+    if lN > 0
+        forrows(1:NZ, par) do i, j, k
+            s2 = sg[1][i, j, k] * sg[1][i+1, j, k]; q = 0.25 * (Bx[i+1, j, k] - 2Bx[i, j, k] + Bx[i-1, j, k]); wc = wxf(pb, i, j, k)
+            pN[j, k+1] += wc * q^2 / s2; w.qN[1][i, j, k] = 2lN * wc * q / (s2 * N)
+        end
+        forrows(1:NZ, par) do i, j, k
+            s2 = sg[2][i, j, k] * sg[2][i, j+1, k]; q = 0.25 * (By[i, j+1, k] - 2By[i, j, k] + By[i, j-1, k]); wc = wyf(pb, i, j, k)
+            pN[j, k+1] += wc * q^2 / s2; w.qN[2][i, j, k] = 2lN * wc * q / (s2 * N)
+        end
+        forrows(0:NZ, par) do i, j, k
+            if 1 <= k <= NZ - 1
+                s2 = sg[3][i, j, k] * sg[3][i, j, k+1]; q = 0.25 * (Bz[i, j, k-1] - 2Bz[i, j, k] + Bz[i, j, k+1]); wc = wzf(pb, i, j, k)
+                pN[j, k+1] += wc * q^2 / s2; w.qN[3][i, j, k] = 2lN * wc * q / (s2 * N)
+            else
+                w.qN[3][i, j, k] = 0.0
+            end
+        end
+    else
+        for c in 1:3
+            fill!(parent(w.qN[c]), 0.0)
+        end
+    end
+    # ---- faces: data term against Bobs interpolated to faces (option) ----
+    pD = zeros(b.ny, NZ + 1)
+    if pb.dfaces
+        for c in 1:3
+            Bc = B[c]; Bo = pb.Bobsf[c]; iv = pb.invsf2[c]; gd = w.gBd[c]
+            forrows(collect(axes(Bc, 3)), par) do i, j, k
+                d = Bc[i, j, k] - Bo[i, j, k]
+                pD[j, k-first(axes(Bc, 3))+1] += d^2 * iv[i, j, k]
+                gd[i, j, k] = 2d * iv[i, j, k] / NB
+            end
+        end
+    end
     # ---- centres: data and regularizers ----
     pC = zeros(3, b.ny, NZ)
     forrows(1:NZ, par) do i, j, k
@@ -227,8 +300,12 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         for c in 1:3
             s2 = pb.sig[c][i, j, k]^2
             d = w.dB[c][i, j, k]
-            eB += d^2 / s2
-            w.gHB[c][i, j, k] = 2d / (NB * s2)
+            if pb.dfaces
+                w.gHB[c][i, j, k] = 0.0
+            else
+                eB += d^2 / s2
+                w.gHB[c][i, j, k] = 2d / (NB * s2)
+            end
             ddx = d2x(w.dB[c], o.X, i, j, k); ddy = d2y(w.dB[c], o.Y, i, j, k); ddz = d2z(w.dB[c], o.Z, i, j, k)
             eS += wc * ((hx^2 * ddx)^2 + (hy^2 * ddy)^2 + (hz^2 * ddz)^2) / s2
             f = 2lS * wc / (N * s2)
@@ -254,8 +331,18 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         eU += pC[3, j, k]
     end
     push!(loc, eU)
+    eN = 0.0
+    for k in 0:NZ, j in 1:b.ny
+        eN += pN[j, k+1]
+    end
+    push!(loc, eN)
+    eD = 0.0
+    for k in 1:NZ+1, j in 1:b.ny
+        eD += pD[j, k]
+    end
+    push!(loc, eD)
     t = MPI.Allreduce(loc, +, par.comm)
-    terms = (lF * (t[1] + t[2] + t[3]) / NF, 0.0, t[4] / NB, lS * t[5] / N, lU * t[7] / N)
+    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N, (t[4] + t[9]) / NB, lS * t[5] / N, lU * t[7] / N)
     oob = t[6] > 0
     return oob ? Inf : sum(terms), terms, oob
 end
@@ -265,7 +352,7 @@ end
 # ---------------------------------------------------------------------------------------
 function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
-    exchange_halos!(par, [w.aR..., w.fX..., w.fY..., w.fZ..., w.qS..., w.qU...])
+    exchange_halos!(par, [w.aR..., w.fX..., w.fY..., w.fZ..., w.qS..., w.qU..., w.qN...])
     fX, fY, fZ = w.fX, w.fY, w.fZ
     # ---- u ----
     G_T!(w.gP, w.aR, s, par)
@@ -307,18 +394,26 @@ function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
     end
     exchange_halos!(par, collect(w.gHB))
     H_T!(w.gB, w.gHB, s, par)
+    if pb.dfaces
+        for c in 1:3
+            gBc = w.gB[c]; gd = w.gBd[c]
+            owned_map!((i, j, k) -> gBc[i, j, k] + gd[i, j, k], gBc, par)
+        end
+    end
     # ---- faces: averages of B in L, plus C*ᵀ/μ0 and Hᵀ ----
-    gB = w.gB; gBJ = w.gBJ
+    gB = w.gB; gBJ = w.gBJ; qN = w.qN
     owned_map!(gB[1], par) do i, j, k             # x-faces
         t = 0.25 * (fY[3][i, j, k] + fY[3][i+1, j, k] + fY[3][i, j-1, k] + fY[3][i+1, j-1, k])
         k <= NZ - 1 && (t += 0.25 * (fZ[4][i, j, k] + fZ[4][i+1, j, k]))
         k >= 2 && (t += 0.25 * (fZ[4][i, j, k-1] + fZ[4][i+1, j, k-1]))
+        t += 0.25 * (qN[1][i-1, j, k] - 2qN[1][i, j, k] + qN[1][i+1, j, k])
         gB[1][i, j, k] + t + gBJ[1][i, j, k] / MU0
     end
     owned_map!(gB[2], par) do i, j, k             # y-faces
         t = 0.25 * (fX[4][i, j, k] + fX[4][i-1, j, k] + fX[4][i, j+1, k] + fX[4][i-1, j+1, k])
         k <= NZ - 1 && (t += 0.25 * (fZ[3][i, j, k] + fZ[3][i, j+1, k]))
         k >= 2 && (t += 0.25 * (fZ[3][i, j, k-1] + fZ[3][i, j+1, k-1]))
+        t += 0.25 * (qN[2][i, j-1, k] - 2qN[2][i, j, k] + qN[2][i, j+1, k])
         gB[2][i, j, k] + t + gBJ[2][i, j, k] / MU0
     end
     owned_map!(gB[3], par) do i, j, k             # z-faces, k = 0:NZ
@@ -329,6 +424,7 @@ function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
         if k + 1 <= NZ
             t += 0.25 * (fX[3][i, j, k+1] + fX[3][i-1, j, k+1]) + 0.25 * (fY[4][i, j, k+1] + fY[4][i, j-1, k+1])
         end
+        t += -0.5 * qN[3][i, j, k] + (k >= 1 ? 0.25 * qN[3][i, j, k-1] : 0.0) + (k + 1 <= NZ ? 0.25 * qN[3][i, j, k+1] : 0.0)
         gB[3][i, j, k] + t + gBJ[3][i, j, k] / MU0
     end
     exchange_halos!(par, collect(gB))
@@ -501,4 +597,85 @@ function init_A!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_iter::Int = 2000
     finally
         pb.lamF = lF; pb.lamU = lU
     end
+end
+
+# ---------------------------------------------------------------------------------------
+# Gate C helpers (staggered)
+# ---------------------------------------------------------------------------------------
+"""
+Per-layer RMS and p99 of |R|/S from the last `objective!`. Each centre (i, j, k) carries its
+own +½ faces: r² = (R_x/S)² + (R_y/S)² + (R_z/S)² (R_z only for k ≤ NZ−1). Needs λ_F > 0.
+"""
+function layer_residual_stats(pb::SMHSProblem, w::SMHSWork)
+    par = pb.par; b = par.block; NZ = b.nz
+    c = pb.NF / (2pb.lamF)
+    rs(i, j, k) = @inbounds begin
+        rx = w.aR[1][i, j, k] * c / (wxf(pb, i, j, k) * sqrt(pb.invS2f[1][i, j, k]))
+        ry = w.aR[2][i, j, k] * c / (wyf(pb, i, j, k) * sqrt(pb.invS2f[2][i, j, k]))
+        rz = k <= NZ - 1 ? w.aR[3][i, j, k] * c / (wzf(pb, i, j, k) * sqrt(pb.invS2f[3][i, j, k])) : 0.0
+        sqrt(rx^2 + ry^2 + rz^2)
+    end
+    s2 = zeros(2, NZ)
+    for k in 1:NZ, j in 1:b.ny, i in 1:b.nx
+        s2[1, k] += rs(i, j, k)^2; s2[2, k] += 1
+    end
+    t = MPI.Allreduce(s2, +, par.comm)
+    return sqrt.(t[1, :] ./ t[2, :]), layer_quantiles(par, rs, [0.99])[:, 1]
+end
+
+"""Global RMS of f − fref over owned i, j and the whole z axis of f."""
+function rms_diff(par::ParCtx, f::Field, fref::Field)
+    b = par.block
+    s = 0.0
+    for k in axes(f, 3), j in 1:b.ny, i in 1:b.nx
+        s += (f[i, j, k] - fref[i, j, k])^2
+    end
+    return sqrt(MPI.Allreduce(s, +, par.comm) / (par.NX * par.NY * length(axes(f, 3))))
+end
+
+"""
+Staggered C1: the same atmosphere, σ and uniform Bobs as `c1_problem`. Returns the problem,
+the initial state (v from column_hse at default substeps, Ã from `init_A!`), the exact
+staggered discrete equilibrium u_s (`staggered_hse!`), the column_hse reference u (n_sub = 64)
+and the grid.
+"""
+function sc1_problem(par::ParCtx, NX, NY, NZ; Bobs = (0.0, 0.0, 0.0), lambda_F = 1.0, lambda_N = 0.0, data_on_faces = false, P_ref = 1.0e4)
+    grid, x, y, z = synthetic_grid(par, NX, NY, NZ)
+    eos = IdealGasMu(1.3)
+    T = newfield(par); fill_owned!((i, j, k) -> 6000 + 3000 * tanh((z[k] - 1.2e6) / 2.0e5), T, par)
+    Bo = ntuple(c -> newfield(par; fill = Bobs[c]), 3)
+    Bm = sqrt(sum(abs2, Bobs))
+    sig = ntuple(_ -> newfield(par; fill = sigma_synth(Bm, 0.05, 5e-4)), 3)
+    pb = SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = P_ref, lambda_F = lambda_F, lambda_N = lambda_N, data_on_faces = data_on_faces)
+    us = newfield(par); staggered_hse!(us, pb; P_bottom = P_ref)
+    ex = column_hse(par, grid, T, eos, HSEOpts(anchor = :bottom, P_ref = P_ref, n_sub = 64, adapt = false))
+    ini = column_hse(par, grid, T, eos, HSEOpts(anchor = :bottom, P_ref = P_ref))
+    uc = newfield(par); fill_owned!((i, j, k) -> log(ex.fields["Pgas"][i, j, k]), uc, par)
+    set_scales!(pb, us)
+    x0 = snewstate(par)
+    fill_owned!((i, j, k) -> log(ini.fields["Pgas"][i, j, k]), x0[1], par)
+    setscalar!(par, x0[5], Bobs[3])
+    w = SMHSWork(par)
+    init_A!(pb, w, x0)
+    return pb, x0, us, uc, grid
+end
+
+"""
+Vector potential of the C2 potential field (`potential_field!`) sampled on the edges:
+A = (−∂_yχ, ∂_xχ, 0), χ = −(B0/k²) cos(k_x x) cos(k_y y) e^{k(z − z_top)}, so curl A = ∇φ.
+"""
+function potential_A!(A::NTuple{3,Field}, par, s::StagOps, x, y; B0 = 0.01, Lx = 4.0e6, Ly = 4.0e6)
+    kx = 2π / Lx; ky = 4π / Ly; kk = sqrt(kx^2 + ky^2); zt = s.zc[1]
+    b = par.block
+    xc(i) = x[mod1(b.i0 + i - 1, par.NX)] + (b.i0 + i - 1 > par.NX ? Lx : 0.0) - (b.i0 + i - 1 < 1 ? Lx : 0.0)
+    yc(j) = y[mod1(b.j0 + j - 1, par.NY)] + (b.j0 + j - 1 > par.NY ? Ly : 0.0) - (b.j0 + j - 1 < 1 ? Ly : 0.0)
+    for k in axes(A[1], 3), j in 0:b.ny+1, i in 0:b.nx+1
+        e = exp(kk * (s.zf[k] - zt))
+        xe = xc(i); ye = yc(j) + 0.5 * s.dyf[j]                    # x-edge (i, j+½, k+½)
+        A[1][i, j, k] = -(B0 / kk^2) * ky * cos(kx * xe) * sin(ky * ye) * e
+        xe = xc(i) + 0.5 * s.dxf[i]; ye = yc(j)                    # y-edge (i+½, j, k+½)
+        A[2][i, j, k] = (B0 / kk^2) * kx * sin(kx * xe) * cos(ky * ye) * e
+    end
+    fill!(parent(A[3]), 0.0)
+    return kk
 end

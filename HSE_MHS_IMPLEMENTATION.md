@@ -1558,3 +1558,10 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **A₀ is solved by CG** on the normal equations of the data and λ_S terms (v frozen, λ_F = λ_U = 0), with Hessian–vector products from gradient differences. A generic L-BFGS run on the same problem stalled after a line-search failure at the same floor.
 - **Vertical-initializer bracket.** The bracket is found by stepping down from u_{k+1}. A fixed 60-e-fold bracket leaves the EOS table envelope.
 - **Generic L-BFGS.** `lbfgs!` and `lbfgs_continuation!` accept any problem/work pair that provides `objective!`, `fg!` and `gn_diagonal!(D, pb, w, x)`.
+
+## 26. Implementation notes recorded during M6c (16 Oct 2026)
+
+- Results are in `HSEMHS/reports/M6c_gate.md`. C1a and C1b pass with no floor. C2 and C3(b) for B fail. **User decision pending** on the boundary-layer J and on the B near-null mode.
+- **Addendum §4 is incorrect about boundary edges.** The x- and y-face equations of layers 1 and NZ average one boundary edge J, so the one-sided boundary current enters real equations.
+- **C1 solves use the plain joint L-BFGS from A₀.** B-first continuation stalls C1b on the staggered scheme.
+- **Options `lambda_N` (face-normal Nyquist regularizer) and `data_on_faces`** are implemented and FD-verified. Both are default-off and remain experimental.
