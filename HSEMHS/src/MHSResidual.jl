@@ -251,7 +251,7 @@ Gauss–Newton diagonal of ∇²Φ with respect to x = (v, b̃x, b̃y, b̃z) at 
 regularizer terms; for the Lorentz term it uses the upper bound |∂J×B|² ≤ |∂J|²|B|² and keeps
 the diagonal J×e_c part. Used as the L-BFGS initial inverse Hessian (Jacobi preconditioner).
 """
-function gn_diagonal!(D::MHSState, pb::MHSProblem, w::MHSWork)
+function gn_diagonal!(D::MHSState, pb::MHSProblem, w::MHSWork, x = nothing)
     par = pb.par; o = pb.ops; b = par.block
     lF, lD, lS, lU, N = pb.lamF, pb.lamD, pb.lamS, pb.lamU, pb.N
     Bx, By, Bz = w.B

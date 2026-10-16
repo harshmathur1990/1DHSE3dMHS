@@ -68,7 +68,7 @@ function halo_errors(par)
             e = val(b.i0 + i - 1, b.j0 + j - 1, k)
             (f[i, j, k] == e && g2[i, j, k] == 2e) || (bad += 1)
         end
-        for i in 1:b.nx, j in (0, b.ny + 1)
+        for i in 0:b.nx+1, j in (0, b.ny + 1)          # includes the diagonal corners (staggered averages)
             e = val(b.i0 + i - 1, b.j0 + j - 1, k)
             (f[i, j, k] == e && g2[i, j, k] == 2e) || (bad += 1)
         end

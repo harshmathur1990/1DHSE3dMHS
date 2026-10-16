@@ -1550,3 +1550,11 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - D9 was approved (spec §10). `src/Staggered.jl` implements the addendum's mesh, C, C\*, div, H and G with gather-form transposes. Results: `HSEMHS/reports/M6a_gate.md`.
 - **Threaded loops must not come from `Threads.@threads` expanded inside a user macro.** Use `forrows(fun, kr, par)`; a first macro version skipped rows silently.
 - Convergence tests on staggered operators are gated on the finest refinement pair (coarse pairs are pre-asymptotic, as for C2).
+
+## 25. Implementation notes recorded during M6b (16 Oct 2026)
+
+- `src/MHSStaggered.jl` implements the staggered objective, adjoint, preconditioner, vertical initializer and A₀ solve. Results: `HSEMHS/reports/M6b_gate.md`.
+- **Halo corners.** `exchange_halos!` now fills the diagonal corner halos: the y pass carries i ∈ 0:nx+1. The staggered 4-point face averages read the corners. Only the rank-invariance test detected the missing corners; the FD tests could not.
+- **A₀ is solved by CG** on the normal equations of the data and λ_S terms (v frozen, λ_F = λ_U = 0), with Hessian–vector products from gradient differences. A generic L-BFGS run on the same problem stalled after a line-search failure at the same floor.
+- **Vertical-initializer bracket.** The bracket is found by stepping down from u_{k+1}. A fixed 60-e-fold bracket leaves the EOS table envelope.
+- **Generic L-BFGS.** `lbfgs!` and `lbfgs_continuation!` accept any problem/work pair that provides `objective!`, `fg!` and `gn_diagonal!(D, pb, w, x)`.

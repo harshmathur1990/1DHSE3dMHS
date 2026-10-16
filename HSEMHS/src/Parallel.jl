@@ -144,26 +144,26 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
             end
         end
     end
-    # ---- y direction: faces j = 1 and j = ny, i in 1:nx ----
+    # ---- y direction: faces j = 1 and j = ny, i in 0:nx+1 (after x: carries the corners) ----
     if par.nbr_ym == par.rank && par.nbr_yp == par.rank
         for (f, kr) in zip(fields, krs)
             Threads.@threads :static for k in collect(kr)
-                @inbounds for i in 1:nx
+                @inbounds for i in 0:nx+1
                     f[i, 0, k] = f[i, ny, k]
                     f[i, ny+1, k] = f[i, 1, k]
                 end
             end
         end
     else
-        offs = cumsum([0; [nx * length(kr) for kr in krs]])
+        offs = cumsum([0; [(nx + 2) * length(kr) for kr in krs]])
         n = offs[end]
         sL = getbuf(par, :syl, n); sR = getbuf(par, :syr, n)
         rL = getbuf(par, :ryl, n); rR = getbuf(par, :ryr, n)
         for (q, f) in enumerate(fields)
             off = offs[q]; k0 = first(krs[q])
             Threads.@threads :static for k in collect(krs[q])
-                @inbounds for i in 1:nx
-                    p = off + (k - k0) * nx + i
+                @inbounds for i in 0:nx+1
+                    p = off + (k - k0) * (nx + 2) + i + 1
                     sL[p] = f[i, 1, k]
                     sR[p] = f[i, ny, k]
                 end
@@ -178,8 +178,8 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
         for (q, f) in enumerate(fields)
             off = offs[q]; k0 = first(krs[q])
             Threads.@threads :static for k in collect(krs[q])
-                @inbounds for i in 1:nx
-                    p = off + (k - k0) * nx + i
+                @inbounds for i in 0:nx+1
+                    p = off + (k - k0) * (nx + 2) + i + 1
                     f[i, 0, k] = rL[p]
                     f[i, ny+1, k] = rR[p]
                 end

@@ -1,45 +1,67 @@
 # L-BFGS with a strong-Wolfe line search on distributed 4-field states
 # (implementation doc §13.7–13.8; E5 stop-reason mapping, E12).
 
+"""Local Σ a·c over owned i, j and the z axis of `a` (fixed row order, no communication)."""
+function sdot_local(par::ParCtx, a::Field, c::Field)
+    b = par.block
+    kv = collect(axes(a, 3))
+    p = zeros(b.ny, length(kv))
+    Threads.@threads :static for jk in 1:(b.ny*length(kv))
+        j = (jk - 1) % b.ny + 1; q = (jk - 1) ÷ b.ny + 1; k = kv[q]
+        s = 0.0
+        @inbounds for i in 1:b.nx
+            s += a[i, j, k] * c[i, j, k]
+        end
+        p[j, q] = s
+    end
+    t = 0.0
+    for q in axes(p, 2), j in axes(p, 1)
+        t += p[j, q]
+    end
+    return t
+end
+
 """Deterministic global dot product over all fields of two states (one Allreduce)."""
 function dotN(par::ParCtx, a::MHSState, c::MHSState)
-    b = par.block
-    p = rowpartials(par, 1)
-    Threads.@threads :static for jk in 1:(b.ny*b.nz)
-        j, k = rowjk(jk, b.ny)
-        s = 0.0
-        @inbounds for f in eachindex(a), i in 1:b.nx
-            s += a[f][i, j, k] * c[f][i, j, k]
-        end
-        p[1, j, k] = s
+    t = 0.0
+    for f in eachindex(a)
+        t += sdot_local(par, a[f], c[f])
     end
-    return reduce_rows(par, p)[1]
+    return MPI.Allreduce(t, +, par.comm)
 end
+
+"""Zero state with the same layout (z ranges) as x."""
+similar_state(x::MHSState) = Field[(y = similar(f); fill!(parent(y), 0.0); y) for f in x]
+
+"""Apply y[i,j,k] = fun(i,j,k) on owned i, j and the whole z axis of y."""
+function owned_map!(fun::F, y::Field, par::ParCtx) where {F}
+    b = par.block
+    Threads.@threads :static for k in collect(axes(y, 3))
+        @inbounds for j in 1:b.ny, i in 1:b.nx
+            y[i, j, k] = fun(i, j, k)
+        end
+    end
+    return y
+end
+
+"""Global max |f| over owned i, j and the whole z axis."""
+maxabs_all(par::ParCtx, f::Field) =
+    global_max(par, maximum(abs(f[i, j, k]) for k in axes(f, 3), j in 1:par.block.ny, i in 1:par.block.nx))
 
 """y ← y + α x (owned nodes)."""
 function axpy!(y::MHSState, α::Float64, x::MHSState, par::ParCtx)
-    b = par.block
     for f in eachindex(y)
         yf = y[f]; xf = x[f]
-        Threads.@threads :static for k in 1:b.nz
-            @inbounds for j in 1:b.ny, i in 1:b.nx
-                yf[i, j, k] += α * xf[i, j, k]
-            end
-        end
+        owned_map!((i, j, k) -> yf[i, j, k] + α * xf[i, j, k], yf, par)
     end
     return y
 end
 
 """y ← a x + b z (owned nodes)."""
 function lincomb!(y::MHSState, a::Float64, x::MHSState, bb::Float64, z::MHSState, par::ParCtx)
-    b = par.block
     for f in eachindex(y)
         yf = y[f]; xf = x[f]; zf = z[f]
-        Threads.@threads :static for k in 1:b.nz
-            @inbounds for j in 1:b.ny, i in 1:b.nx
-                yf[i, j, k] = a * xf[i, j, k] + bb * zf[i, j, k]
-            end
-        end
+        owned_map!((i, j, k) -> a * xf[i, j, k] + bb * zf[i, j, k], yf, par)
     end
     return y
 end
@@ -50,21 +72,16 @@ scale!(y::MHSState, a::Float64, par) = lincomb!(y, a, y, 0.0, y, par)
 """Zero the gradient of frozen fields (used for B-first continuation)."""
 function freeze!(g::MHSState, frozen, par)
     for f in frozen
-        fill_owned!((i, j, k) -> 0.0, g[f], par)
+        owned_map!((i, j, k) -> 0.0, g[f], par)
     end
     return g
 end
 
 """y ← x ./ D (owned nodes)."""
 function divdiag!(y::MHSState, x::MHSState, D::MHSState, par::ParCtx)
-    b = par.block
     for f in eachindex(y)
         yf = y[f]; xf = x[f]; Df = D[f]
-        Threads.@threads :static for k in 1:b.nz
-            @inbounds for j in 1:b.ny, i in 1:b.nx
-                yf[i, j, k] = xf[i, j, k] / Df[i, j, k]
-            end
-        end
+        owned_map!((i, j, k) -> xf[i, j, k] / Df[i, j, k], yf, par)
     end
     return y
 end
@@ -106,21 +123,21 @@ Minimizes Φ over x in place (owned nodes). Stops on ‖∇Φ‖ ≤ gtol_rel‖
 relative Φ change ≤ ftol_rel over ftol_window iterations or repeated line-search failure
 (stalled), or max_iter.
 """
-function lbfgs!(pb::MHSProblem, w::MHSWork, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
+function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
     par = pb.par
     m = opts.m
-    S = [newstate(par) for _ in 1:m]; Y = [newstate(par) for _ in 1:m]
+    S = [similar_state(x) for _ in 1:m]; Y = [similar_state(x) for _ in 1:m]
     rhoh = zeros(m); al = zeros(m)
     nh = 0; head = 0                                 # number stored, index of newest
-    g = newstate(par); d = newstate(par); q = newstate(par)
-    xt = newstate(par); gt = newstate(par)
+    g = similar_state(x); d = similar_state(x); q = similar_state(x)
+    xt = similar_state(x); gt = similar_state(x)
     f, terms, oob = fg!(g, pb, w, x)
     freeze!(g, opts.frozen, par)
     oob && return LBFGSResult(eos_failure, "initial state outside the EOS envelope", 0, 1, f, terms, NaN, NaN, NTuple{4,Float64}[])
     nev = 1
     g0 = sqrt(dotN(par, g, g)); gn = g0
-    Dg = opts.precondition ? gn_diagonal!(newstate(par), pb, w) : nothing     # w holds the state at x
-    tmp = newstate(par)
+    Dg = opts.precondition ? gn_diagonal!(similar_state(x), pb, w, x) : nothing     # w holds the state at x
+    tmp = similar_state(x)
     hist = NTuple{4,Float64}[(f, gn, 0.0, 1.0)]
     fwin = Float64[f]
     nfail = 0
@@ -169,8 +186,8 @@ function lbfgs!(pb::MHSProblem, w::MHSWork, x::MHSState; opts::LBFGSOptions = LB
         α0 = (nh == 0 && Dg === nothing) ? min(1.0, 1.0 / gn) : 1.0
         # step cap: u = ln P is a log variable (a huge step can collapse P, where ∂Φ/∂u ∝ P
         # vanishes), and b̃ is in σ units
-        dmu = 1 in opts.frozen ? 0.0 : maxabs(par, d[1])
-        dmb = maximum((c in opts.frozen ? 0.0 : maxabs(par, d[c])) for c in 2:4)
+        dmu = 1 in opts.frozen ? 0.0 : maxabs_all(par, d[1])
+        dmb = maximum((c in opts.frozen ? 0.0 : maxabs_all(par, d[c])) for c in 2:length(d))
         αcap = min(opts.alpha_max, dmu > 0 ? opts.max_du / dmu : Inf, dmb > 0 ? opts.max_db / dmb : Inf)
         α0 = min(α0, αcap)
         α, ft, termt, ok, ne = strong_wolfe!(pb, w, x, f, dg, d, xt, gt, α0, opts; alpha_max = αcap)
@@ -185,7 +202,7 @@ function lbfgs!(pb::MHSProblem, w::MHSWork, x::MHSState; opts::LBFGSOptions = LB
         end
         nfail = 0
         if opts.refresh > 0 && Dg !== nothing && it > 0 && it % opts.refresh == 0
-            gn_diagonal!(Dg, pb, w); nh = 0                                       # w holds the state at xt
+            gn_diagonal!(Dg, pb, w, xt); nh = 0                                   # w holds the state at xt
         end
         # s = xt − x, y = gt − g ; store into the ring
         head = mod1(head + 1, m)
@@ -292,7 +309,7 @@ end
 B-first continuation: relax b̃ with v frozen (up to `b_first_iter` iterations), then solve
 jointly from there.
 """
-function lbfgs_continuation!(pb::MHSProblem, w::MHSWork, x::MHSState; b_first_iter::Int = 500,
+function lbfgs_continuation!(pb, w, x::MHSState; b_first_iter::Int = 500,
                              opts::LBFGSOptions = LBFGSOptions())
     o1 = LBFGSOptions(; (k => getfield(opts, k) for k in fieldnames(LBFGSOptions))..., frozen = [1], max_iter = b_first_iter)
     r1 = lbfgs!(pb, w, x; opts = o1)

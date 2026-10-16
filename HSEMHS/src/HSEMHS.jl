@@ -48,6 +48,7 @@ include("MHSResidual.jl")
 include("MHSOptimize.jl")
 include("Synthetic.jl")
 include("Staggered.jl")
+include("MHSStaggered.jl")
 include("Driver.jl")
 
 function __init__()
