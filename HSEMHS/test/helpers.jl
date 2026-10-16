@@ -129,3 +129,81 @@ function check_pattern(path, NX, NY, NZ)
     end
 end
 
+
+# ---- staggered-mesh helpers ----
+"""Fill owned i, j and the whole z axis of f with a decomposition-independent random field."""
+function fill_rand!(f, par; seed = 1)
+    b = par.block
+    for k in axes(f, 3), j in 1:b.ny, i in 1:b.nx
+        f[i, j, k] = grand(b.i0 + i - 1, b.j0 + j - 1, k; seed = seed)
+    end
+    return f
+end
+
+"""Staggered test fields: A (edges), B (faces), centre field."""
+function stag_fields(par)
+    A = (H.newfield0(par), H.newfield0(par), H.newfield(par))
+    B = (H.newfield(par), H.newfield(par), H.newfield0(par))
+    J = (H.newfield0(par), H.newfield0(par), H.newfield(par))
+    return A, B, J
+end
+
+"""Max relative transpose errors for C, C*, H, G on random data; and max |div curl A|."""
+function staggered_checks(par, grid)
+    s = H.StagOps(grid, par)
+    A, B, J = stag_fields(par)
+    for (q, f) in enumerate(A); fill_rand!(f, par; seed = 10 + q); end
+    H.exchange_halos!(par, collect(A))
+    Bbar = 0.37
+    H.curlA!(B, A, Bbar, s, par)
+    H.exchange_halos!(par, collect(B))
+    b = par.block
+    dmax = maximum(abs(H.div_face(B, s, i, j, k)) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)
+    bmax = maximum(maximum(abs, B[q][1:b.nx, 1:b.ny, :]) for q in 1:3)
+    hmin = min(minimum(s.dxc), minimum(s.dyc), minimum(s.hz))
+    divrel = H.global_max(par, dmax) / (H.global_max(par, bmax) / hmin)
+    errs = Dict{String,Float64}()
+    # C
+    gB = (H.newfield(par), H.newfield(par), H.newfield0(par))
+    for (q, f) in enumerate(gB); fill_rand!(f, par; seed = 20 + q); end
+    H.exchange_halos!(par, collect(gB))
+    gA = (H.newfield0(par), H.newfield0(par), H.newfield(par))
+    gbar = H.curlA_T!(gA, gB, s, par)
+    lhs = sum(H.sdot(par, B[q], gB[q]) for q in 1:3)
+    rhs = sum(H.sdot(par, A[q], gA[q]) for q in 1:3) + Bbar * gbar
+    nrm(a, c) = sqrt(sum(H.sdot(par, a[q], a[q]) for q in 1:3) * sum(H.sdot(par, c[q], c[q]) for q in 1:3))
+    errs["C"] = abs(lhs - rhs) / nrm(B, gB)
+    # C* (on an independent random B: B = curl A + 0.37 T would cancel a large constant)
+    for (q, f) in enumerate(B); fill_rand!(f, par; seed = 70 + q); end
+    H.exchange_halos!(par, collect(B))
+    H.curlB!(J, B, s, par)
+    gJ = (H.newfield0(par), H.newfield0(par), H.newfield(par))
+    for (q, f) in enumerate(gJ); fill_rand!(f, par; seed = 30 + q); end
+    H.exchange_halos!(par, collect(gJ))
+    gB2 = (H.newfield(par), H.newfield(par), H.newfield0(par))
+    H.curlB_T!(gB2, gJ, s, par)
+    lhs = sum(H.sdot(par, J[q], gJ[q]) for q in 1:3); rhs = sum(H.sdot(par, B[q], gB2[q]) for q in 1:3)
+    errs["Cstar"] = abs(lhs - rhs) / nrm(J, gJ)
+    errs["Cstar_rel"] = abs(lhs - rhs) / abs(lhs)
+    # H
+    HB = (H.newfield(par), H.newfield(par), H.newfield(par))
+    H.H!(HB, B, s, par)
+    gH = (H.newfield(par), H.newfield(par), H.newfield(par))
+    for (q, f) in enumerate(gH); fill_rand!(f, par; seed = 40 + q); end
+    H.exchange_halos!(par, collect(gH))
+    gB3 = (H.newfield(par), H.newfield(par), H.newfield0(par))
+    H.H_T!(gB3, gH, s, par)
+    lhs = sum(H.sdot(par, HB[q], gH[q]) for q in 1:3); rhs = sum(H.sdot(par, B[q], gB3[q]) for q in 1:3)
+    errs["H"] = abs(lhs - rhs) / nrm(HB, gH)
+    # G
+    P = H.newfield(par); fill_rand!(P, par; seed = 50); H.exchange_halos!(par, [P])
+    GP = (H.newfield(par), H.newfield(par), H.newfield0(par))
+    H.G!(GP, P, s, par)
+    gR = (H.newfield(par), H.newfield(par), H.newfield0(par))
+    for (q, f) in enumerate(gR); fill_rand!(f, par; seed = 60 + q); end
+    H.exchange_halos!(par, collect(gR))
+    gP = H.newfield(par); H.G_T!(gP, gR, s, par)
+    lhs = sum(H.sdot(par, GP[q], gR[q]) for q in 1:3); rhs = H.sdot(par, P, gP)
+    errs["G"] = abs(lhs - rhs) / nrm(GP, gR)
+    return divrel, errs
+end

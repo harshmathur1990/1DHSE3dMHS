@@ -1544,3 +1544,9 @@ Each milestone ends with its gate report committed under `reports/` and the numb
   - A per-iteration step cap: |Δ ln P| ≤ 0.5 and |Δb̃| ≤ 5. Without preconditioning, C1b does not converge in 3000 iterations; with it, C1b converges in 331.
 - Gate C2 is gated on the 128 → 256 order (the coarser grids are pre-asymptotic).
 - Gate C3 (b) fails; analysis and options are in `HSEMHS/reports/M4a_gate.md`. **User decision pending.**
+
+## 24. Implementation notes recorded during M6a (16 Oct 2026)
+
+- D9 was approved (spec §10). `src/Staggered.jl` implements the addendum's mesh, C, C\*, div, H and G with gather-form transposes. Results: `HSEMHS/reports/M6a_gate.md`.
+- **Threaded loops must not come from `Threads.@threads` expanded inside a user macro.** Use `forrows(fun, kr, par)`; a first macro version skipped rows silently.
+- Convergence tests on staggered operators are gated on the finest refinement pair (coarse pairs are pre-asymptotic, as for C2).

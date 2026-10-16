@@ -93,18 +93,19 @@ end
     exchange_halos!(par, fields)
 
 Fill the one-cell x and y halos of every field in `fields` (OffsetArrays indexed
-0:nx+1, 0:ny+1, 1:nz) with the periodically wrapped neighbour values.
+0:nx+1, 0:ny+1 in x, y and any range in z, e.g. 1:NZ for centres or 0:NZ for z-staggered
+arrays) with the periodically wrapped neighbour values.
 """
 function exchange_halos!(par::ParCtx, fields::AbstractVector)
     isempty(fields) && return nothing
     assert_main(par)
     b = par.block
-    nx, ny, nz = b.nx, b.ny, b.nz
-    nf = length(fields)
+    nx, ny = b.nx, b.ny
+    krs = [axes(f, 3) for f in fields]
     # ---- x direction: faces i = 1 and i = nx, j in 1:ny ----
     if par.nbr_xm == par.rank && par.nbr_xp == par.rank
-        for f in fields
-            Threads.@threads :static for k in 1:nz
+        for (f, kr) in zip(fields, krs)
+            Threads.@threads :static for k in collect(kr)
                 @inbounds for j in 1:ny
                     f[0, j, k] = f[nx, j, k]
                     f[nx+1, j, k] = f[1, j, k]
@@ -112,14 +113,15 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
             end
         end
     else
-        m = ny * nz
-        sL = getbuf(par, :sxl, nf * m); sR = getbuf(par, :sxr, nf * m)
-        rL = getbuf(par, :rxl, nf * m); rR = getbuf(par, :rxr, nf * m)
+        offs = cumsum([0; [ny * length(kr) for kr in krs]])
+        n = offs[end]
+        sL = getbuf(par, :sxl, n); sR = getbuf(par, :sxr, n)
+        rL = getbuf(par, :rxl, n); rR = getbuf(par, :rxr, n)
         for (q, f) in enumerate(fields)
-            off = (q - 1) * m
-            Threads.@threads :static for k in 1:nz
+            off = offs[q]; k0 = first(krs[q])
+            Threads.@threads :static for k in collect(krs[q])
                 @inbounds for j in 1:ny
-                    p = off + (k - 1) * ny + j
+                    p = off + (k - k0) * ny + j
                     sL[p] = f[1, j, k]
                     sR[p] = f[nx, j, k]
                 end
@@ -132,10 +134,10 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
             MPI.Isend(sL, par.comm; dest = par.nbr_xm, tag = 2)]
         MPI.Waitall(reqs)
         for (q, f) in enumerate(fields)
-            off = (q - 1) * m
-            Threads.@threads :static for k in 1:nz
+            off = offs[q]; k0 = first(krs[q])
+            Threads.@threads :static for k in collect(krs[q])
                 @inbounds for j in 1:ny
-                    p = off + (k - 1) * ny + j
+                    p = off + (k - k0) * ny + j
                     f[0, j, k] = rL[p]
                     f[nx+1, j, k] = rR[p]
                 end
@@ -144,8 +146,8 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
     end
     # ---- y direction: faces j = 1 and j = ny, i in 1:nx ----
     if par.nbr_ym == par.rank && par.nbr_yp == par.rank
-        for f in fields
-            Threads.@threads :static for k in 1:nz
+        for (f, kr) in zip(fields, krs)
+            Threads.@threads :static for k in collect(kr)
                 @inbounds for i in 1:nx
                     f[i, 0, k] = f[i, ny, k]
                     f[i, ny+1, k] = f[i, 1, k]
@@ -153,14 +155,15 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
             end
         end
     else
-        m = nx * nz
-        sL = getbuf(par, :syl, nf * m); sR = getbuf(par, :syr, nf * m)
-        rL = getbuf(par, :ryl, nf * m); rR = getbuf(par, :ryr, nf * m)
+        offs = cumsum([0; [nx * length(kr) for kr in krs]])
+        n = offs[end]
+        sL = getbuf(par, :syl, n); sR = getbuf(par, :syr, n)
+        rL = getbuf(par, :ryl, n); rR = getbuf(par, :ryr, n)
         for (q, f) in enumerate(fields)
-            off = (q - 1) * m
-            Threads.@threads :static for k in 1:nz
+            off = offs[q]; k0 = first(krs[q])
+            Threads.@threads :static for k in collect(krs[q])
                 @inbounds for i in 1:nx
-                    p = off + (k - 1) * nx + i
+                    p = off + (k - k0) * nx + i
                     sL[p] = f[i, 1, k]
                     sR[p] = f[i, ny, k]
                 end
@@ -173,10 +176,10 @@ function exchange_halos!(par::ParCtx, fields::AbstractVector)
             MPI.Isend(sL, par.comm; dest = par.nbr_ym, tag = 4)]
         MPI.Waitall(reqs)
         for (q, f) in enumerate(fields)
-            off = (q - 1) * m
-            Threads.@threads :static for k in 1:nz
+            off = offs[q]; k0 = first(krs[q])
+            Threads.@threads :static for k in collect(krs[q])
                 @inbounds for i in 1:nx
-                    p = off + (k - 1) * nx + i
+                    p = off + (k - k0) * nx + i
                     f[i, 0, k] = rL[p]
                     f[i, ny+1, k] = rR[p]
                 end

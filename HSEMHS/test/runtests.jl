@@ -28,6 +28,7 @@ include("test_gate2.jl")
 include("test_screening.jl")
 include("test_gradient.jl")
 include("test_gateC.jl")
+include("test_staggered.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks
 @testset "MPI ranks" begin

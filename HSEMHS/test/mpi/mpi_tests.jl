@@ -39,6 +39,10 @@ ts = @testset "MPI n=$R" begin
             1
         end
         @test st == H.invalid_input && any(occursin("rank-local failure", m) for m in msgs)
+        # staggered operators (M6a): div∘curl ≡ 0 and transposes on this decomposition
+        divrel, errs = staggered_checks(par, grid)
+        @test divrel <= 1e-14
+        @test all(errs[nm] <= 1e-13 for nm in ("C", "Cstar", "H", "G"))
     end
     # a grid too small for the process grid is rejected on every rank (no deadlock)
     @test_throws H.InvalidInput H.init_parallel(R + 1, 4, 5; px = R, py = 1)
