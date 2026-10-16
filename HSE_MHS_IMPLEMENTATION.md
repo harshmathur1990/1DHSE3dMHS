@@ -1535,3 +1535,12 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - Substep doubling stops when 2n would reach `n_sub_max`, so with defaults the finest run uses 64 substeps.
 - A top-anchored Bifrost run exceeds the table envelope in 5 % of columns (P > 3×10¹⁴ Pa at depth). Following §7.3 this is reported as `eos_failure`; the anchor report excludes those columns and counts them.
 - `run.mode = "column_hse"` is implemented in `RunColumnHSE.jl`; anchor-sensitivity report: `scripts/gate2_anchor_report.jl`.
+
+## 23. Implementation notes recorded during M4a (16 Oct 2026)
+
+- The MHS objective and adjoint follow §13.4–13.5 exactly; verification is in `HSEMHS/reports/M4a_gate.md`.
+- **L-BFGS additions beyond §13.7:**
+  - Jacobi preconditioning: the initial inverse Hessian is γD⁻¹, with D the Gauss–Newton diagonal (`gn_diagonal!`), exact except for an upper bound on the Lorentz coupling.
+  - A per-iteration step cap: |Δ ln P| ≤ 0.5 and |Δb̃| ≤ 5. Without preconditioning, C1b does not converge in 3000 iterations; with it, C1b converges in 331.
+- Gate C2 is gated on the 128 → 256 order (the coarser grids are pre-asymptotic).
+- Gate C3 (b) fails; analysis and options are in `HSEMHS/reports/M4a_gate.md`. **User decision pending.**

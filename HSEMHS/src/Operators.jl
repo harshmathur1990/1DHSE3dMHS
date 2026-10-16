@@ -50,6 +50,37 @@ end
     return s
 end
 
+# ---- squared transposes: Σ_rows c(row, m)² q_row (Gauss–Newton diagonals) ---------------
+@inline dxT2(q, X::LocalHAxis, i, j, k) =
+    @inbounds X.c1[i+1, 1]^2 * _q(q, i + 1, j, k) + X.c1[i, 2]^2 * _q(q, i, j, k) + X.c1[i-1, 3]^2 * _q(q, i - 1, j, k)
+@inline dyT2(q, Y::LocalHAxis, i, j, k) =
+    @inbounds Y.c1[j+1, 1]^2 * _q(q, i, j + 1, k) + Y.c1[j, 2]^2 * _q(q, i, j, k) + Y.c1[j-1, 3]^2 * _q(q, i, j - 1, k)
+@inline d2xT2(q, X::LocalHAxis, i, j, k) =
+    @inbounds X.c2[i+1, 1]^2 * _q(q, i + 1, j, k) + X.c2[i, 2]^2 * _q(q, i, j, k) + X.c2[i-1, 3]^2 * _q(q, i - 1, j, k)
+@inline d2yT2(q, Y::LocalHAxis, i, j, k) =
+    @inbounds Y.c2[j+1, 1]^2 * _q(q, i, j + 1, k) + Y.c2[j, 2]^2 * _q(q, i, j, k) + Y.c2[j-1, 3]^2 * _q(q, i, j - 1, k)
+@inline function dzT2(q, Z::LocalZAxis, i, j, k)
+    s = 0.0
+    @inbounds for m in axes(Z.tidx, 2)
+        s += Z.tc1[k, m]^2 * _q(q, i, j, Z.tidx[k, m])
+    end
+    return s
+end
+@inline function d2zT2(q, Z::LocalZAxis, i, j, k)
+    s = 0.0
+    @inbounds for m in axes(Z.tidx, 2)
+        s += Z.tc2[k, m]^2 * _q(q, i, j, Z.tidx[k, m])
+    end
+    return s
+end
+"""Coefficient of node k itself in row k of D_z (for the Gauss–Newton cross term)."""
+@inline function dz_self(Z::LocalZAxis, k)
+    @inbounds for m in 1:3
+        Z.idx[k, m] == k && return Z.c1[k, m]
+    end
+    return 0.0
+end
+
 # ---- vector operators ------------------------------------------------------------------
 """Curl of (Bx, By, Bz) at an owned node (needs B halos)."""
 @inline function curl(Bx, By, Bz, o::Ops, i, j, k)
