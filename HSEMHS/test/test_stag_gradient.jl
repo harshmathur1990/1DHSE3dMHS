@@ -178,3 +178,41 @@ end
         end
     end
 end
+
+@testset "staggered: Gauss–Newton Hessian product" begin
+    nrm(par, a) = sqrt(H.dotN(par, a, a))
+    # quadratic terms only: H_GN is the exact Hessian (centre and face data)
+    for df in (false, true)
+        pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); lam = (0.0, 1e-3, 1e-6, 1e-2), dfaces = df)
+        w = H.SMHSWork(par); wl = H.SMHSWork(par)
+        v = srand_dir(par, xs, 1:5); g1 = H.similar_state(xs); g2 = H.similar_state(xs); Hv = H.similar_state(xs); xt = H.similar_state(xs)
+        H.fg!(g1, pb, w, xs); H.gn_hvp!(Hv, pb, w, wl, v)
+        H.lincomb!(xt, 1.0, xs, 1e-3, v, par); H.fg!(g2, pb, H.SMHSWork(par), xt)
+        H.lincomb!(g2, 1e3, g2, -1e3, g1, par); H.lincomb!(g2, 1.0, g2, -1.0, Hv, par)
+        e = nrm(par, g2) / nrm(par, Hv)
+        rank0(par) && @info "GN = Hessian on quadratic terms (faces = $df)" e
+        @test e <= 1e-9
+    end
+    # symmetry and positivity with the force term
+    pb, xs, par = sgrad_problem(H.IdealGasMu(1.3))
+    w = H.SMHSWork(par); wl = H.SMHSWork(par); H.objective!(pb, w, xs)
+    a = srand_dir(par, xs, 1:5; seed = 3); c = srand_dir(par, xs, 1:5; seed = 9)
+    Ha = H.similar_state(xs); Hc = H.similar_state(xs)
+    H.gn_hvp!(Ha, pb, w, wl, a); H.gn_hvp!(Hc, pb, w, wl, c)
+    @test abs(H.dotN(par, c, Ha) - H.dotN(par, a, Hc)) <= 1e-12 * abs(H.dotN(par, c, Ha))
+    @test H.dotN(par, a, Ha) > 0
+    # linearized force seeds = FD of the nonlinear ones
+    v = srand_dir(par, xs, 1:5); H.gn_hvp!(Ha, pb, w, wl, v)
+    ε = 1e-6; b = par.block
+    wp = H.SMHSWork(par); wm = H.SMHSWork(par); xt = H.similar_state(xs)
+    H.lincomb!(xt, 1.0, xs, ε, v, par); H.objective!(pb, wp, xt)
+    H.lincomb!(xt, 1.0, xs, -ε, v, par); H.objective!(pb, wm, xt)
+    for q in 1:3
+        num = 0.0; den = 0.0
+        for k in axes(w.aR[q], 3), j in 1:b.ny, i in 1:b.nx
+            fd = (wp.aR[q][i, j, k] - wm.aR[q][i, j, k]) / (2ε)
+            num = max(num, abs(fd - wl.aR[q][i, j, k])); den = max(den, abs(fd))
+        end
+        @test num <= 1e-4 * den
+    end
+end

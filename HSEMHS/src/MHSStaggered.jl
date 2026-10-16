@@ -6,7 +6,7 @@
 # only (zero elsewhere), so that sums over ranks give its value once.
 #
 # Φ = Φ_F + Φ_N + Φ_B + Φ_S + Φ_U
-#   Φ_F = (λ_F/N_F) Σ_faces w_f |R_f|²/S_f²   on x-, y- and interior z-faces
+#   Φ_F = (λ_F/N_F) Σ_faces w_f |R_f|²/S_f²   on x-, y-faces of layers 2…NZ−1 and interior z-faces
 #   Φ_B = (1/N_B) Σ ((HB)_c − Bobs_c)²/σ_c²   at centres
 #   Φ_S = (λ_S/N) Σ w Σ_a Σ_c (h_a² ∂²_a δB_c)²/σ_c²,  δB = HB − Bobs
 #   Φ_U = (λ_U/N) Σ w Σ_{a=x,y} (h_a² ∂²_a u)²
@@ -108,8 +108,12 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
     owned_map!((i, j, k) -> 1 / (sig[3][i, j, kl(k)] * sig[3][i, j, ku(k)]), invsf2[3], par)
     NB = data_on_faces ? Float64(NX) * NY * (3NZ + 1) : 3N
     return SMHSProblem(par, grid, s, ops, eos, X, Bobs, sig, invS2f, alpha, ka, log(P_ref), g,
-                       lambda_F, lambda_S, lambda_U, lambda_N, data_on_faces, Bobsf, invsf2, Aref, N, Float64(NX) * NY * (3NZ - 1), NB, wmean)
+                       lambda_F, lambda_S, lambda_U, lambda_N, data_on_faces, Bobsf, invsf2, Aref, N, Float64(NX) * NY * (3NZ - 5), NB, wmean)
 end
+
+"""Horizontal (x-, y-face) force equations exist on layers 2…NZ−1 only: the top and bottom layers
+average a boundary-edge J, which lacks the ∂_z B term (M6c, option (a))."""
+@inline horeq(k, NZ) = (2 <= k <= NZ - 1) ? 1.0 : 0.0
 
 @inline wxf(pb::SMHSProblem, i, j, k) = @inbounds pb.s.dxf[i] * pb.s.dyc[j] * pb.s.hz[k] / pb.wmean
 @inline wyf(pb::SMHSProblem, i, j, k) = @inbounds pb.s.dxc[i] * pb.s.dyf[j] * pb.s.hz[k] / pb.wmean
@@ -215,7 +219,7 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     forrows(1:NZ, par) do i, j, k
         L, Jyf, Jzf, Bzf, Byf = lor_x(J, B, i, j, k)
         R = (P[i+1, j, k] - P[i, j, k]) / s.dxf[i] - L
-        wf = wxf(pb, i, j, k) * pb.invS2f[1][i, j, k]
+        wf = horeq(k, NZ) * wxf(pb, i, j, k) * pb.invS2f[1][i, j, k]
         pX[j, k] += wf * R^2
         a = 2lF * wf * R / NF
         w.aR[1][i, j, k] = a
@@ -227,7 +231,7 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     forrows(1:NZ, par) do i, j, k
         L, Jzf, Jxf, Bxf, Bzf = lor_y(J, B, i, j, k)
         R = (P[i, j+1, k] - P[i, j, k]) / s.dyf[j] - L
-        wf = wyf(pb, i, j, k) * pb.invS2f[2][i, j, k]
+        wf = horeq(k, NZ) * wyf(pb, i, j, k) * pb.invS2f[2][i, j, k]
         pY[j, k] += wf * R^2
         a = 2lF * wf * R / NF
         w.aR[2][i, j, k] = a
@@ -456,8 +460,8 @@ end
 function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; probes::Int = 4)
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     lF, NF, g = pb.lamF, pb.NF, pb.g
-    Ax(i, j, k) = @inbounds lF * wxf(pb, i, j, k) * pb.invS2f[1][i, j, k] / NF
-    Ay(i, j, k) = @inbounds lF * wyf(pb, i, j, k) * pb.invS2f[2][i, j, k] / NF
+    Ax(i, j, k) = @inbounds lF * horeq(k, NZ) * wxf(pb, i, j, k) * pb.invS2f[1][i, j, k] / NF
+    Ay(i, j, k) = @inbounds lF * horeq(k, NZ) * wyf(pb, i, j, k) * pb.invS2f[2][i, j, k] / NF
     Az(i, j, k) = @inbounds lF * wzf(pb, i, j, k) * pb.invS2f[3][i, j, k] / NF
     Ux(i, j, k) = @inbounds pb.lamU * wcc(pb, i, j, k) * o.X.h[i]^4 / pb.N
     Uy(i, j, k) = @inbounds pb.lamU * wcc(pb, i, j, k) * o.Y.h[j]^4 / pb.N

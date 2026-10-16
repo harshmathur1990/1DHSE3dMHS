@@ -1565,3 +1565,5 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **Addendum §4 is incorrect about boundary edges.** The x- and y-face equations of layers 1 and NZ average one boundary edge J, so the one-sided boundary current enters real equations.
 - **C1 solves use the plain joint L-BFGS from A₀.** B-first continuation stalls C1b on the staggered scheme.
 - **Options `lambda_N` (face-normal Nyquist regularizer) and `data_on_faces`** are implemented and FD-verified. Both are default-off and remain experimental.
+- **Option (a) applied** (horizontal equations on layers 2…NZ−1 only). It removes the low-β vacuum trap but exposes a soft additive-pressure mode at the top in C1b (`HSEMHS/reports/M6c_gn.md`).
+- **`gncg!` (Gauss–Newton/LM with inner PCG, collapse safeguard)** is implemented and verified, but it is slower than L-BFGS and does not remove the B soft mode. Face data (`data_on_faces`) is the only change that helps materially (÷120–160).
