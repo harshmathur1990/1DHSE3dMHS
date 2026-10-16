@@ -1,0 +1,21 @@
+# column_hse on the production input (spec §5): top anchor 0.1 Pa (anchor-sensitivity run).
+[run]
+mode = "column_hse"
+output = "out/bifrost385_colhse_top.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse.nc"
+
+[physics]
+g = "from_input"
+
+[eos]
+table_file = "cache/eos_table.h5"
+
+[column_hse]
+anchor = "top"
+P_ref = 0.1               # spec D2 top option
+
+[tau]
+top = "exp_tail"

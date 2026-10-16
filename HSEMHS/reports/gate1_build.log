@@ -1,0 +1,12 @@
+[    0.9s] eos_table: envelope T = 2172 .. 1.613e+06 K, log10 P = -10.50 .. 14.51 (Gate 0 proxy anchor runs ±1 dex (reports/gate0_bifrost385.h5))
+[    1.6s] eos_table: coverage scan: 10372 of 80000 direct calls not converged; fully-ionized test false
+[    1.7s] eos_table: T_sw = 1.509e+04 K; max branch difference in [T_sw, 1.1 T_sw] = 2.82e-10
+[  202.4s] table: 1732 × 1252 nodes computed
+[  259.3s] table: level 0: 1732 × 1252 nodes, midpoint max |Δ| = 5.19e-07 / 1.43e-06 / 5.48e-05 (ln ρ / ln nₑ / ln χ); marked 1 X and 2 Y intervals
+[  316.1s] table: level 1: 1733 × 1254 nodes, midpoint max |Δ| = 5.19e-07 / 1.43e-06 / 3.35e-05 (ln ρ / ln nₑ / ln χ); marked 0 X and 0 Y intervals
+[  318.5s] eos_table: table 1733 × 1254 nodes; failed nodes 0; robust-fallback nodes 714
+[  323.8s] eos_table: withheld validation: lnchi_max = 3.17e-05, lnchi_p999 = 2.28e-07, lnne_max = 1.44e-06, lnne_p999 = 2.66e-07, lnrho_max = 5.20e-07, lnrho_p999 = 1.13e-07
+[  324.3s] eos_table: ∂lnρ/∂lnP check: max 6.23e-07, p99.9 2.49e-07 over 10000 points
+[  325.7s] eos_table: saved cache/eos_table.h5 (sha256 0623d31e4f47bd808e613455e588864ef3571e7f4cf5edf4838db149eabb3a89)
+[  326.4s] eos_table: report written to reports/gate1_table.md; all table rows pass = true
+exit 0

@@ -1,0 +1,19 @@
+# Gate 1: build the Wittmann EOS/opacity table for the Bifrost 385 envelope (doc §7).
+[run]
+mode = "eos_table"
+output = "reports/gate1_table.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse.nc"        # not read in this mode
+
+[eos]
+pf_file = "../wittman-eos/pf_Kurucz.input"
+table_file = "cache/eos_table.h5"
+envelope_from = "reports/gate0_bifrost385.h5"
+prec = 1e-10
+maxit = 5000
+dlog10T = 0.002
+dlog10P = 0.02
+refine_max_levels = 5
+validate_points = 1000000

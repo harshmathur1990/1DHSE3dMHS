@@ -1,0 +1,15 @@
+# Gate 0 audit on the full Bifrost en024048_hion snapshot 385 (spec §3).
+[run]
+mode = "gate0"
+output = "reports/gate0_bifrost385.h5"
+overwrite = true
+
+[input]
+file = "../IO/BIFROST_en024048_hion_0_504_0_504.nc"
+
+[physics]
+g = "from_input"        # from the FITS cards GRAV, U_L, U_T (274.0 m s^-2)
+
+[gate0]
+crop_z_m = [-0.5e6, 3.0e6]
+stride = 4

@@ -1,0 +1,20 @@
+# M3: force-budget screening with the bottom-anchored column_hse pressure (spec §3 item 5).
+[run]
+mode = "screening"
+output = "reports/screening_bifrost385.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse.nc"
+
+[physics]
+g = "from_input"
+
+[screening]
+colhse_file = "out/bifrost385_colhse_bottom.h5"
+ell_factor = 2.0
+write_maps = false
+
+[mhs]
+sigma_rel = 0.05
+sigma_floor_T = 5.0e-4

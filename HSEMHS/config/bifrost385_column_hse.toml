@@ -1,0 +1,21 @@
+# column_hse on the production input (spec §5): bottom anchor at z = -0.494 Mm.
+[run]
+mode = "column_hse"
+output = "out/bifrost385_colhse_bottom.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse.nc"
+
+[physics]
+g = "from_input"
+
+[eos]
+table_file = "cache/eos_table.h5"
+
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"      # 103509.3 Pa: median Bifrost P on the bottom plane (user-supplied file)
+
+[tau]
+top = "exp_tail"

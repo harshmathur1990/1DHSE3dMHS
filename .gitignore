@@ -1,0 +1,11 @@
+.DS_Store
+IO/
+
+# HSEMHS: large generated data (EOS table, RH copy and runs, model outputs)
+HSEMHS/cache/
+HSEMHS/out/
+# HSEMHS: machine-specific build products (rebuilt by deps/witt/build.jl)
+HSEMHS/deps/witt/libwitt.dylib
+HSEMHS/deps/witt/libwitt.so
+HSEMHS/deps/witt/compiler.txt
+__pycache__/
