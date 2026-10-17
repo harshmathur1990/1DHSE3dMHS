@@ -1575,3 +1575,5 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **A₀ excludes Φ_Q** (and λ_Uz). Its (B_ref/S)² weights ruin the conditioning of the A₀ CG system.
 - **The L-BFGS collapse bound is on u, not on the gauge variable v.** Bounding v lets the anchor-plane mean of v rise, which lowers u everywhere above it.
 - Defaults for the staggered scheme: `data_on_faces = true`, `lambda_Q = 1`, `lambda_Uz = 0`, `collapse_du = 3`. Staggered C1 tests use gtol 1e-7.
+- **Collapse-bound tolerance.** Nodes within 1e-3·`max_du` of the u bound are projected, and `step_to_lower` ignores them. With the 1e-12 tolerance used at first, round-off from the gauge re-centring jammed α at 0 on Bifrost (`HSEMHS/reports/M6d_step3.md`).
+- **The real-data (Bifrost) staggered solve does not converge yet.** Ã barely moves and u slides toward the bound. The likely cause is preconditioner scaling, which is M5 scope. The Bifrost 1 % check is deferred until it converges.

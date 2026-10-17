@@ -108,22 +108,29 @@ end
 """Constant offset between the pressure variable x[1] and ln P: u = x[1] − gauge_shift(pb, x[1]) + const."""
 gauge_shift(pb, f::Field) = anchor_mean(pb, f)
 
-"""Zeroes d where x is at (within 1e-12 of) the lower bound and d < 0; returns the global count."""
-function project_lower!(d::Field, x::Field, lo::Field, par::ParCtx)
+"""
+Zeroes d where x is within `tol` of the lower bound and d < 0; returns the global count. With
+tol = 1e-3·max_du every remaining node's breakpoint is ≥ 1e-3 of the |Δu| step cap, so nodes just
+short of the bound cannot jam the step at α ≈ 0.
+"""
+function project_lower!(d::Field, x::Field, lo::Field, par::ParCtx; tol::Float64)
     b = par.block; n = 0
     for k in axes(d, 3), j in 1:b.ny, i in 1:b.nx
-        if x[i, j, k] - lo[i, j, k] <= 1e-12 * max(1.0, abs(lo[i, j, k])) && d[i, j, k] < 0
+        if x[i, j, k] - lo[i, j, k] <= tol && d[i, j, k] < 0
             d[i, j, k] = 0.0; n += 1
         end
     end
     return MPI.Allreduce(n, +, par.comm)
 end
 
-"""Largest α ≥ 0 with x + αd ≥ lo on every owned node."""
-function step_to_lower(d::Field, x::Field, lo::Field, par::ParCtx)
+"""
+Largest α ≥ 0 with x + αd ≥ lo on every owned node farther than `tol` from the bound (nodes within
+`tol` were projected; the gauge re-centring can leave them a round-off-sized d < 0).
+"""
+function step_to_lower(d::Field, x::Field, lo::Field, par::ParCtx; tol::Float64)
     b = par.block; a = Inf
     for k in axes(d, 3), j in 1:b.ny, i in 1:b.nx
-        d[i, j, k] < 0 && (a = min(a, max(x[i, j, k] - lo[i, j, k], 0.0) / -d[i, j, k]))
+        x[i, j, k] - lo[i, j, k] > tol && d[i, j, k] < 0 && (a = min(a, (x[i, j, k] - lo[i, j, k]) / -d[i, j, k]))
     end
     return -global_max(par, -a)
 end
@@ -223,7 +230,7 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
             owned_map!((i, j, k) -> d1[i, j, k] - c, d1, par)
             gs = gauge_shift(pb, x[1])
             owned_map!((i, j, k) -> x[1][i, j, k] - gs, ucur, par)
-            project_lower!(d1, ucur, ulo, par)
+            project_lower!(d1, ucur, ulo, par; tol = 1e-3 * opts.max_du)
             dg = dotN(par, d, g)
             if !(dg < -1e-12 * gn * sqrt(dotN(par, d, d)))
                 # fall back to projected (preconditioned) steepest descent and drop the memory
@@ -231,7 +238,7 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
                 Dg === nothing ? lincomb!(d, -1.0 / gn, g, 0.0, g, par) : (divdiag!(d, g, Dg, par); scale!(d, -1.0, par))
                 c = gauge_shift(pb, d1)
                 owned_map!((i, j, k) -> d1[i, j, k] - c, d1, par)
-                project_lower!(d1, ucur, ulo, par)
+                project_lower!(d1, ucur, ulo, par; tol = 1e-3 * opts.max_du)
                 dg = dotN(par, d, g)
                 if !(dg < -1e-12 * gn * sqrt(dotN(par, d, d)))
                     status = stalled; reason = "pressure-collapse safeguard: no descent above the u bound"; break
@@ -246,7 +253,7 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
         dmu = 1 in opts.frozen ? 0.0 : maxabs_all(par, d[1])
         dmb = maximum((c in opts.frozen ? 0.0 : maxabs_all(par, d[c])) for c in 2:length(d))
         αcap = min(opts.alpha_max, dmu > 0 ? opts.max_du / dmu : Inf, dmb > 0 ? opts.max_db / dmb : Inf)
-        ufix && (αcap = min(αcap, step_to_lower(du, ucur, ulo, par)))
+        ufix && (αcap = min(αcap, step_to_lower(du, ucur, ulo, par; tol = 1e-3 * opts.max_du)))
         α0 = min(α0, αcap)
         α, ft, termt, ok, ne = strong_wolfe!(pb, w, x, f, dg, d, xt, gt, α0, opts; alpha_max = αcap)
         nev += ne
