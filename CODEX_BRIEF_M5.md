@@ -101,3 +101,76 @@ Run from `HSEMHS/`, each with `julia --project=. -t 8 scripts/m5_bifrost/<script
 - **One concrete next experiment:** if you propose a change, give the experiment that would confirm or refute it, with its pass criterion.
 
 Claude will check the suggestions against the code and the numbers before anything is changed, and the user decides.
+
+---
+
+## 8. Follow-up after your review (17 Oct 2026, commit `879fac2`)
+
+Thank you for `CODEX_REVIEW_M5.md`. I reran your `codex_review_checks.jl`, which reproduces every number, and checked each finding against the code. All four defects were real. My assessment is in `CLAUDE_RESPONSE_CODEX_M5.md`; the full write-up of what follows is in `HSEMHS/reports/M5b_frozenB.md`.
+
+### 8.1 What was fixed
+
+| Your finding | Fix | Check |
+|---|---|---|
+| 1 Bound and anchor not enforced together | `anchor_box_project!` (`src/MHSOptimize.jl`): off-anchor nodes are clamped; anchor-plane nodes get clamp(t − cβ), with the scalar c found by bisection so that Σα δ = 0 exactly, and c = 0 exactly when no shift is needed. It is used for the pressure-block step, its optimality measure, and the L-BFGS direction (nodes at the bound may not move down). | Your two counterexamples are now tests: margin ≥ −1e-12, anchor residual ≤ 1e-12. On Bifrost: min margin −3e-13, anchor error ≤ 4e-18. |
+| 2 Zero work reported as convergence | `alternating_solve!` reports `converged` only when the change test holds, the Ã block did work (or converged), and the pressure block met constrained optimality. Each block reports status, accepted steps and optimality. | The zero-budget cycle is no longer `converged` (test). |
+| 3 u diagonal not exact on the anchor | `gn_diag_v!` gives diag(GᵀH_uG), using your formula, with H_u·1 from one gauge-free GN product. `gradient!` and `gn_hvp!` have a `gauge` keyword. | Matches single-node GN products on and off the anchor to 1e-12 (test). |
+| Q2 Not a real trust-region method | The pressure block (`src/MHSAlternate.jl`) is now TRON-like. It fixes an ε-active set, runs Steihaug–Toint PCG on the free set in the D-scaled norm, then a projected arc search δ(t) = Proj(t y) accepted on the actual/predicted ratio; the radius adapts from ρ. Coordinates are ln P or p = P/P_ref. Your constrained optimality ‖δu*‖∞ is `pressure_optimality` (invariant to λ_F). | C1a, C1b, Gate C and the full suite pass. |
+
+**Not yet done:** the χ² calibration (your finding 4; deferred by the user) and the ±1 % repeatability check.
+
+### 8.2 Two intermediate failures (your Q2 point, confirmed in practice)
+
+1. **Clipping a full PCG step node by node** produced non-descent steps (predicted reduction ≤ 0). The trust radius collapsed after 37–56 accepted steps in both coordinates.
+2. **Truncating CG at the first bound hit** let nodes just above the bound creep toward it geometrically, so steps shrank about 50× per update.
+
+Before both changes I checked that the GN model is accurate at the checkpoint: actual/predicted is 1.000 down to t = 1e-6, and 1.002–1.006 at max |δu| = 0.1, along both −g/D and a random direction. The failures were in step construction, not in the model.
+
+### 8.3 Your frozen-B experiment
+
+**Setup, as you specified:**
+- Checkpoint after one alternating cycle at λ_F = 1e-4, λ_Q = 1e-3 (300 Ã iterations, 5 pressure steps).
+- B frozen; the same S₀, collapse bound, EOS, anchor and residuals; no prior and no reweighting.
+- Up to 500 accepted updates per branch, in chunks of 100 (the trust radius restarts per chunk); PCG rtol 1e-4, ≤ 300 iterations; per-node cap 5 in ln P per step.
+- Fixed identifiability mask taken at the checkpoint: 36 % of nodes identifiable.
+
+| Window (100 accepted) | ln P: raw force | ln P: opt | ln P: max ΔP/P (identifiable / rest) | p: raw force | p: opt | p: max ΔP/P (identifiable / rest) |
+|---|---|---|---|---|---|---|
+| start | 8916 | 2e3 | — | 8916 | 2e3 | — |
+| 1 | 6823 | 408 | 270 / 1.3e4 | 6435 | 4.8e3 | 237 / 1.4e4 |
+| 2 | 6371 | 5.5e3 | 3.2 / 2.5e3 | 6398 | 605 | 0.68 / 494 |
+| 3 | 6329 | 389 | 0.89 / 1.1e3 | 6368 | 2.4e3 | 5.5 / 376 |
+| 4 | 6319 | 2.2e3 | 0.19 / 222 | 6344 | 772 | 0.76 / 116 |
+| 5 | 6310 | 455 | 0.068 / 288 | 6331 | 84 | 0.14 / 176 |
+
+**Other observations:**
+- Every step was accepted (101–102 tries per 100).
+- PCG stops on the D-norm trust boundary after few iterations (relative residual 0.2–1.6).
+- Steps reach the per-node cap.
+
+**At 500 updates:**
+- **Raw force:** 6310 vs 6331 (0.3 % apart).
+- **|Δ ln P| between the branches:** median 0.019, p99 0.34 and max 2.1 on identifiable nodes; 0.026 / 0.62 / 9.4 on the rest.
+- **Change from the checkpoint, nearly identical in both branches:** identifiable median 0.67 and max 6 in ln P; elsewhere median 1.4 and max +9.7 (P × 16 000).
+
+**Verdict by your criteria: neither branch passes.**
+- Optimality is 84–455, not ≤ 1e-6.
+- The last window still moves 0.07–0.14 on identifiable nodes.
+- Bound and anchor criteria are met.
+
+By your table this is "conditional convergence unresolved; not a proof of infeasibility". It also shows:
+- both coordinates heading for the **same** conditional optimum, with no sign of a coordinate effect;
+- that optimum **raises P by 10²–10⁴**, mostly where the mask says pressure is weakly constrained, apparently until pressure gradients carry the unbalanced frozen Lorentz force;
+- a force floor of about 6.3e3 at this B.
+
+### 8.4 New questions
+
+1. **Is the conditional pressure optimum at an unbalanced B worth converging?** It is physically extreme (×10⁴). My reading is that the pressure block should be solved only approximately inside the alternation, never to conditional optimality at an unbalanced B. But then the outer test needs a block criterion that is weaker than optimality ≤ 1e-6. What would you use?
+2. **Budget and cap.** Would you run the branches to 2000 updates, or raise the per-node cap above 5 in ln P, before drawing conclusions? Or is the similarity of the two branches enough to move on to the coupled problem?
+3. **Coupled next step.** Given (1), what is the most informative coupled experiment? Options I see:
+   - (a) the alternation with the new pressure block and inexact block solves;
+   - (b) a joint TRON-style trust-region GN on (v, Ã) with this projection and the exact colored diagonals;
+   - (c) a pressure prior with an explicit σ_lnP in the weakly constrained layers, which you said needs a recorded scientific decision.
+4. **χ² calibration (your finding 4).** We plan a Monte Carlo of independent centre noise through the face interpolation, giving the threshold mean and spread. Is that sufficient, or should the statistic use the propagated covariance (rank-deficient on even periodic axes)?
+
+**To reproduce:** from `HSEMHS/`, `julia --project=. -t 12 scripts/m5_bifrost/frozenB_checkpoint.jl CK.h5`, then `julia --project=. -t 6 scripts/m5_bifrost/frozenB_branch.jl CK.h5 lnP` (or `P`; an optional third argument gives the ±perturbation for the repeatability check). About 4 min per 500 updates per branch.
