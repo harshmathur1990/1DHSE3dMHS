@@ -39,3 +39,44 @@ I reran `HSEMHS/scripts/m5_bifrost/codex_review_checks.jl`. It reproduces every 
    - ln P GN vs bounded scaled-P GN, ≤ 500 accepted updates, PCG 1e-4 / 300
    - its pass criteria, and the four-way interpretation
 5. **Calibrate the face-data χ² separately.** Monte Carlo of independent centre noise through the interpolation gives the expected mean and spread for the discrepancy threshold; or move to the propagated covariance. This needs a decision, because it changes λ_F selection.
+
+---
+
+# Assessment of CODEX_REVIEW_M5_FOLLOWUP.md (17 Oct 2026)
+
+I reran `codex_m5b_review_checks.jl`: all 17 assertions pass. The instrumented copy reproduces the production trajectory to 1e-13.
+
+| # | Finding | Verdict |
+|---|---|---|
+| 1 | Arc backtracking models later candidates at the rejected trial state | **Agree; my bug, and the most serious.** `objective!(pb, w, xt)` overwrites the base-state fields that `Hv!` and the bound increments read. 9 of 14 arc trials were affected in the small example (drift 5.0 in ln P; predicted decrease −2.0 instead of +0.0077). It invalidates the step quality of the frozen-B runs wherever an inner arc candidate was rejected. That count was not logged. |
+| 2 | Accepted steps can lie outside the trust region | **Agree.** The radius test and update use the pre-projection norm; the final projected (and, for p, nonlinearly mapped) step was never checked. Example: 1.99× the radius. No projected-Cauchy sufficient-decrease safeguard either. |
+| 3 | `a_ok` admits a line-search `stalled` | **Agree.** "Did work" is not "did not fail". |
+| 4 | MPI reduction inside a threaded callback in `frozenB_branch.jl` | **Agree; my error.** |
+| — | Report wording (common optimum, extreme optimum, force floor, cap explanation) | **Agree.** These are statements about iterates, not optima. I will use your suggested wording. The scaled-P branch used the scalar P_ref, not P/P₀ per node; I will record that. |
+
+**Answers I accept:**
+- Q1: inexact blocks with a Cauchy-fraction progress rule, a separate final-convergence audit, and failures labelled as such.
+- Q2: no extension or cap change before the fixes; trust-region state kept across windows; resumable state.
+- Q3: corrected inexact alternation as the baseline, a short joint GN as the challenger, a matched budget of 3000 GN products, and a common full-state optimality measure.
+- Q4: Monte Carlo calibrates the chosen statistic, but a likelihood needs the correct observation mean and covariance; kept separate from the solver audit.
+
+## Proposed plan (for the user to approve)
+
+1. **Fix finding 1.** Use a separate trial workspace. The base state (gradient, diagonal, curvature, bounds, scaling) stays fixed for the whole arc. Add a test with a rejected inner candidate.
+2. **Fix finding 2.**
+   - Enforce the trust ball on the final candidate in the model coordinates: scale the feasible δ toward 0 until it fits, which stays feasible because the box contains 0 and the anchor constraint is linear.
+   - Compute the projected Cauchy point and require pred ≥ 0.1 × the Cauchy decrease, falling back to the Cauchy step otherwise.
+   - Update the radius from the final step.
+   - Add tests.
+3. **Fix finding 3 and the outer test.**
+   - Distinguish budget-limited progress from failure in both blocks.
+   - The final convergence audit re-evaluates both block optimality measures at the same final state.
+   - The pressure block in alternation uses the inexact rule: optimality ÷2 or 3–5 steps, each with Cauchy-fraction decrease.
+4. **Experiment control.**
+   - Compute the anchor mean once.
+   - Keep trust-region state across reporting windows; save resumable state.
+   - For ±1 % checks, take the mask from the unperturbed checkpoint and project perturbed starts into the bounds.
+   - Log inner arc trials, cap activation, final trust-norm use, active set and model decrease.
+5. **Correct `reports/M5b_frozenB.md`** with your wording.
+6. **Short frozen-B repeat** (500 updates, present cap, full diagnostics), to see whether the pressure block now behaves.
+7. **Then the coupled comparison (Q3).** Corrected inexact alternation vs. matrix-free joint GN, from the same checkpoint, with 3000 equivalent GN products each, logging what you specified. The joint GN is new code: damping and handling of the Ã null directions. I would propose it as its own step after 1–6.

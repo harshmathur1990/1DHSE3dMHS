@@ -53,23 +53,74 @@ The GN model itself was verified accurate along the steepest-descent and random 
 - Pressures differ by |Δ ln P| of 0.019 (median), 0.34 (p99) and 2.1 (max) on identifiable nodes; 0.026 / 0.62 / 9.4 on the complement.
 - Change from the checkpoint is nearly identical in both branches: identifiable median 0.67 in ln P (a factor 2), max 6 (×400); complement median 1.4, max +9.7 (×16 000).
 
-## 3. Verdict against Codex's criteria
+## 3. Verdict against Codex's criteria (wording corrected after CODEX_REVIEW_M5_FOLLOWUP.md)
 
-**Neither branch passes.**
-- Optimality is 84–455, against a pass value of ≤ 1e-6.
-- The change criterion (≤ 1e-3 for three consecutive windows) is not met: the last window still moves 0.07–0.14 on identifiable nodes and 180–290 on the complement.
+**Neither branch passes; conditional convergence is unresolved.** Optimality is 84–455 against a pass value of ≤ 1e-6. The change criterion (≤ 1e-3 for three consecutive windows) is not met: the last window still moves 0.07–0.14 on identifiable nodes and 180–290 on the complement.
 
-By Codex's interpretation table this is "**neither passes: conditional convergence is unresolved; this does not establish physical infeasibility**".
+**After 500 accepted updates, both branches reach similar objective values near 6.3e3 but remain nonstationary and differ materially at some nodes. Neither a common optimum nor a residual floor is established.**
+- The two objectives agree to 0.33 %. That is above the proposed 0.1 % comparison threshold.
+- The inter-branch |Δ ln P| reaches 2.1 on identifiable nodes and 9.4 elsewhere.
+- Statements about the size of the pressure changes refer to the **current iterates**, not to an optimum.
+- A feasible iterate only bounds the minimum force objective at this B from above.
 
-**What the run does show:**
-1. **The u block now works as an optimizer.** Steps are accepted with ρ ≈ 1, the bound and anchor hold, and the force objective falls monotonically (8916 → ≈6300). The earlier failures were in the step construction, as Codex said, not in the model.
-2. **Both coordinates head for the same conditional optimum**: the same force plateau within 0.3 %, and pressures within 2 % (median) on identifiable nodes. Nothing so far indicates a coordinate effect; the scaled-p branch reached lower optimality in its last window, but not consistently.
-3. **That optimum is extreme.** With B frozen (and not force-balanced), the force term drives the pressure up by factors of 10²–10⁴, mostly where the mask flags pressure as poorly constrained, until pressure gradients carry the unbalanced Lorentz force. Convergence is slow because those nodes need changes of many e-folds, and the per-step cap (5 in ln P) and trust radius limit them.
-4. The force residual at this frozen B stays large (raw 6.3e3, from 8.9e3). By Codex's last row, that is a floor **at this B only**, not over data-admissible B.
+**These runs are also affected by two defects found in the follow-up review**, so they do not validate the trust-region solve:
+- Rejected arc candidates were modelled at the rejected trial state.
+- Accepted final steps could lie outside the trust ball.
+
+Both were fixed afterwards (§5).
+
+**The scaled-P branch used the scalar reference P_ref**, not the per-node initializer scale P₀ of Codex's specification. With an exact diagonal metric, a constant rescaling may cancel from the preconditioned step, so this is recorded rather than blamed.
 
 ## 4. Open items and suggestions
 
-- **Whether the conditional problem converges with more budget** (or with a larger per-node cap): run each branch to 2000 updates. That is cheap: about 4 min per 500 updates.
-- **The conditional optimum at an unbalanced B is not a meaningful pressure estimate.** It argues for keeping the Ã and u blocks coupled, as the alternation does, rather than solving pressure to optimality at a fixed B. That is a judgement for the user and Codex.
+- No extension and no cap change before the fixes (Codex). After the fixes, a short repeat with full diagnostics (§5).
+- The fixed-B solve is a diagnostic. In alternation the pressure block is solved inexactly (Codex Q1).
 - The repeatability check from ±1 % perturbations (Codex step 3) is not done yet. The branch script supports it (third argument).
 - χ² calibration (deferred step 5).
+
+## 5. Fixes after the follow-up review (CODEX_REVIEW_M5_FOLLOWUP.md)
+
+- **One base model per trust-region iteration.** Gradient, diagonal, curvature, bounds and scaling all come from the accepted state. Trial points are evaluated in a separate workspace. One candidate per iteration (no arc backtracking).
+- **Final step inside the trust ball.** It is scaled linearly toward 0 in u, which stays feasible (the box contains 0; the anchor constraint is linear), until its model-coordinate D-norm fits. The radius is updated from the final step's norm.
+- **Projected-Cauchy safeguard.** The candidate must give ≥ 0.1 of the best Cauchy model decrease along −D⁻¹g (projected, in the trust ball); otherwise the Cauchy step is used.
+- **Block failure.** An Ã-block L-BFGS stop on a line-search or EOS failure is a failure; budget-limited progress is not. A pressure block with no accepted step is a failure.
+- **Final convergence.** Requires fresh audits of both blocks at the same final state: pressure optimality ≤ 1e-6 and ‖∇_Ã Φ‖ ≤ 1e-6 relative to the start. Blocks tighten when only the change test passes.
+- **Inexact pressure block in alternation.** Stops when optimality halves or after `u_steps` accepted steps. The trust-region state persists across cycles.
+- **Scripts.** Anchor mean computed once (no MPI in threaded callbacks). Trust-region state carried across reporting windows. Resumable final state. The ±1 % start is perturbed after the mask is fixed from the unperturbed checkpoint, then projected into bounds ∩ anchor. Logs add candidates, Cauchy fallbacks, trust scalings, cap hits, trust-norm use, ρ, model vs actual decrease, and ε-active set size.
+- **Tests (new).** After rejected candidates `w` holds the accepted state exactly; every accepted step lies in its trust ball; bound and anchor hold; Φ decreases monotonically. These cover ln P at amplitudes 0.8 and 4 and p at amplitude 4, with rejections exercised.
+
+**Open (decision needed).** In the alternating solve of C1b (8×8×65), the change test reaches 0 and |u − u_s| = 4e-6, but the result is never `converged`:
+- At the round-off floor the Ã block's L-BFGS stops with "line search failed twice from steepest descent", which now counts as a failure (Codex finding 3).
+- Its relative gradient audit bottoms out at about 2e-4, not the 1e-6 target.
+
+This is the floor situation previously accepted for the C1b/C3 gates. How the outer test should treat it is for the user to decide; Codex asked that it not be treated silently as success.
+
+## 6. Frozen-B repeat with the corrected pressure block (17 Oct 2026)
+
+**Setup:** a new checkpoint made with the corrected code: one cycle, 300 Ã iterations, 5 pressure steps; Φ = 1.2953, pressure optimality 8.5e2. Otherwise as in §2. The trust-region state is carried across windows; per-node cap 5 in ln P. Fixed mask from the checkpoint.
+
+| Window | ln P: raw force | ln P: opt | ln P: max ΔP/P (identifiable / rest) | ln P: Cauchy fallbacks | p: raw force | p: opt | p: max ΔP/P (identifiable / rest) | p: Cauchy fallbacks |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 7184 | 1.35e3 | 6.6 / 1.3e4 | 0 | 6852 | 24.9 | 30 / 1.6e4 | 96 |
+| 2 | 6876 | 15.9 | 1.1 / 2.0e3 | 1 | 6740 | 22.3 | 2.0 / 88 | 100 |
+| 3 | 6744 | 30.5 | 0.64 / 376 | 4 | 6553 | 1.76e3 | 9.9 / 2.1e3 | 100 |
+| 4 | 6680 | 893 | 0.31 / 705 | 1 | 6434 | 5.74e3 | 4.5 / 1.5e3 | 62 |
+| 5 | 6616 | 3.01e3 | 0.32 / 442 | 7 | 6403 | 1.42e3 | 2.3 / 619 | 8 |
+
+**Per-window diagnostics:**
+- ln P: about 120 candidates per 100 accepted; mean ρ ≈ 0.8; final-step trust use 0.94–0.95; cap hits 20–41; ε-active set up to about 7.1e3 nodes.
+- p: for its first 300 updates almost every step is a Cauchy fallback; trust use there is 0.01–0.06, Δ grows to 8.8, ρ ≈ 1.0.
+- Both branches: model and actual decrease consistent (ratio about 0.6–0.98); min bound margin ≥ −5.7e-14; anchor error ≤ 7e-16.
+
+**At 500 accepted updates:**
+- Raw force: 6616 (ln P) vs 6403 (p), 3.3 % apart.
+- **|Δ ln P| between the branches on identifiable nodes:** median 0.80, p99 2.9, max 4.4.
+- Change from the checkpoint: identifiable median 1.10 (ln P) vs 0.32 (p); complement median 1.3 in both.
+
+**Verdict:** neither branch passes (optimality 1.4e3 – 3.0e3; identifiable nodes still move 0.3–2.3 per window). Conditional convergence is unresolved.
+
+**What this run adds:**
+1. The corrected pressure block behaves as a trust-region method: feasible, inside its radius, consistent ratios, monotone decrease.
+2. The two coordinates now reach **different** iterates: 3 % in objective and about a factor 2 (median) in pressure on identifiable nodes. The earlier "similar endpoints" (§2, buggy runs) does not hold up.
+3. The constrained optimality measure is **not monotone** (ln P: 16 → 3e3 while Φ falls). That is consistent with a max-norm measure dominated by a few low-D nodes. It should be read together with quantiles; logging those is a suggested addition.
+4. In p-coordinates the PCG direction, after the nonlinear map, projection and trust scaling, rarely gives 0.1 of the Cauchy decrease. That branch runs mostly on projected scaled steepest descent.

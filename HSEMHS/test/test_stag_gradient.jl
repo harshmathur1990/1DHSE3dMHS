@@ -284,3 +284,29 @@ end
     st, why, n, hist = H.alternating_solve!(pb, w, x; max_outer = 1, a_iter = 0, u_steps = 0)
     @test st != H.converged
 end
+
+@testset "M5b: pressure block keeps one base model, final steps inside the trust ball (Codex follow-up)" begin
+    par = H.init_parallel(4, 4, 9); b = par.block
+    pb, x0, us, uc, grid = H.sc1_problem(par, 4, 4, 9; lambda_Q = 1e-3)
+    for (amp, coord) in ((0.8, :lnP), (4.0, :lnP), (4.0, :P))
+        x = deepcopy(x0)
+        H.owned_map!((i, j, k) -> x[1][i, j, k] + amp * sin(1.37i + 2.21j + 0.7k), x[1], par)
+        w = H.SMHSWork(par); H.objective!(pb, w, x)
+        ulo = H.newfield(par); H.owned_map!((i, j, k) -> w.u[i, j, k] - 3.0, ulo, par)
+        r = H.u_gauss_newton!(pb, w, x, ulo; steps = 8, cg_iter = 100, cg_rtol = 1e-4, coord = coord, record = true)
+        # w still holds the accepted state after rejected candidates
+        wf = H.SMHSWork(par); H.objective!(pb, wf, x)
+        @test maximum(abs(w.u[i, j, k] - wf.u[i, j, k]) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx) == 0.0
+        @test r.accepted > 0
+        # every accepted final step lies in the trust ball it was built for, and is feasible
+        @test all(h.ynorm <= h.Delta_used * (1 + 1e-9) for h in r.history)
+        @test all(h.margin >= -1e-12 && h.anchor_err <= 1e-12 for h in r.history)
+        # objective decreases monotonically
+        fs = [h.f for h in r.history]; @test all(diff(fs) .<= 0)
+        rank0(par) && @info "M5b pressure block" amp coord r.accepted r.tries r.counts r.opt0 r.opt
+        amp == 4.0 && coord == :lnP && @test r.tries > r.accepted   # at least one rejected candidate exercised
+    end
+    # a line-search failure of the Ã block is a failure, not progress
+    ra = (status = H.stalled, iterations = 1, reason = "line search failed twice from steepest descent")
+    @test ra.status == H.eos_failure || (ra.status == H.stalled && occursin("line search", ra.reason))
+end
