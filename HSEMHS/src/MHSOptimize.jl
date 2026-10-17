@@ -100,8 +100,32 @@ Base.@kwdef struct LBFGSOptions
     precondition::Bool = true        # Jacobi initial inverse Hessian from the Gauss–Newton diagonal
     max_du::Float64 = 0.5            # largest |Δ ln P| per iteration (step cap)
     max_db::Float64 = 5.0            # largest |Δ b̃| per iteration, in σ units
+    collapse_du::Float64 = 3.0       # pressure-collapse safeguard: u = ln P stays ≥ its start value − collapse_du (M6d; Inf: off)
     refresh::Int = 0                 # recompute the diagonal every `refresh` iterations (0: never)
     frozen::Vector{Int} = Int[]      # state fields held fixed (1 = v, 2:4 = b̃): their gradient is zeroed
+end
+
+"""Constant offset between the pressure variable x[1] and ln P: u = x[1] − gauge_shift(pb, x[1]) + const."""
+gauge_shift(pb, f::Field) = anchor_mean(pb, f)
+
+"""Zeroes d where x is at (within 1e-12 of) the lower bound and d < 0; returns the global count."""
+function project_lower!(d::Field, x::Field, lo::Field, par::ParCtx)
+    b = par.block; n = 0
+    for k in axes(d, 3), j in 1:b.ny, i in 1:b.nx
+        if x[i, j, k] - lo[i, j, k] <= 1e-12 * max(1.0, abs(lo[i, j, k])) && d[i, j, k] < 0
+            d[i, j, k] = 0.0; n += 1
+        end
+    end
+    return MPI.Allreduce(n, +, par.comm)
+end
+
+"""Largest α ≥ 0 with x + αd ≥ lo on every owned node."""
+function step_to_lower(d::Field, x::Field, lo::Field, par::ParCtx)
+    b = par.block; a = Inf
+    for k in axes(d, 3), j in 1:b.ny, i in 1:b.nx
+        d[i, j, k] < 0 && (a = min(a, max(x[i, j, k] - lo[i, j, k], 0.0) / -d[i, j, k]))
+    end
+    return -global_max(par, -a)
 end
 
 struct LBFGSResult
@@ -131,6 +155,14 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
     nh = 0; head = 0                                 # number stored, index of newest
     g = similar_state(x); d = similar_state(x); q = similar_state(x)
     xt = similar_state(x); gt = similar_state(x)
+    # pressure-collapse safeguard on u = x[1] − gauge_shift(x[1]) (the bound must be on u, not on
+    # the gauge variable: a rising anchor-plane mean of v lowers u everywhere else)
+    ufix = isfinite(opts.collapse_du) && !(1 in opts.frozen)
+    ucur = similar_state(x)[1]; ulo = similar_state(x)[1]; du = similar_state(x)[1]
+    if ufix
+        gs = gauge_shift(pb, x[1])
+        owned_map!((i, j, k) -> x[1][i, j, k] - gs - opts.collapse_du, ulo, par)
+    end
     f, terms, oob = fg!(g, pb, w, x)
     freeze!(g, opts.frozen, par)
     oob && return LBFGSResult(eos_failure, "initial state outside the EOS envelope", 0, 1, f, terms, NaN, NaN, NTuple{4,Float64}[])
@@ -183,12 +215,38 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
             end
             dg = dotN(par, d, g)
         end
+        # pressure-collapse safeguard: project out the downward u-direction on nodes at the
+        # bound, then cap α at the bound (u → vacuum is a stationary trap, ∂R/∂u ∝ P)
+        if ufix
+            # drop the gauge component of d[1] (changes neither u nor Φ), then fix bound nodes
+            c = gauge_shift(pb, d[1]); d1 = d[1]
+            owned_map!((i, j, k) -> d1[i, j, k] - c, d1, par)
+            gs = gauge_shift(pb, x[1])
+            owned_map!((i, j, k) -> x[1][i, j, k] - gs, ucur, par)
+            project_lower!(d1, ucur, ulo, par)
+            dg = dotN(par, d, g)
+            if !(dg < -1e-12 * gn * sqrt(dotN(par, d, d)))
+                # fall back to projected (preconditioned) steepest descent and drop the memory
+                nh = 0
+                Dg === nothing ? lincomb!(d, -1.0 / gn, g, 0.0, g, par) : (divdiag!(d, g, Dg, par); scale!(d, -1.0, par))
+                c = gauge_shift(pb, d1)
+                owned_map!((i, j, k) -> d1[i, j, k] - c, d1, par)
+                project_lower!(d1, ucur, ulo, par)
+                dg = dotN(par, d, g)
+                if !(dg < -1e-12 * gn * sqrt(dotN(par, d, d)))
+                    status = stalled; reason = "pressure-collapse safeguard: no descent above the u bound"; break
+                end
+            end
+            c = gauge_shift(pb, d1)
+            owned_map!((i, j, k) -> d1[i, j, k] - c, du, par)          # Δu per unit α
+        end
         α0 = (nh == 0 && Dg === nothing) ? min(1.0, 1.0 / gn) : 1.0
         # step cap: u = ln P is a log variable (a huge step can collapse P, where ∂Φ/∂u ∝ P
         # vanishes), and b̃ is in σ units
         dmu = 1 in opts.frozen ? 0.0 : maxabs_all(par, d[1])
         dmb = maximum((c in opts.frozen ? 0.0 : maxabs_all(par, d[c])) for c in 2:length(d))
         αcap = min(opts.alpha_max, dmu > 0 ? opts.max_du / dmu : Inf, dmb > 0 ? opts.max_db / dmb : Inf)
+        ufix && (αcap = min(αcap, step_to_lower(du, ucur, ulo, par)))
         α0 = min(α0, αcap)
         α, ft, termt, ok, ne = strong_wolfe!(pb, w, x, f, dg, d, xt, gt, α0, opts; alpha_max = αcap)
         nev += ne

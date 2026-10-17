@@ -1,7 +1,7 @@
 # M6b: staggered objective/adjoint verification (D9 addendum §8).
 
 """Staggered MHS test problem with structured T, smooth Bobs and a perturbed state."""
-function sgrad_problem(eos; NX = 16, NY = 14, NZ = 15, lam = (1.0, 1e-3, 1e-6, 1e-2), Bscale = 1.0, apert = 0.3, seed = 3, px = 0, py = 0, dfaces = false)
+function sgrad_problem(eos; NX = 16, NY = 14, NZ = 15, lam = (1.0, 1e-3, 1e-6, 1e-2), Bscale = 1.0, apert = 0.3, seed = 3, px = 0, py = 0, dfaces = false, lq = 0.0, luz = 0.0)
     par, grid, ops, x, y, z = test_setup(NX, NY, NZ; px = px, py = py)
     b = par.block
     Lx, Ly = 4.0e6, 3.0e6
@@ -19,7 +19,7 @@ function sgrad_problem(eos; NX = 16, NY = 14, NZ = 15, lam = (1.0, 1e-3, 1e-6, 1
     for c in 1:3
         H.fill_owned!((i, j, k) -> H.sigma_synth(sqrt(sum(Bo[d][i, j, k]^2 for d in 1:3)), 0.05, 5e-4), sig[c], par)
     end
-    pb = H.SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = 1.0e4, lambda_F = lam[1], lambda_S = lam[2], lambda_U = lam[3], lambda_N = lam[4], data_on_faces = dfaces)
+    pb = H.SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = 1.0e4, lambda_F = lam[1], lambda_S = lam[2], lambda_U = lam[3], lambda_N = lam[4], data_on_faces = dfaces, lambda_Q = lq, lambda_Uz = luz)
     xs = H.init_state(pb)
     H.set_scales!(pb, xs[1])
     for f in 1:4, k in axes(xs[f], 3), j in 1:b.ny, i in 1:b.nx
@@ -84,6 +84,15 @@ function sgradient_checks(eos, label)
         e = sfd_error(pb3, xs3, srand_dir(par3, xs3, 1:5))
         @test e <= 1e-6
         rank0(par3) && @info "staggered FD $label, data on faces" e
+        for (lam, lq, luz, nm) in (((0.0, 0.0, 0.0, 0.0), 1.0, 0.0, "Φ_Q alone"), ((0.0, 0.0, 0.0, 0.0), 0.0, 1e-2, "λ_Uz alone"),
+                                   ((1.0, 1e-3, 1e-6, 1e-2), 1.0, 1e-4, "all terms + Φ_Q + λ_Uz"))
+            pb4, xs4, par4 = sgrad_problem(eos; lam = lam, dfaces = true, lq = lq, luz = luz)
+            for (fs, fn) in ((1:5, "all fields"), (2:4, "Ã"))
+                e = sfd_error(pb4, xs4, srand_dir(par4, xs4, fs))
+                @test e <= 1e-6
+                rank0(par4) && @info "staggered FD $label, $nm, $fn" e
+            end
+        end
     end
 end
 
@@ -182,19 +191,19 @@ end
 @testset "staggered: Gauss–Newton Hessian product" begin
     nrm(par, a) = sqrt(H.dotN(par, a, a))
     # quadratic terms only: H_GN is the exact Hessian (centre and face data)
-    for df in (false, true)
-        pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); lam = (0.0, 1e-3, 1e-6, 1e-2), dfaces = df)
+    for (df, lq, luz) in ((false, 0.0, 0.0), (true, 0.0, 0.0), (true, 1.0, 1e-4))
+        pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); lam = (0.0, 1e-3, 1e-6, 1e-2), dfaces = df, lq = lq, luz = luz)
         w = H.SMHSWork(par); wl = H.SMHSWork(par)
         v = srand_dir(par, xs, 1:5); g1 = H.similar_state(xs); g2 = H.similar_state(xs); Hv = H.similar_state(xs); xt = H.similar_state(xs)
         H.fg!(g1, pb, w, xs); H.gn_hvp!(Hv, pb, w, wl, v)
         H.lincomb!(xt, 1.0, xs, 1e-3, v, par); H.fg!(g2, pb, H.SMHSWork(par), xt)
         H.lincomb!(g2, 1e3, g2, -1e3, g1, par); H.lincomb!(g2, 1.0, g2, -1.0, Hv, par)
         e = nrm(par, g2) / nrm(par, Hv)
-        rank0(par) && @info "GN = Hessian on quadratic terms (faces = $df)" e
+        rank0(par) && @info "GN = Hessian on quadratic terms (faces = $df, λ_Q = $lq, λ_Uz = $luz)" e
         @test e <= 1e-9
     end
-    # symmetry and positivity with the force term
-    pb, xs, par = sgrad_problem(H.IdealGasMu(1.3))
+    # symmetry and positivity with the force term (production terms: face data, Φ_Q, λ_Uz)
+    pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); dfaces = true, lq = 1.0, luz = 1e-4)
     w = H.SMHSWork(par); wl = H.SMHSWork(par); H.objective!(pb, w, xs)
     a = srand_dir(par, xs, 1:5; seed = 3); c = srand_dir(par, xs, 1:5; seed = 9)
     Ha = H.similar_state(xs); Hc = H.similar_state(xs)

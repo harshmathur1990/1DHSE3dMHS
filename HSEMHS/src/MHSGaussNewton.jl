@@ -11,7 +11,7 @@
 """Work that shares the base-state fields (u, P, ρ, ρ_u) of `w` and uses the seeds/scratch of `wl`."""
 hybrid_work(w::SMHSWork, wl::SMHSWork) =
     SMHSWork(w.u, w.P, w.rho, w.rhou, wl.A, wl.B, wl.J, wl.HB, wl.dB, wl.aR, wl.fX, wl.fY, wl.fZ,
-             wl.qS, wl.qU, wl.qN, wl.gBd, wl.gHB, wl.gB, wl.gBJ, wl.gJ, wl.gA, wl.gP)
+             wl.qS, wl.qU, wl.qN, wl.gBd, wl.qQ, wl.gHB, wl.gB, wl.gBJ, wl.gJ, wl.gA, wl.gP)
 
 """
     gn_hvp!(Hv, pb, w, wl, v)
@@ -97,6 +97,7 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
         end
         wl.qU[1][i, j, k] = 2lU * wc * hx^4 * d2x(du, o.X, i, j, k) / N
         wl.qU[2][i, j, k] = 2lU * wc * hy^4 * d2y(du, o.Y, i, j, k) / N
+        wl.qU[3][i, j, k] = 2pb.lamUz * wc * hz^4 * d2z(du, o.Z, i, j, k) / N
     end
     Bx, By, Bz = dB; sg = pb.sig
     if lN > 0
@@ -115,6 +116,7 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
             fill!(parent(wl.qN[c]), 0.0)
         end
     end
+    phiQ_seeds!(wl.qQ, dJ, pb)                       # Φ_Q is linear in J
     if pb.dfaces
         for c in 1:3
             dBc = dB[c]; iv = pb.invsf2[c]

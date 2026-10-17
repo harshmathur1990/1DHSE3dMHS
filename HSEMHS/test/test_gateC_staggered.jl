@@ -1,11 +1,13 @@
-# M6c: Gate C1–C3 on the staggered scheme (D9 addendum §10; E3 withdrawn: RMS ≤ 1e-6, p99 ≤ 1e-4).
+# M6c/M6d: Gate C1–C3 on the staggered scheme (D9 addendum §10, D9b §4; E3 withdrawn: RMS ≤ 1e-6, p99 ≤ 1e-4).
+# Problems use the D9b defaults: data on faces, Φ_Q (λ_Q = 1), λ_Uz = 0, L-BFGS collapse safeguard.
 
 """Staggered C1 solve (plain joint L-BFGS from column_hse u and A₀)."""
 function sc1_solve(NZ; Bobs = (0.0, 0.0, 0.0), NX = 8, NY = 8, max_iter = 5000)
     par = H.init_parallel(NX, NY, NZ)
     pb, x, us, uc, grid = H.sc1_problem(par, NX, NY, NZ; Bobs = Bobs)
     w = H.SMHSWork(par)
-    r = H.lbfgs!(pb, w, x; opts = H.LBFGSOptions(max_iter = max_iter))
+    r, bf = H.mhs_solve!(pb, w, x; opts = H.LBFGSOptions(max_iter = max_iter, gtol_rel = 1e-7))   # Φ_Q stiffens: 1e-6 leaves C1b RMS at 1.6e-6
+    @test !bf                                                       # C1 starts take the plain path
     H.objective!(pb, w, x)
     rms, p99 = H.layer_residual_stats(pb, w)
     du_s = H.newfield(par); H.fill_owned!((i, j, k) -> w.u[i, j, k] - us[i, j, k], du_s, par)
@@ -75,30 +77,48 @@ end
 @testset "Gate C3 (staggered): checkerboard modes" begin
     s = sc1_solve(33; Bobs = (20e-4, 0.0, 50e-4), NX = 16, NY = 16)
     pb, par, w = s.pb, s.par, s.w; b = par.block
-    r = H.lbfgs!(pb, w, s.x; opts = H.LBFGSOptions(max_iter = 5000, gtol_rel = 1e-10))   # tighten the reference
+    r = H.lbfgs!(pb, w, s.x; opts = H.LBFGSOptions(max_iter = 8000, gtol_rel = 1e-10))   # tighten the reference
     xeq = deepcopy(s.x)
-    dist() = (H.rms_diff(par, w.u, s.us), maximum(H.rms_diff(par, w.B[c], s.Bex[c]) for c in 1:3))
+    feq = H.objective!(pb, w, xeq)[1]
+    # identifiable nodes (D9b §2.3): δP_unobs ≤ 0.1 P at the reference
+    dPu = H.dP_unobs!(H.newfield(par), pb, w)
+    ident = [dPu[i, j, k] <= 0.1 * w.P[i, j, k] for i in 1:b.nx, j in 1:b.ny, k in 1:b.nz]
+    fr = H.unidentifiable_fraction(pb, w, dPu)
+    rank0(par) && @info "C3 reference: identifiable fraction, unidentifiable layer fractions (top first)" sum(ident) / length(ident) fr[1:4]
+    function udist()
+        num = 0.0; n = 0
+        for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx
+            ident[i, j, k] || continue
+            num += (w.u[i, j, k] - s.us[i, j, k])^2; n += 1
+        end
+        return sqrt(MPI.Allreduce(num, +, par.comm) / MPI.Allreduce(n, +, par.comm))
+    end
+    dist() = (udist(), maximum(H.rms_diff(par, w.B[c], s.Bex[c]) for c in 1:3))
     function run(ε, fields)
         xp = deepcopy(xeq)
         for f in fields, k in axes(xp[f], 3), j in 1:b.ny, i in 1:b.nx
             xp[f][i, j, k] += ε * (iseven(b.i0 + i + b.j0 + j + k + f) ? 1.0 : -1.0)
         end
         fe = H.objective!(pb, w, xeq)[1]; fp = H.objective!(pb, w, xp)[1]; d0 = dist()
-        rr = H.lbfgs!(pb, w, xp; opts = H.LBFGSOptions(max_iter = 5000, gtol_rel = 1e-10))
-        H.objective!(pb, w, xp)
-        return fp > fe, d0, dist(), rr
+        o = H.LBFGSOptions(max_iter = 8000, gtol_rel = 1e-10)
+        rr, bf = H.mhs_solve!(pb, w, xp; opts = o)
+        f1 = H.objective!(pb, w, xp)[1]
+        return fp > fe, d0, dist(), rr, f1, bf
     end
-    seen, d0, d1, rr = run(1e-3, 1:1)                               # pressure checkerboard
-    @info "C3 staggered, u checkerboard" d0 d1 status = rr.status
+    seen, d0, d1, rr, _, bf = run(1e-3, 1:1)                        # pressure checkerboard
+    @info "C3 staggered, u checkerboard (identifiable nodes)" d0 d1 status = rr.status bf
+    @test !bf
     @test seen
-    # passed (÷7e5) before option (a); since dropping the layer-1/NZ horizontal equations the C1b
-    # reference stalls on a horizontally uniform, top-heavy δP ≈ const mode (δu ≈ 1e-4 at the top),
-    # which dominates the distance to the analytic solution (reports/M6c_gn.md)
-    @test_broken d1[1] <= 1e-3 * d0[1]
-    seen, d0, d1, rr = run(1e-5, 2:4)                               # Ã checkerboard (linear regime)
-    @info "C3 staggered, Ã checkerboard" d0 d1 status = rr.status
-    @test seen
-    # B decays only ÷8.5 (Hessian Rayleigh quotient 1.5e-5 along the remaining error vs 3e2 for
-    # smooth Ã); see reports/M6c_gate.md
-    @test_broken d1[2] <= 1e-3 * d0[2]
+    @test d1[1] <= 1e-3 * d0[1]
+    # Ã checkerboards: the start is Φ_Q-dominated (Φ_Q/Φ_F ≈ 1.5e5 at any ε), so `mhs_solve!` takes the
+    # B-first path (a plain joint solve drags u toward vacuum at ε = 1e-3; reports/M6d_step2.md). The
+    # solve ends at the round-off floor, where the line search fails (`stalled`), so the floor is
+    # checked through Φ instead of the status (accepted deviation from D9b §4).
+    for (ε, fields, nm) in ((1e-5, 2:4, "Ã, ε = 1e-5"), (1e-3, 1:4, "v + Ã, ε = 1e-3"))
+        seen, d0, d1, rr, f1, bf = run(ε, fields)
+        @info "C3 staggered, $nm checkerboard" d0 d1 status = rr.status reason = rr.reason f1 feq bf
+        @test seen && bf
+        @test d1[2] <= 1e-3 * d0[2]
+        @test f1 <= 10 * max(feq, 1e-16)
+    end
 end

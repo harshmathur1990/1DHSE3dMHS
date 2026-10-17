@@ -1567,3 +1567,11 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **Options `lambda_N` (face-normal Nyquist regularizer) and `data_on_faces`** are implemented and FD-verified. Both are default-off and remain experimental.
 - **Option (a) applied** (horizontal equations on layers 2…NZ−1 only). It removes the low-β vacuum trap but exposes a soft additive-pressure mode at the top in C1b (`HSEMHS/reports/M6c_gn.md`).
 - **`gncg!` (Gauss–Newton/LM with inner PCG, collapse safeguard)** is implemented and verified, but it is slower than L-BFGS and does not remove the B soft mode. Face data (`data_on_faces`) is the only change that helps materially (÷120–160).
+
+## 27. Implementation notes recorded during M6d (17 Oct 2026)
+
+- Results: `HSEMHS/reports/M6d_step1.md` (Φ_Q gate experiment) and `M6d_step2.md` (production terms, safeguard, gates). The staggered C3(b) rows now pass. The user accepted λ_Uz = 0, the automatic B-first policy (`mhs_solve!`, `mhs.bfirst_ratio = 10`) and the round-off-floor criterion for the C3(b) B rows (spec §10, 17 Oct 2026).
+- **Φ_Q covers the boundary layers.** The horizontal second differences are taken on every edge level, and J_z on all layers. Only the z second difference is interior-only (D9b §2.2). With option (a), no force equation sees the top-layer J_z or the boundary-edge currents. A first prototype that excluded them left the B checkerboard in the top layer (÷47 instead of ÷2e3).
+- **A₀ excludes Φ_Q** (and λ_Uz). Its (B_ref/S)² weights ruin the conditioning of the A₀ CG system.
+- **The L-BFGS collapse bound is on u, not on the gauge variable v.** Bounding v lets the anchor-plane mean of v rise, which lowers u everywhere above it.
+- Defaults for the staggered scheme: `data_on_faces = true`, `lambda_Q = 1`, `lambda_Uz = 0`, `collapse_du = 3`. Staggered C1 tests use gtol 1e-7.

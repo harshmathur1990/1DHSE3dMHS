@@ -9,9 +9,10 @@
 #   Φ_F = (λ_F/N_F) Σ_faces w_f |R_f|²/S_f²   on x-, y-faces of layers 2…NZ−1 and interior z-faces
 #   Φ_B = (1/N_B) Σ ((HB)_c − Bobs_c)²/σ_c²   at centres
 #   Φ_S = (λ_S/N) Σ w Σ_a Σ_c (h_a² ∂²_a δB_c)²/σ_c²,  δB = HB − Bobs
-#   Φ_U = (λ_U/N) Σ w Σ_{a=x,y} (h_a² ∂²_a u)²
+#   Φ_U = (1/N) Σ w [λ_U Σ_{a=x,y} (h_a² ∂²_a u)² + λ_Uz (h_z² ∂²_z u)²]   (λ_Uz: D9b §2.3)
 #   Φ_N = (λ_N/N) Σ_faces w_f (¼ δ²_n B_n)²/σ²   (second difference along the face normal; M6c option)
-#   terms are reported as (F, N, B, S, U)
+#   Φ_Q = (λ_Q/N_F) Σ_edges w_e Σ_{a ∈ avg(e)} (B_ref ¼δ²_a J_e / S_e)²   (D9b §2.2)
+#   terms are reported as (F, N + Q, B, S, U)
 
 mutable struct SMHSProblem{E}
     par::ParCtx
@@ -30,10 +31,14 @@ mutable struct SMHSProblem{E}
     lamF::Float64
     lamS::Float64
     lamU::Float64
+    lamUz::Float64                    # vertical grid-scale term in Φ_U (D9b §2.3)
     lamN::Float64                     # face-normal Nyquist regularizer (M6c option; default 0)
     dfaces::Bool                      # data term on faces against Bobs interpolated to faces (M6c option)
     Bobsf::NTuple{3,Field}
     invsf2::NTuple{3,Field}
+    lamQ::Float64                     # force-weighted current-Nyquist term Φ_Q (D9b §2.2)
+    cQe::Vector{Float64}              # (B_ref/S)² at x/y-edge levels k+½, index k+1 (k = 0:NZ)
+    cQc::Vector{Float64}              # (B_ref/S)² at z-edge levels k (1:NZ)
     Aref::Float64
     N::Float64
     NF::Float64
@@ -61,7 +66,8 @@ struct SMHSWork
     fX::NTuple{4,Field}               # x-faces: ∂Φ/∂(Jy_f, Jz_f, Bz_f, By_f)
     fY::NTuple{4,Field}               # y-faces: ∂Φ/∂(Jz_f, Jx_f, Bx_f, Bz_f)
     fZ::NTuple{4,Field}               # z-faces: ∂Φ/∂(Jx_f, Jy_f, By_f, Bx_f)
-    qS::NTuple{9,Field}; qU::NTuple{2,Field}; qN::NTuple{3,Field}; gBd::NTuple{3,Field}
+    qS::NTuple{9,Field}; qU::NTuple{3,Field}; qN::NTuple{3,Field}; gBd::NTuple{3,Field}
+    qQ::NTuple{6,Field}               # Φ_Q seeds: x-edge (y, z), y-edge (x, z), z-edge (x, y)
     gHB::NTuple{3,Field}; gB::NTuple{3,Field}; gBJ::NTuple{3,Field}; gJ::NTuple{3,Field}; gA::NTuple{3,Field}
     gP::Field
 end
@@ -70,18 +76,22 @@ function SMHSWork(par::ParCtx)
     c() = newfield(par); z() = newfield0(par)
     edges() = (z(), z(), c()); faces() = (c(), c(), z())
     return SMHSWork(c(), c(), c(), c(), edges(), faces(), edges(), (c(), c(), c()), (c(), c(), c()), faces(),
-                    ntuple(_ -> c(), 4), ntuple(_ -> c(), 4), ntuple(_ -> z(), 4), ntuple(_ -> c(), 9), ntuple(_ -> c(), 2), faces(), faces(),
+                    ntuple(_ -> c(), 4), ntuple(_ -> c(), 4), ntuple(_ -> z(), 4), ntuple(_ -> c(), 9), ntuple(_ -> c(), 3), faces(), faces(), (z(), z(), z(), z(), c(), c()),
                     (c(), c(), c()), faces(), faces(), edges(), edges(), c())
 end
 
 """
-    SMHSProblem(par, grid, T, Bobs, sigma, eos; anchor_plane, P_ref, g, lambda_F, lambda_S, lambda_U)
+    SMHSProblem(par, grid, T, Bobs, sigma, eos; anchor_plane, P_ref, g, lambda_F, lambda_S, lambda_U,
+                lambda_N, data_on_faces, lambda_Q, lambda_Uz)
 
-Bobs, sigma at centres. S is set by `set_scales!` (from an initial u).
+Bobs, sigma at centres. S (and the Φ_Q layer weights) are set by `set_scales!` (from an initial u).
+Defaults follow D9b: data on faces, λ_Q = 1; λ_Uz = 0 (M6d: 1e-4 biases C1a beyond the gate, and with face data
+the top additive-pressure mode it targets does not occur).
 """
 function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, sigma::NTuple{3,Field}, eos;
                      anchor_plane::Symbol = :bottom, P_ref::Float64, g::Float64 = 274.0,
-                     lambda_F::Float64 = 1.0, lambda_S::Float64 = 1e-3, lambda_U::Float64 = 0.0, lambda_N::Float64 = 0.0, data_on_faces::Bool = false)
+                     lambda_F::Float64 = 1.0, lambda_S::Float64 = 1e-3, lambda_U::Float64 = 0.0, lambda_N::Float64 = 0.0, data_on_faces::Bool = true, lambda_Q::Float64 = 1.0,
+                     lambda_Uz::Float64 = 0.0)
     ops = Ops(grid, par); s = StagOps(grid, par); b = par.block
     X = newfield(par); fill_owned!((i, j, k) -> log(T[i, j, k]), X, par)
     sig = ntuple(c -> (q = newfield(par); fill_owned!((i, j, k) -> max(sigma[c][i, j, k], 1e-12), q, par); q), 3)
@@ -108,7 +118,7 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
     owned_map!((i, j, k) -> 1 / (sig[3][i, j, kl(k)] * sig[3][i, j, ku(k)]), invsf2[3], par)
     NB = data_on_faces ? Float64(NX) * NY * (3NZ + 1) : 3N
     return SMHSProblem(par, grid, s, ops, eos, X, Bobs, sig, invS2f, alpha, ka, log(P_ref), g,
-                       lambda_F, lambda_S, lambda_U, lambda_N, data_on_faces, Bobsf, invsf2, Aref, N, Float64(NX) * NY * (3NZ - 5), NB, wmean)
+                       lambda_F, lambda_S, lambda_U, lambda_Uz, lambda_N, data_on_faces, Bobsf, invsf2, lambda_Q, zeros(NZ + 1), zeros(NZ), Aref, N, Float64(NX) * NY * (3NZ - 5), NB, wmean)
 end
 
 """Horizontal (x-, y-face) force equations exist on layers 2…NZ−1 only: the top and bottom layers
@@ -133,6 +143,16 @@ function set_scales!(pb::SMHSProblem, u0::Field)
     fill_owned!((i, j, k) -> 1 / (S[i, j, k] * S[i, j+1, k]), pb.invS2f[2], par)
     owned_map!((i, j, k) -> (1 <= k <= NZ - 1) ? 1 / (S[i, j, k] * S[i, j, k+1]) : 1.0, pb.invS2f[3], par)
     exchange_halos!(par, collect(pb.invS2f))
+    # Φ_Q layer weights (B_ref/S)², B_ref = layer median |Bobs|, S = layer median S
+    Bm = layer_quantiles(par, (i, j, k) -> sqrt(pb.Bobs[1][i, j, k]^2 + pb.Bobs[2][i, j, k]^2 + pb.Bobs[3][i, j, k]^2), [0.5])[:, 1]
+    Sm = layer_quantiles(par, S, [0.5])[:, 1]
+    for k in 0:NZ
+        ka = clamp(k, 1, NZ); kb = clamp(k + 1, 1, NZ)
+        pb.cQe[k+1] = Bm[ka] * Bm[kb] / (Sm[ka] * Sm[kb])
+    end
+    for k in 1:NZ
+        pb.cQc[k] = (Bm[k] / Sm[k])^2
+    end
     return pb
 end
 
@@ -174,6 +194,48 @@ end
 # ---------------------------------------------------------------------------------------
 # Forward
 # ---------------------------------------------------------------------------------------
+"""
+    phiQ_seeds!(qQ, J, pb, pQ = nothing)
+
+Φ_Q seeds ∂Φ_Q/∂(¼δ²_a J_e) for the edge currents J (D9b §2.2): horizontal second differences on
+every edge level (boundary edges included: under option (a) no force equation sees those currents),
+the z second difference of x/y-edge currents on interior edges only. Φ_Q is linear in J, so the same
+seeds applied to δJ give the Gauss–Newton product. With `pQ`, accumulates w_e q² per row (j, k+1).
+"""
+function phiQ_seeds!(qQ::NTuple{6,Field}, J::NTuple{3,Field}, pb::SMHSProblem, pQ = nothing)
+    par = pb.par; s = pb.s; NZ = par.block.nz; lQ = pb.lamQ; NF = pb.NF
+    if lQ <= 0
+        for c in 1:6
+            fill!(parent(qQ[c]), 0.0)
+        end
+        return qQ
+    end
+    acc = pQ !== nothing
+    Jx, Jy, Jz = J
+    forrows(0:NZ, par) do i, j, k
+        c = pb.cQe[k+1]
+        wx = s.dxc[i] * s.dyf[j] * s.dzf[k] / pb.wmean * c
+        wy = s.dxf[i] * s.dyc[j] * s.dzf[k] / pb.wmean * c
+        e = 0.0
+        q = 0.25 * (Jx[i, j+1, k] - 2Jx[i, j, k] + Jx[i, j-1, k]); e += wx * q^2; qQ[1][i, j, k] = 2lQ * wx * q / NF
+        q = 0.25 * (Jy[i+1, j, k] - 2Jy[i, j, k] + Jy[i-1, j, k]); e += wy * q^2; qQ[3][i, j, k] = 2lQ * wy * q / NF
+        if 2 <= k <= NZ - 2
+            q = 0.25 * (Jx[i, j, k-1] - 2Jx[i, j, k] + Jx[i, j, k+1]); e += wx * q^2; qQ[2][i, j, k] = 2lQ * wx * q / NF
+            q = 0.25 * (Jy[i, j, k-1] - 2Jy[i, j, k] + Jy[i, j, k+1]); e += wy * q^2; qQ[4][i, j, k] = 2lQ * wy * q / NF
+        else
+            qQ[2][i, j, k] = 0.0; qQ[4][i, j, k] = 0.0
+        end
+        acc && (pQ[j, k+1] += e)
+    end
+    forrows(1:NZ, par) do i, j, k                    # z-edges: all layers (no z difference)
+        wz = s.dxf[i] * s.dyf[j] * s.hz[k] / pb.wmean * pb.cQc[k]
+        q = 0.25 * (Jz[i+1, j, k] - 2Jz[i, j, k] + Jz[i-1, j, k]); qQ[5][i, j, k] = 2lQ * wz * q / NF; e = wz * q^2
+        q = 0.25 * (Jz[i, j+1, k] - 2Jz[i, j, k] + Jz[i, j-1, k]); qQ[6][i, j, k] = 2lQ * wz * q / NF
+        acc && (pQ[j, k+1] += e + wz * q^2)
+    end
+    return qQ
+end
+
 function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     v, Atx, Aty, Atz, xb = x
@@ -207,6 +269,9 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         Jc = J[c]; owned_map!((i, j, k) -> Jc[i, j, k] / MU0, Jc, par)
     end
     exchange_halos!(par, collect(J))
+    # ---- edges: force-weighted current-Nyquist term Φ_Q (D9b §2.2) ----
+    pQ = zeros(b.ny, NZ + 1)
+    phiQ_seeds!(w.qQ, J, pb, pQ)
     H!(w.HB, B, s, par)
     for c in 1:3
         HBc = w.HB[c]; Bo = pb.Bobs[c]
@@ -315,10 +380,12 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
             f = 2lS * wc / (N * s2)
             w.qS[c][i, j, k] = f * hx^4 * ddx; w.qS[3+c][i, j, k] = f * hy^4 * ddy; w.qS[6+c][i, j, k] = f * hz^4 * ddz
         end
-        uxx = d2x(u, o.X, i, j, k); uyy = d2y(u, o.Y, i, j, k)
-        pC[1, j, k] += eB; pC[2, j, k] += eS; pC[3, j, k] += wc * ((hx^2 * uxx)^2 + (hy^2 * uyy)^2)
+        uxx = d2x(u, o.X, i, j, k); uyy = d2y(u, o.Y, i, j, k); uzz = d2z(u, o.Z, i, j, k)
+        pC[1, j, k] += eB; pC[2, j, k] += eS
+        pC[3, j, k] += wc * (lU * ((hx^2 * uxx)^2 + (hy^2 * uyy)^2) + pb.lamUz * (hz^2 * uzz)^2)
         w.qU[1][i, j, k] = 2lU * wc * hx^4 * uxx / N
         w.qU[2][i, j, k] = 2lU * wc * hy^4 * uyy / N
+        w.qU[3][i, j, k] = 2pb.lamUz * wc * hz^4 * uzz / N
     end
     loc = [0.0, 0.0, 0.0, 0.0, 0.0, Float64(sum(noob))]
     for k in 1:NZ, j in 1:b.ny
@@ -345,8 +412,13 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         eD += pD[j, k]
     end
     push!(loc, eD)
+    eQ = 0.0
+    for k in 1:NZ+1, j in 1:b.ny
+        eQ += pQ[j, k]
+    end
+    push!(loc, eQ)
     t = MPI.Allreduce(loc, +, par.comm)
-    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N, (t[4] + t[9]) / NB, lS * t[5] / N, lU * t[7] / N)
+    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N + pb.lamQ * t[10] / NF, (t[4] + t[9]) / NB, lS * t[5] / N, t[7] / N)
     oob = t[6] > 0
     return oob ? Inf : sum(terms), terms, oob
 end
@@ -366,7 +438,7 @@ function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
         k <= NZ - 1 && (grav += w.aR[3][i, j, k] * sqrt(w.rho[i, j, k] * w.rho[i, j, k+1]))
         k >= 2 && (grav += w.aR[3][i, j, k-1] * sqrt(w.rho[i, j, k-1] * w.rho[i, j, k]))
         gx[1][i, j, k] = w.P[i, j, k] * w.gP[i, j, k] + 0.5 * g * w.rhou[i, j, k] * grav +
-                         d2xT(w.qU[1], o.X, i, j, k) + d2yT(w.qU[2], o.Y, i, j, k)
+                         d2xT(w.qU[1], o.X, i, j, k) + d2yT(w.qU[2], o.Y, i, j, k) + d2zT(w.qU[3], o.Z, i, j, k)
     end
     # ---- edges: ∂Φ/∂J from the face averages ----
     gJ = w.gJ
@@ -386,6 +458,22 @@ function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
     end
     owned_map!(gJ[3], par) do i, j, k             # z-edges (i+½, j+½, k)
         0.5 * (fX[2][i, j, k] + fX[2][i, j+1, k]) + 0.5 * (fY[1][i, j, k] + fY[1][i+1, j, k])
+    end
+    if pb.lamQ > 0
+        qQ = w.qQ
+        exchange_halos!(par, collect(qQ))
+        owned_map!(gJ[1], par) do i, j, k
+            gJ[1][i, j, k] + 0.25 * (qQ[1][i, j-1, k] - 2qQ[1][i, j, k] + qQ[1][i, j+1, k]) +
+                0.25 * ((k >= 1 ? qQ[2][i, j, k-1] : 0.0) - 2qQ[2][i, j, k] + (k + 1 <= NZ ? qQ[2][i, j, k+1] : 0.0))
+        end
+        owned_map!(gJ[2], par) do i, j, k
+            gJ[2][i, j, k] + 0.25 * (qQ[3][i-1, j, k] - 2qQ[3][i, j, k] + qQ[3][i+1, j, k]) +
+                0.25 * ((k >= 1 ? qQ[4][i, j, k-1] : 0.0) - 2qQ[4][i, j, k] + (k + 1 <= NZ ? qQ[4][i, j, k+1] : 0.0))
+        end
+        owned_map!(gJ[3], par) do i, j, k
+            gJ[3][i, j, k] + 0.25 * (qQ[5][i-1, j, k] - 2qQ[5][i, j, k] + qQ[5][i+1, j, k]) +
+                0.25 * (qQ[6][i, j-1, k] - 2qQ[6][i, j, k] + qQ[6][i, j+1, k])
+        end
     end
     exchange_halos!(par, collect(gJ))
     curlB_T!(w.gBJ, gJ, s, par)
@@ -465,6 +553,7 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
     Az(i, j, k) = @inbounds lF * wzf(pb, i, j, k) * pb.invS2f[3][i, j, k] / NF
     Ux(i, j, k) = @inbounds pb.lamU * wcc(pb, i, j, k) * o.X.h[i]^4 / pb.N
     Uy(i, j, k) = @inbounds pb.lamU * wcc(pb, i, j, k) * o.Y.h[j]^4 / pb.N
+    Uz(i, j, k) = @inbounds pb.lamUz * wcc(pb, i, j, k) * s.hz[k]^4 / pb.N
     forrows(1:NZ, par) do i, j, k
         P = w.P[i, j, k]; hr = 0.5 * g * w.rhou[i, j, k]
         d = Ax(i, j, k) * (P / s.dxf[i])^2 + Ax(i - 1, j, k) * (P / s.dxf[i-1])^2 +
@@ -475,7 +564,7 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
         if k >= 2
             rb = sqrt(w.rho[i, j, k-1] * w.rho[i, j, k]); d += Az(i, j, k - 1) * (-P / s.dzf[k-1] + hr * rb)^2
         end
-        D[1][i, j, k] = 2d + 2 * (d2xT2(Ux, o.X, i, j, k) + d2yT2(Uy, o.Y, i, j, k))
+        D[1][i, j, k] = 2d + 2 * (d2xT2(Ux, o.X, i, j, k) + d2yT2(Uy, o.Y, i, j, k) + d2zT2(Uz, o.Z, i, j, k))
     end
     # Ã and b̄: Hessian–vector products by central differences of ∇Φ, averaged per layer
     w2 = SMHSWork(par)
@@ -563,15 +652,15 @@ end
 """
     init_A!(pb, w, x; max_iter, rtol) -> (iterations, rnorm/rnorm0)
 
-A₀: fit (Ã, b̄) to Bobs with v frozen and λ_F = λ_U = 0. Φ_B + Φ_S is then quadratic in
+A₀: fit (Ã, b̄) to Bobs with v frozen and λ_F = λ_U = λ_Uz = λ_Q = 0 (data and λ_S only). Φ_B + Φ_S is then quadratic in
 (Ã, b̄), so this is conjugate gradients on the normal equations Q y = −∇Φ(0), with the
 Hessian–vector product Q p = ∇Φ(p) − ∇Φ(0) (∇Φ is affine; one gradient per iteration).
 Converges to the minimum-norm solution in the gauge null space of curl when started at 0.
 """
 function init_A!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_iter::Int = 2000, rtol::Float64 = 1e-10)
     par = pb.par
-    lF, lU = pb.lamF, pb.lamU
-    pb.lamF = 0.0; pb.lamU = 0.0
+    lF, lU, lUz, lQ = pb.lamF, pb.lamU, pb.lamUz, pb.lamQ
+    pb.lamF = 0.0; pb.lamU = 0.0; pb.lamUz = 0.0; pb.lamQ = 0.0     # Φ_Q's (B_ref/S)² weights would wreck κ(Q)
     try
         zfields!(y) = (fill!(parent(y[1]), 0.0); y)
         y = similar_state(x); copyto!(parent(y[1]), parent(x[1]))      # v kept; Ã = b̄ = 0
@@ -599,9 +688,53 @@ function init_A!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_iter::Int = 2000
         end
         return it, sqrt(rr / max(rr0, 1e-300))
     finally
-        pb.lamF = lF; pb.lamU = lU
+        pb.lamF = lF; pb.lamU = lU; pb.lamUz = lUz; pb.lamQ = lQ
     end
 end
+
+# ---------------------------------------------------------------------------------------
+# Solver policy (M6d)
+# ---------------------------------------------------------------------------------------
+"""
+    mhs_solve!(pb, w, x; opts, bfirst_ratio = 10.0, b_first_iter = 2000) -> (result, bfirst::Bool)
+
+Plain joint L-BFGS, or B-first continuation (Ã relaxed with v frozen, then joint) when the starting
+Φ_Q/Φ_F exceeds `bfirst_ratio` (term slot 2, Φ_N + Φ_Q). A start dominated by M-invisible currents
+otherwise drags u toward vacuum while Ã is corrected (reports/M6d_step2.md §4). The ratio is
+independent of the perturbation amplitude in the linear regime: C1-type starts give ≤ 0.6, grid-scale
+current errors ~1e5.
+"""
+function mhs_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState; opts::LBFGSOptions = LBFGSOptions(),
+                    bfirst_ratio::Float64 = 10.0, b_first_iter::Int = 2000)
+    t = objective!(pb, w, x)[2]
+    if t[2] > bfirst_ratio * t[1]
+        return lbfgs_continuation!(pb, w, x; b_first_iter = b_first_iter, opts = opts)[2], true
+    end
+    return lbfgs!(pb, w, x; opts = opts), false
+end
+
+# ---------------------------------------------------------------------------------------
+# Pressure identifiability (D9b §2.3)
+# ---------------------------------------------------------------------------------------
+"""
+    dP_unobs!(out, pb, w) -> out
+
+δP_unobs = |B| σ_B/μ₀ at centres (output `/diagnostics/dP_unobs`, Pa): pressure perturbations below
+this are balanced by a δB the data cannot see. B is HB at the state of the last `objective!`;
+σ_B = sqrt(σx² + σy² + σz²) (E10, as in screening).
+"""
+function dP_unobs!(out::Field, pb::SMHSProblem, w::SMHSWork)
+    HB = w.HB; sg = pb.sig
+    fill_owned!(out, pb.par) do i, j, k
+        Bm = sqrt(HB[1][i, j, k]^2 + HB[2][i, j, k]^2 + HB[3][i, j, k]^2)
+        Bm * sqrt(sg[1][i, j, k]^2 + sg[2][i, j, k]^2 + sg[3][i, j, k]^2) / MU0
+    end
+    return out
+end
+
+"""Per-layer fraction of nodes whose pressure is not identifiable (δP_unobs > P), at the last `objective!`."""
+unidentifiable_fraction(pb::SMHSProblem, w::SMHSWork, dPu::Field) =
+    layer_fraction(pb.par, (i, j, k) -> dPu[i, j, k] > w.P[i, j, k])
 
 # ---------------------------------------------------------------------------------------
 # Gate C helpers (staggered)
@@ -643,14 +776,15 @@ the initial state (v from column_hse at default substeps, Ã from `init_A!`), th
 staggered discrete equilibrium u_s (`staggered_hse!`), the column_hse reference u (n_sub = 64)
 and the grid.
 """
-function sc1_problem(par::ParCtx, NX, NY, NZ; Bobs = (0.0, 0.0, 0.0), lambda_F = 1.0, lambda_N = 0.0, data_on_faces = false, P_ref = 1.0e4)
+function sc1_problem(par::ParCtx, NX, NY, NZ; Bobs = (0.0, 0.0, 0.0), lambda_F = 1.0, lambda_N = 0.0, data_on_faces = true, lambda_Q = 1.0,
+                     lambda_Uz = 0.0, P_ref = 1.0e4)
     grid, x, y, z = synthetic_grid(par, NX, NY, NZ)
     eos = IdealGasMu(1.3)
     T = newfield(par); fill_owned!((i, j, k) -> 6000 + 3000 * tanh((z[k] - 1.2e6) / 2.0e5), T, par)
     Bo = ntuple(c -> newfield(par; fill = Bobs[c]), 3)
     Bm = sqrt(sum(abs2, Bobs))
     sig = ntuple(_ -> newfield(par; fill = sigma_synth(Bm, 0.05, 5e-4)), 3)
-    pb = SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = P_ref, lambda_F = lambda_F, lambda_N = lambda_N, data_on_faces = data_on_faces)
+    pb = SMHSProblem(par, grid, T, Bo, sig, eos; P_ref = P_ref, lambda_F = lambda_F, lambda_N = lambda_N, data_on_faces = data_on_faces, lambda_Q = lambda_Q, lambda_Uz = lambda_Uz)
     us = newfield(par); staggered_hse!(us, pb; P_bottom = P_ref)
     ex = column_hse(par, grid, T, eos, HSEOpts(anchor = :bottom, P_ref = P_ref, n_sub = 64, adapt = false))
     ini = column_hse(par, grid, T, eos, HSEOpts(anchor = :bottom, P_ref = P_ref))
