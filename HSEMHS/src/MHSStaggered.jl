@@ -431,7 +431,7 @@ end
 # ---------------------------------------------------------------------------------------
 # Adjoint
 # ---------------------------------------------------------------------------------------
-function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
+function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; gauge::Bool = true)
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     exchange_halos!(par, [w.aR..., w.fX..., w.fY..., w.fZ..., w.qS..., w.qU..., w.qN...])
     fX, fY, fZ = w.fX, w.fY, w.fZ
@@ -532,6 +532,7 @@ function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
     end
     setscalar!(par, gx[5], gbar)
     # ---- gauge chain for v ----
+    gauge || return gx                               # physical-u gradient (diagonal construction)
     G = sdot_ones(par, gx[1])
     gv = gx[1]
     forrows(pb.ka:pb.ka, par) do i, j, k
@@ -550,7 +551,8 @@ end
 # ---------------------------------------------------------------------------------------
 # Preconditioner: exact Gauss–Newton diagonal for u; per-layer Hutchinson means for Ã; exact for b̄
 # ---------------------------------------------------------------------------------------
-function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; probes::Int = 4)
+"""Gauss–Newton diagonal in physical u (force and λ_U terms), with the optional per-layer floor."""
+function gn_diag_u!(D1::Field, pb::SMHSProblem, w::SMHSWork)
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     lF, NF, g = pb.lamF, pb.NF, pb.g
     Ax(i, j, k) = @inbounds lF * horeq(k, NZ) * wxf(pb, i, j, k) * pb.invS2f[1][i, j, k] / NF
@@ -569,13 +571,50 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
         if k >= 2
             rb = sqrt(w.rho[i, j, k-1] * w.rho[i, j, k]); d += Az(i, j, k - 1) * (-P / s.dzf[k-1] + hr * rb)^2
         end
-        D[1][i, j, k] = 2d + 2 * (d2xT2(Ux, o.X, i, j, k) + d2yT2(Uy, o.Y, i, j, k) + d2zT2(Uz, o.Z, i, j, k))
+        D1[i, j, k] = 2d + 2 * (d2xT2(Ux, o.X, i, j, k) + d2yT2(Uy, o.Y, i, j, k) + d2zT2(Uz, o.Z, i, j, k))
     end
     if pb.pc_ufloor > 0                              # per-layer floor: no node gets a huge D⁻¹∇Φ step in u
-        med = layer_quantiles(par, D[1], [0.5])[:, 1]
+        med = layer_quantiles(par, D1, [0.5])[:, 1]
         MPI.Bcast!(med, 0, par.comm)
-        fill_owned!((i, j, k) -> max(D[1][i, j, k], pb.pc_ufloor * med[k]), D[1], par)
+        fill_owned!((i, j, k) -> max(D1[i, j, k], pb.pc_ufloor * med[k]), D1, par)
     end
+    return D1
+end
+
+"""
+    gn_diag_v!(D1, pb, w, x)
+
+Gauss–Newton diagonal in the optimizer coordinate v (u = v − ᾱ·v + ln P_ref): diag(Gᵀ H_u G) with
+G = I − 1αᵀ. Off the anchor plane it equals the physical diagonal; on it,
+D_i = (H_u)_ii − 2α_i (H_u 1)_i + α_i² (1ᵀ H_u 1), with H_u 1 from one gauge-free GN product
+(Codex review M5, finding 3). The per-layer floor is applied afterwards. `w` must hold the state at x.
+"""
+function gn_diag_v!(D1::Field, pb::SMHSProblem, w::SMHSWork, x::MHSState)
+    par = pb.par; b = par.block; ka = pb.ka
+    uf = pb.pc_ufloor; pb.pc_ufloor = 0.0
+    gn_diag_u!(D1, pb, w); pb.pc_ufloor = uf
+    z = similar_state(x); Hz = similar_state(x); wl = SMHSWork(par)
+    for c in 2:5
+        fill!(parent(z[c]), 0.0)
+    end
+    fill_owned!((i, j, k) -> 1.0, z[1], par); exchange_halos!(par, [z[1]])
+    gn_hvp!(Hz, pb, w, wl, z; gauge = false)
+    S1 = sdot_ones(par, Hz[1])
+    forrows(ka:ka, par) do i, j, k
+        a = pb.alpha[i, j]
+        D1[i, j, k] = max(D1[i, j, k] - 2a * Hz[1][i, j, k] + a^2 * S1, 1e-300)
+    end
+    if uf > 0
+        med = layer_quantiles(par, D1, [0.5])[:, 1]
+        MPI.Bcast!(med, 0, par.comm)
+        fill_owned!((i, j, k) -> max(D1[i, j, k], uf * med[k]), D1, par)
+    end
+    return D1
+end
+
+function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; probes::Int = 4)
+    par = pb.par; b = par.block; NZ = b.nz
+    gn_diag_v!(D[1], pb, w, x)
     w2 = SMHSWork(par)
     z = similar_state(x); xt = similar_state(x); g1 = similar_state(x); g2 = similar_state(x)
     if pb.pc_atilde == :colored

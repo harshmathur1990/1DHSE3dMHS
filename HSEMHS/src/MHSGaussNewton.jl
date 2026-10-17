@@ -18,12 +18,12 @@ hybrid_work(w::SMHSWork, wl::SMHSWork) =
 
 Hv = H_GN v at the state of the last `objective!(pb, w, x)`. `wl` is scratch work.
 """
-function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MHSState)
+function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MHSState; gauge::Bool = true)
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     lF, lS, lU, lN = pb.lamF, pb.lamS, pb.lamU, pb.lamN; N, NF, NB, g = pb.N, pb.NF, pb.NB, pb.g
     # ---- linearized state ----
     du = wl.u
-    vm = anchor_mean(pb, v[1])
+    vm = gauge ? anchor_mean(pb, v[1]) : 0.0          # gauge = false: v is a physical δu
     fill_owned!((i, j, k) -> v[1][i, j, k] - vm, du, par)
     Ar = pb.Aref
     for c in 1:3
@@ -123,7 +123,7 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
             owned_map!((i, j, k) -> 2dBc[i, j, k] * iv[i, j, k] / NB, wl.gBd[c], par)
         end
     end
-    return gradient!(Hv, pb, hybrid_work(w, wl), v)
+    return gradient!(Hv, pb, hybrid_work(w, wl), v; gauge = gauge)
 end
 
 Base.@kwdef struct GNOptions

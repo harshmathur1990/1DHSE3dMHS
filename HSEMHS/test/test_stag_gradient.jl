@@ -249,3 +249,38 @@ end
     med = H.layer_quantiles(par, D2[1], [0.5])[:, 1]
     @test all(D2[1][i, j, k] >= 1e-2 * med[k] * (1 - 1e-12) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)
 end
+
+@testset "M5: constrained pressure projection and block termination (Codex review counterexamples)" begin
+    par = H.init_parallel(4, 4, 9); b = par.block
+    pb, x, us, uc, grid = H.sc1_problem(par, 4, 4, 9; lambda_Q = 1e-3)
+    w = H.SMHSWork(par); H.objective!(pb, w, x)
+    t = H.newfield(par); δ = H.newfield(par); lo = H.newfield(par)
+    H.owned_map!((i, j, k) -> k == pb.ka ? (isodd(i) ? -2.0 : 2.0) : 0.0, t, par)
+    H.owned_map!((i, j, k) -> w.u[i, j, k] - ((k == pb.ka && isodd(i)) ? 0.0 : 3.0), lo, par)
+    Δ = 0.5
+    # alternation trust-region step: bounds and anchor hold exactly
+    err = H.anchor_box_project!(δ, t, (i, j, k) -> min(max(-Δ, lo[i, j, k] - w.u[i, j, k]), 0.0), (i, j, k) -> Δ, (i, j, k) -> 1.0, pb)
+    margin = minimum(w.u[i, j, k] + δ[i, j, k] - lo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)
+    @test err <= 1e-12 && abs(H.anchor_mean(pb, δ)) <= 1e-12
+    @test margin >= -1e-12 && maximum(abs.(δ[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)) <= Δ + 1e-12
+    # L-BFGS direction: nodes at the bound do not move down, anchor kept, so u + α δ ≥ lo for α ≤ cap
+    lob(i, j, k) = w.u[i, j, k] - lo[i, j, k] <= 5e-4 ? 0.0 : -Inf
+    H.anchor_box_project!(δ, t, lob, (i, j, k) -> Inf, (i, j, k) -> 1.0, pb)
+    acap = min(1e6, Δ / max(H.maxabs_all(par, δ), 1e-300), H.step_to_lower(δ, w.u, lo, par; tol = 5e-4))   # here δ ≡ 0 is the only feasible direction
+    margin = minimum(w.u[i, j, k] + acap * δ[i, j, k] - lo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)
+    @test margin >= -1e-12 && abs(H.anchor_mean(pb, δ)) <= 1e-12
+    # v-coordinate u diagonal equals the single-node GN product, also on the anchor plane
+    H.owned_map!((i, j, k) -> x[1][i, j, k] + 0.8 * sin(2pi * (i - 1) / b.nx), x[1], par)
+    H.objective!(pb, w, x)
+    D = H.newfield(par); H.gn_diag_v!(D, pb, w, x)
+    z = H.similar_state(x); Hz = H.similar_state(x); wl = H.SMHSWork(par)
+    for k in (pb.ka - 1, pb.ka)
+        for q in 1:5; fill!(parent(z[q]), 0.0); end
+        z[1][2, 2, k] = 1.0
+        H.gn_hvp!(Hz, pb, w, wl, z)
+        @test abs(D[2, 2, k] - Hz[1][2, 2, k]) <= 1e-12 * abs(Hz[1][2, 2, k])
+    end
+    # zero block work is not convergence
+    st, why, n, hist = H.alternating_solve!(pb, w, x; max_outer = 1, a_iter = 0, u_steps = 0)
+    @test st != H.converged
+end

@@ -50,6 +50,7 @@ include("Synthetic.jl")
 include("Staggered.jl")
 include("MHSStaggered.jl")
 include("MHSGaussNewton.jl")
+include("MHSAlternate.jl")
 include("Driver.jl")
 
 function __init__()

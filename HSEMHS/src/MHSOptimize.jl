@@ -107,6 +107,51 @@ Base.@kwdef struct LBFGSOptions
     frozen::Vector{Int} = Int[]      # state fields held fixed (1 = v, 2:4 = b̃): their gradient is zeroed
 end
 
+"""
+    anchor_box_project!(δ, t, lo, hi, β, pb) -> anchor residual
+
+δ = the point with lo ≤ δ ≤ hi (per node) and Σ_anchor α δ = 0: off the anchor plane δ = clamp(t, lo, hi);
+on it δ = clamp(t − c β, lo, hi) with the scalar c found by bisection (Σ α clamp(t − cβ) is
+monotone in c for β > 0). Requires lo ≤ 0 ≤ hi. With β = 1 this is the Euclidean projection for
+equal anchor weights; with β = α/D it is the minimizer of gᵀδ + ½δᵀDδ for t = −g/D. `lo`, `hi`, `β`
+are callables (i, j, k) -> value. Returns |Σ α δ| (Codex review M5, finding 1).
+"""
+function anchor_box_project!(δ::Field, t::Field, lo, hi, β, pb)
+    par = pb.par; b = par.block; ka = pb.ka; α = pb.alpha
+    for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx
+        k == ka || (δ[i, j, k] = clamp(t[i, j, k], lo(i, j, k), hi(i, j, k)))
+    end
+    F(c) = MPI.Allreduce(sum(α[i, j] * clamp(t[i, j, ka] - c * β(i, j, ka), lo(i, j, ka), hi(i, j, ka)) for j in 1:b.ny, i in 1:b.nx), +, par.comm)
+    # no shift needed when the clamped point already satisfies the anchor constraint (keeps inactive
+    # projections exact instead of a round-off-sized bisection shift)
+    sc = MPI.Allreduce(sum(α[i, j] * abs(t[i, j, ka]) for j in 1:b.ny, i in 1:b.nx), +, par.comm)
+    if abs(F(0.0)) <= 1e-14 * max(sc, 1e-300)
+        for j in 1:b.ny, i in 1:b.nx
+            δ[i, j, ka] = clamp(t[i, j, ka], lo(i, j, ka), hi(i, j, ka))
+        end
+        return abs(F(0.0))
+    end
+    a = -1.0; z = 1.0
+    for _ in 1:200
+        F(a) >= 0 && break
+        a *= 2
+    end
+    for _ in 1:200
+        F(z) <= 0 && break
+        z *= 2
+    end
+    for _ in 1:200
+        m = 0.5 * (a + z)
+        (m == a || m == z) && break
+        F(m) >= 0 ? (a = m) : (z = m)
+    end
+    c = abs(F(a)) <= abs(F(z)) ? a : z
+    for j in 1:b.ny, i in 1:b.nx
+        δ[i, j, ka] = clamp(t[i, j, ka] - c * β(i, j, ka), lo(i, j, ka), hi(i, j, ka))
+    end
+    return abs(F(c))
+end
+
 """Constant offset between the pressure variable x[1] and ln P: u = x[1] − gauge_shift(pb, x[1]) + const."""
 gauge_shift(pb, f::Field) = anchor_mean(pb, f)
 
@@ -233,7 +278,12 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
             owned_map!((i, j, k) -> d1[i, j, k] - c, d1, par)
             gs = gauge_shift(pb, x[1])
             owned_map!((i, j, k) -> x[1][i, j, k] - gs, ucur, par)
-            project_lower!(d1, ucur, ulo, par; tol = 1e-3 * opts.max_du)
+            # nodes at the bound may not move down; the anchor constraint is kept exactly, so the
+            # projected d[1] is the actual Δu per unit α
+            tolb = 1e-3 * opts.max_du
+            lob(i, j, k) = ucur[i, j, k] - ulo[i, j, k] <= tolb ? 0.0 : -Inf
+            proj!() = (copystate!(tmp, d, par); anchor_box_project!(d1, tmp[1], lob, (i, j, k) -> Inf, (i, j, k) -> 1.0, pb))
+            proj!()
             dg = dotN(par, d, g)
             if !(dg < -1e-12 * gn * sqrt(dotN(par, d, d)))
                 # fall back to projected (preconditioned) steepest descent and drop the memory
@@ -241,14 +291,13 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
                 Dg === nothing ? lincomb!(d, -1.0 / gn, g, 0.0, g, par) : (divdiag!(d, g, Dg, par); scale!(d, -1.0, par))
                 c = gauge_shift(pb, d1)
                 owned_map!((i, j, k) -> d1[i, j, k] - c, d1, par)
-                project_lower!(d1, ucur, ulo, par; tol = 1e-3 * opts.max_du)
+                proj!()
                 dg = dotN(par, d, g)
                 if !(dg < -1e-12 * gn * sqrt(dotN(par, d, d)))
                     status = stalled; reason = "pressure-collapse safeguard: no descent above the u bound"; break
                 end
             end
-            c = gauge_shift(pb, d1)
-            owned_map!((i, j, k) -> d1[i, j, k] - c, du, par)          # Δu per unit α
+            copyto!(parent(du), parent(d1))                          # Δu per unit α (anchor mean 0)
         end
         α0 = (nh == 0 && Dg === nothing) ? min(1.0, 1.0 / gn) : 1.0
         # step cap: u = ln P is a log variable (a huge step can collapse P, where ∂Φ/∂u ∝ P

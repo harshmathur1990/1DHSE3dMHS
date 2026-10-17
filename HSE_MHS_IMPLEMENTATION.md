@@ -1587,3 +1587,12 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - Preconditioner options: `precond_atilde = :colored` (exact GN diagonal, period 5; smaller periods are not exact) and `precond_ufloor` (per-layer u floor). Both are default off; on Bifrost they help little.
 - `LBFGSOptions.xtol_rel` / `xtol_window` give the real-data convergence test (P, B relative change ≤ 1e-3 over 100 iterations).
 - Wait loops on background runs must not use `pgrep -f <script>`: the loop's own command line matches it. Wait on the PID.
+
+## 29. Implementation notes recorded during M5b (17 Oct 2026)
+
+- Codex reviewed M5 (`CODEX_REVIEW_M5.md`; Claude's assessment: `CLAUDE_RESPONSE_CODEX_M5.md`). Fixes and the frozen-B experiment: `HSEMHS/reports/M5b_frozenB.md`.
+- **Bound and anchor are enforced together** by `anchor_box_project!` (scalar multiplier by bisection; exact c = 0 when unconstrained), in the L-BFGS safeguard and the u block. Re-centring and clipping a fixed number of times does not enforce both.
+- **The u block is a trust-region method:** ε-active set, Steihaug–Toint PCG in the D-norm, then a projected arc search with an actual/predicted ratio. Clipping a CG step node by node is not a descent step. Truncating CG at the first bound hit lets near-bound nodes creep in geometrically.
+- **`alternating_solve!` converges only if** the change test holds, the Ã block did work, and the u block met constrained optimality.
+- **`gn_diag_v!` is the exact v-coordinate diagonal** (anchor rows corrected through one gauge-free GN product).
+- **Frozen-B result (Bifrost):** neither the ln P nor the p branch passes in 500 updates. Both approach the same conditional optimum: force within 0.3 %, pressure within 2 % median on identifiable nodes. That optimum raises P by 10²–10⁴ where pressure is weakly constrained.
