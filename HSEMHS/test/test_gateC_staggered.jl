@@ -1,21 +1,21 @@
 # M6c/M6d: Gate C1–C3 on the staggered scheme (D9 addendum §10, D9b §4; E3 withdrawn: RMS ≤ 1e-6, p99 ≤ 1e-4).
 # Problems use the D9b defaults: data on faces, Φ_Q (λ_Q = 1), λ_Uz = 0, L-BFGS collapse safeguard.
 
-"""Staggered C1 solve (plain joint L-BFGS from column_hse u and A₀)."""
+"""Staggered C1 solve (`mhs_solve!` from column_hse u and A₀)."""
 function sc1_solve(NZ; Bobs = (0.0, 0.0, 0.0), NX = 8, NY = 8, max_iter = 5000)
     par = H.init_parallel(NX, NY, NZ)
     pb, x, us, uc, grid = H.sc1_problem(par, NX, NY, NZ; Bobs = Bobs)
     w = H.SMHSWork(par)
     r, bf = H.mhs_solve!(pb, w, x; opts = H.LBFGSOptions(max_iter = max_iter, gtol_rel = 1e-7))   # Φ_Q stiffens: 1e-6 leaves C1b RMS at 1.6e-6
-    @test !bf                                                       # C1 starts take the plain path
-    H.objective!(pb, w, x)
+    @test !bf                                                       # L = 0 at C1 starts: plain path
+    f = H.objective!(pb, w, x)[1]
     rms, p99 = H.layer_residual_stats(pb, w)
     du_s = H.newfield(par); H.fill_owned!((i, j, k) -> w.u[i, j, k] - us[i, j, k], du_s, par)
     du_c = H.newfield(par); H.fill_owned!((i, j, k) -> w.u[i, j, k] - uc[i, j, k], du_c, par)
     Bex = (H.newfield(par; fill = Bobs[1]), H.newfield(par; fill = Bobs[2]), H.newfield0(par; fill = Bobs[3]))
     dB = maximum(H.rms_diff(par, w.B[c], Bex[c]) for c in 1:3) / pb.sig[1][1, 1, 1]
     return (r = r, rms = maximum(rms), p99 = maximum(p99), dus = H.maxabs(par, du_s), duc = H.maxabs(par, du_c),
-            dB = dB, pb = pb, w = w, x = x, us = us, Bex = Bex, par = par)
+            dB = dB, f = f, pb = pb, w = w, x = x, us = us, Bex = Bex, par = par)
 end
 
 @testset "Gate C1a (staggered): uniform T(z), B = 0, no floor" begin
@@ -31,9 +31,10 @@ end
 end
 
 @testset "Gate C1b (staggered): uniform B" begin
-    s = sc1_solve(65; Bobs = (20e-4, 0.0, 50e-4))
-    @info "C1b staggered" status = s.r.status iters = s.r.iterations s.rms s.p99 s.dus s.dB
-    @test s.r.status == H.converged
+    s = sc1_solve(65; Bobs = (20e-4, 0.0, 50e-4), max_iter = 10000)
+    @info "C1b staggered" status = s.r.status reason = s.r.reason iters = s.r.iterations s.rms s.p99 s.dus s.dB s.f
+    # converged, or stalled at the round-off floor (user decision 17 Oct 2026, as for C3(b))
+    @test s.r.status == H.converged || (s.r.status == H.stalled && !occursin("safeguard", s.r.reason) && s.f <= 1e-14)
     @test s.rms <= 1e-6 && s.p99 <= 1e-4
     @test s.dB <= 1e-3                                              # B within 1e-3 σ of Bobs
 end
@@ -107,18 +108,30 @@ end
     end
     seen, d0, d1, rr, _, bf = run(1e-3, 1:1)                        # pressure checkerboard
     @info "C3 staggered, u checkerboard (identifiable nodes)" d0 d1 status = rr.status bf
-    @test !bf
+    @test !bf                                                       # a pressure checkerboard leaves L = 0
     @test seen
     @test d1[1] <= 1e-3 * d0[1]
-    # Ã checkerboards: the start is Φ_Q-dominated (Φ_Q/Φ_F ≈ 1.5e5 at any ε), so `mhs_solve!` takes the
-    # B-first path (a plain joint solve drags u toward vacuum at ε = 1e-3; reports/M6d_step2.md). The
+    # Ã checkerboards: at ε = 1e-3 the start is Lorentz-dominated, so `mhs_solve!` takes the B-first path (a
+    # plain joint solve drags u toward vacuum there; reports/M6d_step2.md). The
     # solve ends at the round-off floor, where the line search fails (`stalled`), so the floor is
     # checked through Φ instead of the status (accepted deviation from D9b §4).
-    for (ε, fields, nm) in ((1e-5, 2:4, "Ã, ε = 1e-5"), (1e-3, 1:4, "v + Ã, ε = 1e-3"))
+    # ε = 1e-5 stays below |L|/S = 1 (plain path); ε = 1e-3 is Lorentz-dominated (B-first)
+    for (ε, fields, nm, bfx) in ((1e-5, 2:4, "Ã, ε = 1e-5", false), (1e-3, 1:4, "v + Ã, ε = 1e-3", true))
         seen, d0, d1, rr, f1, bf = run(ε, fields)
         @info "C3 staggered, $nm checkerboard" d0 d1 status = rr.status reason = rr.reason f1 feq bf
-        @test seen && bf
+        @test seen && bf == bfx
         @test d1[2] <= 1e-3 * d0[2]
-        @test f1 <= 10 * max(feq, 1e-16)
+        @test rr.status == H.converged || (rr.status == H.stalled && f1 <= 10 * max(feq, 1e-16))
     end
+end
+
+@testset "M5: discrepancy continuation, noise-free uniform B (upper-bound branch)" begin
+    par = H.init_parallel(8, 8, 17)
+    pb, x, us, uc, grid = H.sc1_problem(par, 8, 8, 17; Bobs = (20e-4, 0.0, 50e-4))
+    w = H.SMHSWork(par)
+    xs, tab, flags = H.discrepancy_solve!(pb, w, x; grid = [1e-2, 1.0, 1e2], opts = H.LBFGSOptions(max_iter = 3000, gtol_rel = 1e-7))
+    @info "discrepancy table" [(r.lambda_F, r.status, r.iterations, r.chi2) for r in tab] flags
+    @test length(tab) == 3 && [r.lambda_F for r in tab] == [1e-2, 1.0, 1e2]
+    @test all(r.chi2 <= flags["thresh"] for r in tab)
+    @test flags["lambda_F_at_upper_bound"] && !flags["lambda_F_at_lower_bound"] && flags["lambda_F"] == 1e2 && pb.lamF == 1e2
 end

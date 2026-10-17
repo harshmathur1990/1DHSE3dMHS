@@ -11,7 +11,7 @@
 #   Φ_S = (λ_S/N) Σ w Σ_a Σ_c (h_a² ∂²_a δB_c)²/σ_c²,  δB = HB − Bobs
 #   Φ_U = (1/N) Σ w [λ_U Σ_{a=x,y} (h_a² ∂²_a u)² + λ_Uz (h_z² ∂²_z u)²]   (λ_Uz: D9b §2.3)
 #   Φ_N = (λ_N/N) Σ_faces w_f (¼ δ²_n B_n)²/σ²   (second difference along the face normal; M6c option)
-#   Φ_Q = (λ_Q/N_F) Σ_edges w_e Σ_{a ∈ avg(e)} (B_ref ¼δ²_a J_e / S_e)²   (D9b §2.2)
+#   Φ_Q = (λ_F λ_Q/N_F) Σ_edges w_e Σ_{a ∈ avg(e)} (B_ref ¼δ²_a J_e / S_e)²   (D9b §2.2; × λ_F since M5)
 #   terms are reported as (F, N + Q, B, S, U)
 
 mutable struct SMHSProblem{E}
@@ -44,6 +44,9 @@ mutable struct SMHSProblem{E}
     NF::Float64
     NB::Float64
     wmean::Float64
+    pc_atilde::Symbol                 # Ã preconditioner diagonal: :layer (Hutchinson layer means) | :colored (exact per node, M5)
+    pc_period::Int                    # coloring period for :colored (≥ the GN Hessian reach)
+    pc_ufloor::Float64                # u diagonal floor, as a fraction of its layer median (M5)
 end
 
 newscalar(par::ParCtx) = OffsetArray(zeros(par.block.nx + 2, par.block.ny + 2, 1), 0:par.block.nx+1, 0:par.block.ny+1, 1:1)
@@ -91,7 +94,8 @@ the top additive-pressure mode it targets does not occur).
 function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, sigma::NTuple{3,Field}, eos;
                      anchor_plane::Symbol = :bottom, P_ref::Float64, g::Float64 = 274.0,
                      lambda_F::Float64 = 1.0, lambda_S::Float64 = 1e-3, lambda_U::Float64 = 0.0, lambda_N::Float64 = 0.0, data_on_faces::Bool = true, lambda_Q::Float64 = 1.0,
-                     lambda_Uz::Float64 = 0.0)
+                     lambda_Uz::Float64 = 0.0, precond_atilde::Symbol = :layer, precond_period::Int = 5, precond_ufloor::Float64 = 0.0)
+    precond_atilde in (:layer, :colored) || invalid("precond_atilde must be :layer or :colored")
     ops = Ops(grid, par); s = StagOps(grid, par); b = par.block
     X = newfield(par); fill_owned!((i, j, k) -> log(T[i, j, k]), X, par)
     sig = ntuple(c -> (q = newfield(par); fill_owned!((i, j, k) -> max(sigma[c][i, j, k], 1e-12), q, par); q), 3)
@@ -118,7 +122,8 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
     owned_map!((i, j, k) -> 1 / (sig[3][i, j, kl(k)] * sig[3][i, j, ku(k)]), invsf2[3], par)
     NB = data_on_faces ? Float64(NX) * NY * (3NZ + 1) : 3N
     return SMHSProblem(par, grid, s, ops, eos, X, Bobs, sig, invS2f, alpha, ka, log(P_ref), g,
-                       lambda_F, lambda_S, lambda_U, lambda_Uz, lambda_N, data_on_faces, Bobsf, invsf2, lambda_Q, zeros(NZ + 1), zeros(NZ), Aref, N, Float64(NX) * NY * (3NZ - 5), NB, wmean)
+                       lambda_F, lambda_S, lambda_U, lambda_Uz, lambda_N, data_on_faces, Bobsf, invsf2, lambda_Q, zeros(NZ + 1), zeros(NZ), Aref, N, Float64(NX) * NY * (3NZ - 5), NB, wmean,
+                       precond_atilde, precond_period, precond_ufloor)
 end
 
 """Horizontal (x-, y-face) force equations exist on layers 2…NZ−1 only: the top and bottom layers
@@ -203,7 +208,7 @@ the z second difference of x/y-edge currents on interior edges only. Φ_Q is lin
 seeds applied to δJ give the Gauss–Newton product. With `pQ`, accumulates w_e q² per row (j, k+1).
 """
 function phiQ_seeds!(qQ::NTuple{6,Field}, J::NTuple{3,Field}, pb::SMHSProblem, pQ = nothing)
-    par = pb.par; s = pb.s; NZ = par.block.nz; lQ = pb.lamQ; NF = pb.NF
+    par = pb.par; s = pb.s; NZ = par.block.nz; lQ = pb.lamQ * pb.lamF; NF = pb.NF   # priced like the force it hides
     if lQ <= 0
         for c in 1:6
             fill!(parent(qQ[c]), 0.0)
@@ -418,7 +423,7 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     end
     push!(loc, eQ)
     t = MPI.Allreduce(loc, +, par.comm)
-    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N + pb.lamQ * t[10] / NF, (t[4] + t[9]) / NB, lS * t[5] / N, t[7] / N)
+    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N + pb.lamQ * pb.lamF * t[10] / NF, (t[4] + t[9]) / NB, lS * t[5] / N, t[7] / N)
     oob = t[6] > 0
     return oob ? Inf : sum(terms), terms, oob
 end
@@ -566,9 +571,17 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
         end
         D[1][i, j, k] = 2d + 2 * (d2xT2(Ux, o.X, i, j, k) + d2yT2(Uy, o.Y, i, j, k) + d2zT2(Uz, o.Z, i, j, k))
     end
-    # Ã and b̄: Hessian–vector products by central differences of ∇Φ, averaged per layer
+    if pb.pc_ufloor > 0                              # per-layer floor: no node gets a huge D⁻¹∇Φ step in u
+        med = layer_quantiles(par, D[1], [0.5])[:, 1]
+        MPI.Bcast!(med, 0, par.comm)
+        fill_owned!((i, j, k) -> max(D[1][i, j, k], pb.pc_ufloor * med[k]), D[1], par)
+    end
     w2 = SMHSWork(par)
     z = similar_state(x); xt = similar_state(x); g1 = similar_state(x); g2 = similar_state(x)
+    if pb.pc_atilde == :colored
+        gn_diag_colored!(D, pb, w, x)
+    else
+    # Ã: Hessian–vector products by central differences of ∇Φ, averaged per layer
     ε = 1e-4
     acc = [zeros(length(axes(x[f], 3))) for f in 2:4]
     cnt = [zeros(length(axes(x[f], 3))) for f in 2:4]
@@ -593,6 +606,7 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
         mx = maximum(abs, a)
         owned_map!((i, j, k) -> max(abs(a[k-k0+1]), 1e-8 * mx, 1e-300), D[f], par)
     end
+    end
     # b̄: exact second derivative along the scalar
     fill!(parent(z[1]), 0.0); for f in 2:4; fill!(parent(z[f]), 0.0); end
     setscalar!(par, z[5], 1.0)
@@ -603,6 +617,45 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
     fill!(parent(D[5]), 1.0); rank0(par) && (D[5][1, 1, 1] = max(abs(hbb), 1e-300))
     mx = global_max(par, maximum(D[1][i, j, k] for k in 1:NZ, j in 1:b.ny, i in 1:b.nx))
     fill_owned!((i, j, k) -> max(D[1][i, j, k], 1e-12 * mx, 1e-300), D[1], par)
+    return D
+end
+
+"""
+    gn_diag_colored!(D, pb, w, x)
+
+Exact Gauss–Newton diagonal for Ã by colored probing (M5): one `gn_hvp!` per color class of nodes
+spaced `pb.pc_period` apart in i, j and k (and per component), so no two probed nodes share a row of
+H_GN. A periodic axis whose length is not a multiple of the period gets extra colors for the
+remainder. Uses the state of the last `objective!(pb, w, x)`.
+"""
+function gn_diag_colored!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
+    par = pb.par; b = par.block; p = pb.pc_period
+    NXg = b.i0 + b.nx - 1; NYg = b.j0 + b.ny - 1
+    NXg = Int(MPI.Allreduce(NXg, max, par.comm)); NYg = Int(MPI.Allreduce(NYg, max, par.comm))
+    col(gi, N) = (q = p * (N ÷ p); gi - 1 < q ? (gi - 1) % p : p + (gi - 1 - q))
+    ncol(N) = N % p == 0 ? p : p + N % p
+    wl = SMHSWork(par); z = similar_state(x); Hz = similar_state(x)
+    for f in 2:4
+        k0 = first(axes(x[f], 3))
+        for ck in 0:p-1, cj in 0:ncol(NYg)-1, ci in 0:ncol(NXg)-1
+            for q in 1:5
+                fill!(parent(z[q]), 0.0)
+            end
+            any = 0
+            for k in axes(x[f], 3), j in 1:b.ny, i in 1:b.nx
+                if col(b.i0 + i - 1, NXg) == ci && col(b.j0 + j - 1, NYg) == cj && (k - k0) % p == ck
+                    z[f][i, j, k] = 1.0; any += 1
+                end
+            end
+            MPI.Allreduce(any, +, par.comm) == 0 && continue
+            gn_hvp!(Hz, pb, w, wl, z)
+            for k in axes(x[f], 3), j in 1:b.ny, i in 1:b.nx
+                z[f][i, j, k] == 1.0 && (D[f][i, j, k] = Hz[f][i, j, k])
+            end
+        end
+        mx = global_max(par, maximum(D[f][i, j, k] for k in axes(x[f], 3), j in 1:b.ny, i in 1:b.nx))
+        owned_map!((i, j, k) -> max(D[f][i, j, k], 1e-14 * mx, 1e-300), D[f], par)
+    end
     return D
 end
 
@@ -695,22 +748,149 @@ end
 # ---------------------------------------------------------------------------------------
 # Solver policy (M6d)
 # ---------------------------------------------------------------------------------------
-"""
-    mhs_solve!(pb, w, x; opts, bfirst_ratio = 10.0, b_first_iter = 2000) -> (result, bfirst::Bool)
+"""Copies of the measured quantities (u = ln P at centres, B on faces) at the state of the last `objective!`."""
+measured_snapshot(pb::SMHSProblem, w::SMHSWork) = (copy(parent(w.u)), map(B -> copy(parent(B)), w.B))
 
-Plain joint L-BFGS, or B-first continuation (Ã relaxed with v frozen, then joint) when the starting
-Φ_Q/Φ_F exceeds `bfirst_ratio` (term slot 2, Φ_N + Φ_Q). A start dominated by M-invisible currents
-otherwise drags u toward vacuum while Ã is corrected (reports/M6d_step2.md §4). The ratio is
-independent of the perturbation amplitude in the linear regime: C1-type starts give ≤ 0.6, grid-scale
-current errors ~1e5.
+"""
+    measured_change(pb, w, snap) -> max relative change since `snap`
+
+max(max |ΔP/P|, max |ΔB|/max(|B|, σ)) over owned centres / faces; |ΔP/P| = |e^{Δu} − 1|.
+"""
+function measured_change(pb::SMHSProblem, w::SMHSWork, snap)
+    par = pb.par; b = par.block; u0, B0 = snap
+    pu = parent(w.u); ou = w.u.offsets
+    m = 0.0
+    for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx
+        I = (i - ou[1], j - ou[2], k - ou[3])
+        m = max(m, abs(expm1(pu[I...] - u0[I...])))
+    end
+    for c in 1:3
+        Bc = w.B[c]; pB = parent(Bc); oB = Bc.offsets; iv = pb.invsf2[c]
+        for k in axes(Bc, 3), j in 1:b.ny, i in 1:b.nx
+            I = (i - oB[1], j - oB[2], k - oB[3])
+            m = max(m, abs(pB[I...] - B0[c][I...]) / max(abs(pB[I...]), 1 / sqrt(iv[i, j, k])))
+        end
+    end
+    return global_max(par, m)
+end
+
+"""
+    layer_median_beta(pb, w) -> Vector
+
+Per-layer median plasma β = 2μ₀P/|B|² at centres (B = HB, unfloored: B = 0 gives β = ∞; the 1 G floor
+of §13.10 is for the output field), at the state of the last `objective!`.
+"""
+function layer_median_beta(pb::SMHSProblem, w::SMHSWork)
+    HB = w.HB
+    β(i, j, k) = @inbounds 2MU0 * w.P[i, j, k] / max(HB[1][i, j, k]^2 + HB[2][i, j, k]^2 + HB[3][i, j, k]^2, 1e-300)
+    med = layer_quantiles(pb.par, β, [0.5])[:, 1]
+    MPI.Bcast!(med, 0, pb.par.comm)
+    return med
+end
+
+"""
+    layer_median_lorentz(pb, w) -> Vector
+
+Per-layer median of |L|/S at centres: L from the face Lorentz forces adjacent to the cell (x, y faces
+on layers with horizontal equations, the z face below), each normalized by its face S, at the state
+of the last `objective!`.
+"""
+function layer_median_lorentz(pb::SMHSProblem, w::SMHSWork)
+    NZ = pb.par.block.nz; J = w.J; B = w.B
+    function r(i, j, k)
+        q = 0.0
+        if horeq(k, NZ) > 0
+            q += lor_x(J, B, i, j, k)[1]^2 * pb.invS2f[1][i, j, k] + lor_y(J, B, i, j, k)[1]^2 * pb.invS2f[2][i, j, k]
+        end
+        k <= NZ - 1 && (q += lor_z(J, B, i, j, k)[1]^2 * pb.invS2f[3][i, j, k])
+        return sqrt(q)
+    end
+    med = layer_quantiles(pb.par, r, [0.5])[:, 1]
+    MPI.Bcast!(med, 0, pb.par.comm)
+    return med
+end
+
+"""
+    mhs_solve!(pb, w, x; opts, lorentz_bfirst = 1.0, b_first_iter = 2000) -> (result, bfirst::Bool)
+
+Plain joint L-BFGS, or B-first continuation (Ã relaxed with v frozen, then joint) when the start is
+Lorentz-dominated: some layer has median |L|/S > `lorentz_bfirst` (M5, user decision 17 Oct 2026).
+Only B can remove such a residual; the joint direction is then dominated by the vacuum direction in
+u, which caps the step and leaves B unchanged (reports/M5a_realdata.md). Low β alone is not the
+test: a uniform or potential field has β ≪ 1 and L = 0, and B-first then pushes the column-HSE
+pressure error into a soft B mode (C1b/C3 references: 1.3e-9 T instead of 3e-13 T).
 """
 function mhs_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState; opts::LBFGSOptions = LBFGSOptions(),
-                    bfirst_ratio::Float64 = 10.0, b_first_iter::Int = 2000)
-    t = objective!(pb, w, x)[2]
-    if t[2] > bfirst_ratio * t[1]
+                    lorentz_bfirst::Float64 = 1.0, b_first_iter::Int = 2000)
+    objective!(pb, w, x)
+    if maximum(layer_median_lorentz(pb, w)) > lorentz_bfirst
         return lbfgs_continuation!(pb, w, x; b_first_iter = b_first_iter, opts = opts)[2], true
     end
     return lbfgs!(pb, w, x; opts = opts), false
+end
+
+"""
+    discrepancy_solve!(pb, w, x; grid, bisect_ratio = 1.5, opts, lorentz_bfirst, b_first_iter)
+        -> (x_selected, table, flags)
+
+λ_F selection by the discrepancy principle (implementation doc §13.9). Continuation over `grid`
+(increasing), each stage warm-started from the previous one and solved by `mhs_solve!`; χ² = Φ_B.
+Selects the largest λ_F with χ² ≤ 1 + 3√(2/N_B), refined by log-bisection to `bisect_ratio`.
+`x` is left at the selected solution and `pb.lamF` at the selected λ_F. `table` rows are
+(λ_F, status, iterations, bfirst, χ², Φ terms); `flags` has `lambda_F`, `lambda_F_at_upper_bound`,
+`lambda_F_at_lower_bound`, `thresh`.
+"""
+function discrepancy_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState;
+                            grid::AbstractVector{<:Real} = [1e-4, 1e-3, 1e-2, 1e-1, 1.0, 1e1, 1e2, 1e3, 1e4],
+                            bisect_ratio::Float64 = 1.5, opts::LBFGSOptions = LBFGSOptions(),
+                            lorentz_bfirst::Float64 = 1.0, b_first_iter::Int = 2000)
+    par = pb.par
+    issorted(grid) || invalid("discrepancy_solve!: grid must be increasing")
+    thresh = 1 + 3 * sqrt(2 / pb.NB)
+    table = NamedTuple[]
+    function stage!(λ, xs)
+        pb.lamF = λ
+        r, bf = mhs_solve!(pb, w, xs; opts = opts, lorentz_bfirst = lorentz_bfirst, b_first_iter = b_first_iter)
+        t = objective!(pb, w, xs)[2]
+        push!(table, (lambda_F = λ, status = r.status, iterations = r.iterations, bfirst = bf, chi2 = t[3], terms = t))
+        return t[3] <= thresh
+    end
+    xok = nothing; xfirst = nothing; λok = NaN; λbad = NaN
+    for λ in grid
+        ok = stage!(Float64(λ), x)
+        xfirst === nothing && (xfirst = deepcopy(x))
+        if ok
+            xok = deepcopy(x); λok = Float64(λ)
+        else
+            λbad = Float64(λ); break
+        end
+    end
+    flags = Dict{String,Any}("thresh" => thresh, "lambda_F_at_upper_bound" => false, "lambda_F_at_lower_bound" => false)
+    if xok === nothing
+        # no stage passes: report the lowest λ_F stage (spec §13.9 step 2)
+        flags["lambda_F_at_lower_bound"] = true
+        λsel = Float64(first(grid))
+        copystate!(x, xfirst, par); pb.lamF = λsel; objective!(pb, w, x)
+        flags["lambda_F"] = λsel
+        return x, table, flags
+    end
+    if isnan(λbad)
+        flags["lambda_F_at_upper_bound"] = true
+    else
+        xt = similar_state(x)
+        while λbad / λok > bisect_ratio
+            λm = sqrt(λok * λbad)
+            copystate!(xt, xok, par)
+            if stage!(λm, xt)
+                copystate!(xok, xt, par); λok = λm
+            else
+                λbad = λm
+            end
+        end
+    end
+    copystate!(x, xok, par); pb.lamF = λok; objective!(pb, w, x)
+    flags["lambda_F"] = λok
+    return x, table, flags
 end
 
 # ---------------------------------------------------------------------------------------

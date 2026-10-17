@@ -1577,3 +1577,13 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - Defaults for the staggered scheme: `data_on_faces = true`, `lambda_Q = 1`, `lambda_Uz = 0`, `collapse_du = 3`. Staggered C1 tests use gtol 1e-7.
 - **Collapse-bound tolerance.** Nodes within 1e-3·`max_du` of the u bound are projected, and `step_to_lower` ignores them. With the 1e-12 tolerance used at first, round-off from the gauge re-centring jammed α at 0 on Bifrost (`HSEMHS/reports/M6d_step3.md`).
 - **The real-data (Bifrost) staggered solve does not converge yet.** Ã barely moves and u slides toward the bound. The likely cause is preconditioner scaling, which is M5 scope. The Bifrost 1 % check is deferred until it converges.
+
+## 28. Implementation notes recorded during M5a (17 Oct 2026)
+
+- Results: `HSEMHS/reports/M5a_realdata.md`.
+- **Φ_Q is multiplied by λ_F** (user, 17 Oct 2026). It prices M-invisible currents like the force they hide; without this it dominates Φ at small λ_F.
+- **`mhs_solve!` uses B-first when some layer has median |L|/S > `lorentz_bfirst` (1).** Low β alone is the wrong test: uniform fields have β ≪ 1 and L = 0, and B-first then corrupts B. The user's wording was "β < 1 (Lorentz-dominated)"; the confirmation of the |L|/S form is pending.
+- `discrepancy_solve!` implements §13.9 and stops the grid at the first failing λ.
+- Preconditioner options: `precond_atilde = :colored` (exact GN diagonal, period 5; smaller periods are not exact) and `precond_ufloor` (per-layer u floor). Both are default off; on Bifrost they help little.
+- `LBFGSOptions.xtol_rel` / `xtol_window` give the real-data convergence test (P, B relative change ≤ 1e-3 over 100 iterations).
+- Wait loops on background runs must not use `pgrep -f <script>`: the loop's own command line matches it. Wait on the PID.

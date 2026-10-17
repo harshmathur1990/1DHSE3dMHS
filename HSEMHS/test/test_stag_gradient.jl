@@ -84,7 +84,8 @@ function sgradient_checks(eos, label)
         e = sfd_error(pb3, xs3, srand_dir(par3, xs3, 1:5))
         @test e <= 1e-6
         rank0(par3) && @info "staggered FD $label, data on faces" e
-        for (lam, lq, luz, nm) in (((0.0, 0.0, 0.0, 0.0), 1.0, 0.0, "Φ_Q alone"), ((0.0, 0.0, 0.0, 0.0), 0.0, 1e-2, "λ_Uz alone"),
+        # Φ_Q is scaled by λ_F: λ_F = 1e-8, λ_Q = 1e8 isolates it (the force term is then negligible)
+        for (lam, lq, luz, nm) in (((1e-8, 0.0, 0.0, 0.0), 1e8, 0.0, "Φ_Q alone"), ((0.0, 0.0, 0.0, 0.0), 0.0, 1e-2, "λ_Uz alone"),
                                    ((1.0, 1e-3, 1e-6, 1e-2), 1.0, 1e-4, "all terms + Φ_Q + λ_Uz"))
             pb4, xs4, par4 = sgrad_problem(eos; lam = lam, dfaces = true, lq = lq, luz = luz)
             for (fs, fn) in ((1:5, "all fields"), (2:4, "Ã"))
@@ -191,8 +192,8 @@ end
 @testset "staggered: Gauss–Newton Hessian product" begin
     nrm(par, a) = sqrt(H.dotN(par, a, a))
     # quadratic terms only: H_GN is the exact Hessian (centre and face data)
-    for (df, lq, luz) in ((false, 0.0, 0.0), (true, 0.0, 0.0), (true, 1.0, 1e-4))
-        pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); lam = (0.0, 1e-3, 1e-6, 1e-2), dfaces = df, lq = lq, luz = luz)
+    for (df, lF, lq, luz) in ((false, 0.0, 0.0, 0.0), (true, 0.0, 0.0, 0.0), (true, 1e-12, 1e12, 1e-4))   # Φ_Q ∝ λ_F λ_Q
+        pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); lam = (lF, 1e-3, 1e-6, 1e-2), dfaces = df, lq = lq, luz = luz)
         w = H.SMHSWork(par); wl = H.SMHSWork(par)
         v = srand_dir(par, xs, 1:5); g1 = H.similar_state(xs); g2 = H.similar_state(xs); Hv = H.similar_state(xs); xt = H.similar_state(xs)
         H.fg!(g1, pb, w, xs); H.gn_hvp!(Hv, pb, w, wl, v)
@@ -224,4 +225,27 @@ end
         end
         @test num <= 1e-4 * den
     end
+end
+
+@testset "staggered: colored Ã preconditioner diagonal is the exact GN diagonal (M5)" begin
+    pb, xs, par = sgrad_problem(H.IdealGasMu(1.3); dfaces = true, lq = 1.0)   # 16×14: period 5 needs remainder colors
+    pb.pc_atilde = :colored; pb.pc_period = 5
+    w = H.SMHSWork(par); wl = H.SMHSWork(par); H.objective!(pb, w, xs)
+    D = H.gn_diagonal!(H.similar_state(xs), pb, w, xs)
+    b = par.block; rng = MersenneTwister(4); e = 0.0
+    z = H.similar_state(xs); Hz = H.similar_state(xs)
+    for t in 1:40
+        f = rand(rng, 2:4); i, j, k = rand(rng, 1:b.nx), rand(rng, 1:b.ny), rand(rng, axes(xs[f], 3))
+        for q in 1:5; fill!(parent(z[q]), 0.0); end
+        z[f][i, j, k] = 1.0
+        H.gn_hvp!(Hz, pb, w, wl, z)
+        e = max(e, abs(D[f][i, j, k] - Hz[f][i, j, k]) / abs(Hz[f][i, j, k]))
+    end
+    rank0(par) && @info "colored GN diagonal vs single-node products (40 nodes)" e
+    @test e <= 1e-12
+    # u floor: no node below the fraction of its layer median
+    pb.pc_ufloor = 1e-2
+    D2 = H.gn_diagonal!(H.similar_state(xs), pb, w, xs)
+    med = H.layer_quantiles(par, D2[1], [0.5])[:, 1]
+    @test all(D2[1][i, j, k] >= 1e-2 * med[k] * (1 - 1e-12) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)
 end

@@ -17,7 +17,7 @@
     @test cfg.parallel.py == 0
     @test cfg.mhs.lambda_D == 1.0
     @test cfg.mhs.lambda_Q == 1.0 && cfg.mhs.lambda_Uz == 0.0 && cfg.mhs.data_on_faces === true && cfg.mhs.collapse_du == 3.0
-    @test cfg.mhs.bfirst_ratio == 10.0 && cfg.mhs.b_first_iter == 2000
+    @test cfg.mhs.lorentz_bfirst == 1.0 && cfg.mhs.b_first_iter == 2000
     @test cfg.gate0.stride == 4
     @test length(H.config_hash(cfg)) == 64
 

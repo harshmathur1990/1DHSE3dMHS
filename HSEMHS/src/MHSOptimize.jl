@@ -100,6 +100,8 @@ Base.@kwdef struct LBFGSOptions
     precondition::Bool = true        # Jacobi initial inverse Hessian from the Gauss–Newton diagonal
     max_du::Float64 = 0.5            # largest |Δ ln P| per iteration (step cap)
     max_db::Float64 = 5.0            # largest |Δ b̃| per iteration, in σ units
+    xtol_rel::Float64 = 0.0          # converged when the measured quantities change ≤ xtol_rel over xtol_window iterations (0: off; M5)
+    xtol_window::Int = 100
     collapse_du::Float64 = 3.0       # pressure-collapse safeguard: u = ln P stays ≥ its start value − collapse_du (M6d; Inf: off)
     refresh::Int = 0                 # recompute the diagonal every `refresh` iterations (0: never)
     frozen::Vector{Int} = Int[]      # state fields held fixed (1 = v, 2:4 = b̃): their gradient is zeroed
@@ -181,6 +183,7 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
     fwin = Float64[f]
     nfail = 0
     it = 0
+    snap = opts.xtol_rel > 0 ? measured_snapshot(pb, w) : nothing
     status = max_iter; reason = "max_iter"
     while true
         if gn <= opts.gtol_rel * g0 || gn == 0
@@ -289,6 +292,13 @@ function lbfgs!(pb, w, x::MHSState; opts::LBFGSOptions = LBFGSOptions())
         length(fwin) > opts.ftol_window + 1 && popfirst!(fwin)
         if opts.verbose && rank0(par) && (it % 50 == 0)
             @printf("  lbfgs it %5d  Φ = %.6e  ‖g‖/‖g0‖ = %.3e  α = %.3e\n", it, f, gn / g0, α)
+        end
+        if opts.xtol_rel > 0 && it % opts.xtol_window == 0
+            objective!(pb, w, x)                         # w at the accepted iterate
+            if snap !== nothing && measured_change(pb, w, snap) <= opts.xtol_rel
+                status = converged; reason = "measured quantities changed ≤ xtol_rel over xtol_window iterations"; break
+            end
+            snap = measured_snapshot(pb, w)
         end
         if length(fwin) == opts.ftol_window + 1 && abs(fwin[1] - f) <= opts.ftol_rel * abs(f)
             status = stalled; reason = "relative Φ change ≤ ftol_rel over ftol_window iterations"; break
