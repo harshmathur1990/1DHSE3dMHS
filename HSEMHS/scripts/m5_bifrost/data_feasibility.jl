@@ -116,4 +116,22 @@ for p in (get(ARGS, 3, "128") == "256" ? (2, 4, 8, 16, 32, 64, 128, 256) : (2, 4
     fields!(z); st = stats()
     @printf("%s: p = %3d: witness t = %.3f at %s, frac>3σ %.2e, #>5σ %d, χ²/N %.4f\n", mode, p, st.t, string(st.loc), st.frac3, st.n5, st.chi2)
     flush(stdout)
+    # save this stage's witness: normalized residuals per component, in the layout of export_observations.jl
+    if !isempty(get(ENV, "WITNESS_DIR", ""))
+        fn = joinpath(ENV["WITNESS_DIR"], "witness_$(mode)_p$(p).h5")
+        h5open(fn, "w") do f
+            if mode == :face
+                for c in 1:3
+                    f["c$c"] = [(Bf[c][i, j, k] - pb.Bobsf[c][i, j, k]) / σf(c, i, j, k) for i in 1:b.nx, j in 1:b.ny, k in collect(axes(Bf[c], 3))]
+                    f["B$c"] = [Bf[c][i, j, k] for i in 1:b.nx, j in 1:b.ny, k in collect(axes(Bf[c], 3))]
+                end
+            else
+                for c in 1:3
+                    f["c$c"] = [(HB[c][i, j, k] - pb.Bobs[c][i, j, k]) / pb.sig[c][i, j, k] for i in 1:b.nx, j in 1:b.ny, k in 1:NZ]
+                    f["B$c"] = [Bf[c][i, j, k] for i in 1:b.nx, j in 1:b.ny, k in collect(axes(Bf[c], 3))]
+                end
+            end
+            attributes(f)["p"] = p; attributes(f)["t"] = st.t
+        end
+    end
 end

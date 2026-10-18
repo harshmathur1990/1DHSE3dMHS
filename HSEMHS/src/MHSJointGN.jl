@@ -26,6 +26,9 @@ steps accepted, or `max_candidates` candidates tried), measured from the call.
   coordinate of the D-norm); `Δ0` overrides both.
 - `block_scale = (s_u, s_A, s_b)`: multiplies the pressure / Ã / b̄ parts of D in the trust norm and the
   preconditioner (s_u > 1 makes pressure stiffer in the step geometry); `magnetic_only` freezes the pressure.
+- `anchor_tangent`: keep the pressure part of the PCG iterates in {Σ_anchor α δv = 0} by the preconditioned
+  projection P = I − M⁻¹a(aᵀM⁻¹a)⁻¹aᵀ (projected CG, Gould–Hribar–Nocedal), so the step measured by the trust
+  norm is the physical δu: the anchor re-centring in the candidate then changes nothing (Codex M5d review §4).
 - `diagnostics`: per candidate (not charged to the work budget) the D-norm shares of the pressure, Ã and b̄
   parts before and after projection/capping, the actual max |ΔP/P| and max |ΔB|/max(|B|, σ), and the split
   of the quadratic model into pressure, magnetic and cross terms.
@@ -35,7 +38,8 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                          max_accepted::Int = typemax(Int), max_candidates::Int = typemax(Int),
                          cg_iter::Int = 100, cg_rtol::Float64 = 1e-2, du_cap::Float64 = 5.0, μ0::Float64 = 1e-6,
                          Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
-                         magnetic_only::Bool = false, diagnostics::Bool = false, callback = nothing, verbose::Bool = false)
+                         magnetic_only::Bool = false, anchor_tangent::Bool = false, diagnostics::Bool = false,
+                         callback = nothing, verbose::Bool = false)
     par = pb.par; b = par.block
     w0 = work_equivalent()
     wl = SMHSWork(par); wt = SMHSWork(par)
@@ -94,12 +98,27 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         0.5 * sqrt(_sum1(par, (i, j, k) -> D[1][i, j, k]))
     end
     Δstart = Δ; μ = μ0
+    Mia = similar_state(x)                                 # M⁻¹a for the anchor constraint (pressure field only)
+    function prec!(zz, rr, μc)                             # zz = P M⁻¹ rr,  M = (1 + μc) D on the free set
+        divdiag!(zz, rr, D, par); lincomb!(zz, 1 / (1 + μc), zz, 0.0, zz, par); free!(zz)
+        if anchor_tangent
+            for f in 2:5; fill!(parent(Mia[f]), 0.0); end
+            m1 = Mia[1]; fill!(parent(m1), 0.0)
+            forrows(pb.ka:pb.ka, par) do i, j, k
+                m1[i, j, k] = act[i, j, k] == 1.0 ? 0.0 : pb.alpha[i, j] / ((1 + μc) * D[1][i, j, k])
+            end
+            aMa = MPI.Allreduce(sum(pb.alpha[i, j] * Mia[1][i, j, pb.ka] for j in 1:b.ny, i in 1:b.nx), +, par.comm)
+            az = MPI.Allreduce(sum(pb.alpha[i, j] * zz[1][i, j, pb.ka] for j in 1:b.ny, i in 1:b.nx), +, par.comm)
+            aMa > 0 && lincomb!(zz, 1.0, zz, -az / aMa, Mia, par)
+        end
+        return zz
+    end
     nacc = 0; ncand = 0; ncauchy = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]; cands = NamedTuple[]
     status = max_iter; reason = "work budget"
     while work_equivalent() - w0 < work_budget && nacc < max_accepted && ncand < max_candidates
         # ---- 1. Steihaug–Toint PCG on the full state ----
         lincomb!(r, -1.0, g, 0.0, g, par); free!(r)
-        divdiag!(zr, r, D, par); lincomb!(zr, 1 / (1 + μ), zr, 0.0, zr, par); free!(zr)
+        prec!(zr, r, μ)
         lincomb!(p, 1.0, zr, 0.0, zr, par); lincomb!(y, 0.0, y, 0.0, y, par)
         rz = dotN(par, r, zr); rz0 = rz; cg_rel = 1.0; cg_exit = :budget
         rz0 <= 0 && (status = converged; reason = "zero preconditioned gradient"; break)
@@ -117,13 +136,13 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                 # residual of the RETURNED direction: r = −g − (H + μD) y on the free set
                 Hv!(q, y); free!(q); divdiag!(zr, y, Dinv, par); lincomb!(q, 1.0, q, μ, zr, par)
                 lincomb!(r, -1.0, g, -1.0, q, par); free!(r)
-                divdiag!(zr, r, D, par); lincomb!(zr, 1 / (1 + μ), zr, 0.0, zr, par); free!(zr)
+                prec!(zr, r, μ)
                 cg_rel = sqrt(max(dotN(par, r, zr), 0.0) / rz0)
                 break
             end
             lincomb!(y, 1.0, y, α, p, par)
             lincomb!(r, 1.0, r, -α, q, par)
-            divdiag!(zr, r, D, par); lincomb!(zr, 1 / (1 + μ), zr, 0.0, zr, par); free!(zr)
+            prec!(zr, r, μ)
             rzn = dotN(par, r, zr)
             cg_rel = sqrt(max(rzn, 0.0) / rz0)
             cg_rel <= cg_rtol && (cg_exit = :residual; break)
@@ -136,7 +155,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         aerr = candidate!(δ, y, 1.0, Δ)
         pred = predicted(δ)
         # ---- 3. projected-Cauchy safeguard ----
-        divdiag!(cdir, g, D, par); lincomb!(cdir, -1.0, cdir, 0.0, cdir, par); free!(cdir)
+        lincomb!(r, -1.0, g, 0.0, g, par); free!(r); prec!(cdir, r, 0.0)   # projected steepest descent −P D⁻¹ g
         cn = sqrt(max(Dnorm2(cdir), 0.0))
         predc = -Inf; τc = cn > 0 ? Δ / cn : 0.0
         for _ in 1:20

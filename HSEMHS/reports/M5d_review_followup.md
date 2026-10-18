@@ -86,7 +86,7 @@
 | Staggered faces (either vertical convention) | 4.7–4.8e-3 | 0.41 | 34–40 |
 | **Cell-centred (central differences)** | **1.95e-3** | **0.17** | **16** |
 
-The data are cell-centred, apparently interpolated by the data release, and **not** discretely divergence-free on either mesh. The present pipeline then block-averages (12×12 horizontally, every 2nd level) and interpolates to faces. At the bottom and top z-faces it takes the nearest centre value. That is not a flux-preserving transfer.
+The data are cell-centred. That is established by provenance, not by this comparison alone. The source metadata names the release file `BIFROST_en024048_hion_bx_385.fits` with `DATA_LEV = 2`. Per Codex's M5d review, the release paper (Carlsson et al. 2016, A&A 585, A4, doi:10.1051/0004-6361/201527226, §4–5) and the Bifrost FITS documentation (https://ita-solar.github.io/Bifrost/FITS_generation/) state that B was interpolated to cell centres, introducing divergence error. I have not independently read those sources. The data are **not** discretely divergence-free on either mesh. The present pipeline then block-averages (12×12 horizontally, every 2nd level) and interpolates to faces. At the bottom and top z-faces it takes the nearest centre value. That is not a flux-preserving transfer.
 
 ### 5.2 How small can max |B − Bobs|/σ be for a divergence-free field?
 
@@ -100,7 +100,7 @@ The data are cell-centred, apparently interpolated by the data release, and **no
 (A longer face run, 1500 iterations per stage up to p = 256, is in §5.3.)
 
 - **The 11σ outlier is not intrinsic to the data.** It is an artifact of fitting by least squares: a divergence-free field exists with max error ≤ 5.13σ and 0.70 % > 3σ under the face model. The tail limit (≤ 1 %) is met; whether the maximum (≤ 5σ) can be met is not yet decided (5.13 > 5).
-- **Under the centre model** (the observation residual for cell-centred data) the witnesses are much worse: 6.55σ and 1.6 % > 3σ, failing the 1 % tail limit. Face interpolation of the data smooths a centre-level inconsistency; the data are not discretely divergence-free.
+- **Under the centre model** (the observation residual for cell-centred data) the best witness found is 6.55σ with 1.6 % > 3σ. That is an upper bound: centre-model feasibility is **unresolved**, not refuted (corrected after Codex's M5d review).
 - **A bound-constrained data fit** (L_∞-type, as here) is required to reach admissibility at all. The least-squares A₀ does not enforce the maximum or the tail.
 
 ### 5.3 Exact LP (added 15:20)
@@ -120,6 +120,6 @@ The data are cell-centred, apparently interpolated by the data release, and **no
 ## 6. What this changes
 
 1. **Data admissibility is attainable or nearly attainable under the face model, but only with a max-norm fit, not with least squares.** Before the next solver step, the data term or initializer should be decided: keep least squares and accept that outliers are a model or objective mismatch; or add a bound-constrained initializer or data term.
-2. **Under the centre model the data are not admissible at 5σ.** This is a statement about the data and its transfer (cell-centred, not divergence-free, block-averaged), not about the solver.
-3. **The joint GN's weakness is step geometry, not preconditioning.** A pressure-stiffened block scaling fixes the single-step quality and the short-budget ranking.
+2. **Under the centre model, no witness meeting the criteria has been found; feasibility remains unresolved** (corrected after Codex's M5d review). The 6.55σ witness is an upper bound only. Face and centre witness values use different observation operators and normalizations, so they do not rank the intrinsic consistency of the data.
+3. **At this checkpoint, the joint GN's gap is explained by step geometry; the layer-diagonal estimator is not the cause here** (qualified after Codex's review: other preconditioning problems at other states or scales are not ruled out). A pressure-stiffened block scaling fixes the single-step quality and the short-budget ranking at this checkpoint.
 4. **The pressure prior remains a scientific decision for the user.** Nothing here forces it; the data question comes first.

@@ -365,6 +365,11 @@ end
     c = res.candidates[1]
     @test isapprox(c.diag.share_final.u + c.diag.share_final.A + c.diag.share_final.b, 1.0; atol = 1e-10)
     @test c.diag.share_final.u <= 1e-12 && c.diag.dPmax <= 1e-12
+    # anchor-tangent: the returned direction already has anchor mean 0, so projection leaves its pressure share
+    xa = deepcopy(x); wa = H.SMHSWork(par); H.objective!(pb, wa, xa)
+    st, why, n, res = H.joint_gn_solve!(pb, wa, xa, ulo; anchor_tangent = true, max_candidates = 3, diagnostics = true)
+    @test all(abs(q.diag.share_y.u - q.diag.share_final.u) <= 1e-6 + 1e-6 * q.diag.share_y.u for q in res.candidates if !q.cauchy)
+    @test all(q.ynorm <= q.Delta_used * (1 + 1e-9) && q.margin >= -1e-12 for q in res.history)
     # block scaling and the full-norm radius rule keep steps feasible and inside the ball
     for kw in ((; block_scale = (10.0, 1.0, 1.0)), (; Δ_init = :full))
         xs = deepcopy(x); ws = H.SMHSWork(par); H.objective!(pb, ws, xs)

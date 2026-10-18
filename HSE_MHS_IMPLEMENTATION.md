@@ -1618,3 +1618,11 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **Joint GN additions:** step-geometry options (`block_scale`, `magnetic_only`, `Δ_init`, `Δ0`), per-candidate block diagnostics, and the residual recomputed after a boundary exit. **Key result:** a pressure-stiffened block scaling (×10–×100) turns ρ from 0.13 into ≈ 1 at the checkpoint.
 - **The input B is cell-centred** (`stagger_test.jl`) and not discretely divergence-free.
 - **Data-only witnesses** (`data_feasibility.jl`). Face model: max 5.13σ, 0.70 % > 3σ (the least-squares initializer: 11.17σ). Centre model: 6.55σ, 1.6 %. The data-model decision is open.
+
+## 32. Implementation notes recorded during M5e (18 Oct 2026)
+
+- Codex's M5d review: `CODEX_REVIEW_M5d_2026-10-18.md`. Results: `HSEMHS/reports/M5e_codex_m5d_followup.md`; brief: `CODEX_BRIEF_M5e_2026-10-18_1730.md`.
+- **Shared observation artifact** (`export_observations.jl`) used by all LP checks (`data_lp.py`). Solutions are verified from the physical field, independently of the LP matrix.
+- **Face-model data admissibility is attainable.** A divergence-free field exists with max 4.999σ and 0.615 % > 3σ (fixed-support LP from the p = 128 witness; 1e-3 margin; a numerically verified witness). Centre-model feasibility is unresolved.
+- **`joint_gn_solve!(anchor_tangent = true)`**: projected PCG on the pressure anchor constraint. It removes the projection inflation but does not improve continuations.
+- **3000-product comparison from three starts:** joint ×100 is the most consistent arm, and pressure-limited joint arms beat both alternations. No arm converges.
