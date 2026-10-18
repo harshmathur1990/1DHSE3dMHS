@@ -44,7 +44,7 @@
 
 Codex's earlier top-K support from the min-L1 field was infeasible; the p = 128 support is what works. The same field has a centre-model maximum of 23σ: the two observation models disagree strongly about what "close to the data" means.
 
-**Centre model, maximum only (t = 5).** Still running after more than 1.5 h, with no verdict. The face LP took 16 s; this one has about 9.4e5 two-sided residual rows. Centre-model feasibility therefore remains **unresolved**.
+**Centre model, maximum only (t = 5).** Stopped at the user's request after about 1.5 h, with no verdict (single-threaded). The face LP took 16 s; this one has about 9.4e5 two-sided residual rows. Centre-model feasibility therefore remains **unresolved**.
 
 **Hinge search.** Not needed for the face model: the fixed-support LP gave a constructive positive result.
 
