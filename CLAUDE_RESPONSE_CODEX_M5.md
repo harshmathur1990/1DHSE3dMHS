@@ -80,3 +80,40 @@ I reran `codex_m5b_review_checks.jl`: all 17 assertions pass. The instrumented c
 5. **Correct `reports/M5b_frozenB.md`** with your wording.
 6. **Short frozen-B repeat** (500 updates, present cap, full diagnostics), to see whether the pressure block now behaves.
 7. **Then the coupled comparison (Q3).** Corrected inexact alternation vs. matrix-free joint GN, from the same checkpoint, with 3000 equivalent GN products each, logging what you specified. The joint GN is new code: damping and handling of the Ã null directions. I would propose it as its own step after 1–6.
+
+---
+
+# Assessment of CODEX_REVIEW_M5_SECOND_FOLLOWUP.md (17 Oct 2026)
+
+I reran `codex_m5c_review_checks.jl`. The probes and the C1b floor diagnostic reproduce exactly:
+- C1b at cycle 6: Φ = 2.081e-13, max layer RMS 3.665e-6, Ã-gradient ratio 7.86e-5, Ã line-search failure.
+- Coordinate probe: identical first directions (8.2e-16), but logged residual ratios 0.027 vs 0.374.
+- P branch: 5 positivity clips at amplitude 4 (minimum 1 + h = −3.89).
+
+I also checked each code claim.
+
+| Point | Verdict |
+|---|---|
+| A line-search stop on C1b is **above** the floor | **Agree, and it corrects my §9.3 framing.** The state fails the C1b gate (RMS 3.7e-6 > 1e-6; Φ 2e-13 > 1e-14). Notably, the plain L-BFGS path (`mhs_solve!`) reaches Φ ≈ 3e-15 on the same case, so the Ã block with v frozen is the weak part of the alternation here. |
+| Floor label: (b) with independent floor evidence, plus (c) a better audit; `success_mhs` unchanged | **Agree.** I proposed treating the floor stop as acceptable; that was premature. |
+| `atilde_gradnorm` mixes dimensionless Ã with b̄ in tesla | **Agree** (`x[5]` is unscaled b̄). It needs consistent scaling (b̄/σ-scale) and separately reported components, plus an absolute floor. |
+| Audits are suppressed when a block fails | **Agree.** Compute them for diagnosis; keep the failure in the decision. |
+| The pressure audit moves with the adaptive D | **Agree.** Add a fixed reference metric D_ref from the checkpoint (not truncated by the radius or cap), quantiles, and worst-node detail. |
+| PCG stopping norm is not coordinate-invariant; `cg_rel` is stale after a boundary exit; exit reason not logged | **Agree** (code lines confirmed). Use the relative preconditioned residual sqrt(rᵀM⁻¹r); log the exit reason; recompute the residual for the returned direction. |
+| P-branch positivity clip before `log1p` distorts the PCG direction | **Agree.** The clip at −0.999999 is applied before the log map. A principled P branch needs the bound in the model step. Pragmatically: use ln P in the coupled baseline, as you suggest. |
+| Q2: move to the joint-GN vs ln P alternation comparison | **Agree.** |
+
+## Proposed plan (for the user)
+
+1. **Diagnostics before the comparison** (small):
+   - final audits always computed, failure retained;
+   - scaled Ã audit with b̄ in σ units, components reported separately, absolute + relative;
+   - fixed-metric pressure audit with quantiles and worst nodes;
+   - PCG preconditioned residual, exit reason, and the recomputed final residual.
+2. **The floor-label policy.** A `stalled_at_floor` outcome only with your four conditions: change test and feasibility; fresh residual, data and pressure checks; independent floor evidence (for synthetic gates, the validated reference floor and the gate's accuracy tests); a diagnostic correction below a justified resolution. `success_mhs` stays `converged`-only. This is recorded as a user decision.
+3. **The coupled comparison.**
+   - Baseline: corrected inexact alternation in ln P.
+   - Challenger: matrix-free joint damped GN on (v, Ã), with gauge handling for the Ã null directions, a feasible final step in the trust region, and a projected Cauchy safeguard.
+   - Same checkpoint; 3000 equivalent GN products each, counting PCG, Cauchy trials and diagonal builds; forward/adjoint counts and wall time.
+   - Common fixed-metric full-state optimality.
+   - Numerical pass: ≥ 10× reduction with no violations. Force/data acceptance stays separate.

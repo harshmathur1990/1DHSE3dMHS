@@ -113,12 +113,13 @@ function u_gauss_newton!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field;
     opt = pressure_optimality(pb, w, g[1], D1, ulo, δs, ts); opt0 = opt
     opt_target = max(opt_target, opt_factor * opt0)            # inexact rule: optimality reduced by opt_factor
     μ = μ0; nacc = 0; tries = 0; ncand = 0; ncauchy = 0; cg_rel = NaN; margin = NaN; aerr = 0.0
+    nexit = Dict{Symbol,Int}(); cg_exit = :none
     Δ = isnan(Δ0) ? du_max * sqrt(_sum1(par, (i, j, k) -> D1[i, j, k])) : Δ0
     Δstart = Δ
     hist = NamedTuple[]
     status = :progress
     opt <= opt_tol && return (status = :converged, accepted = 0, tries = 0, opt = opt, opt0 = opt0, f = f, Δ = Δ, μ = μ,
-                              cg_rel = NaN, min_margin = NaN, anchor_err = 0.0, counts = (cand = 0, cauchy = 0, trust = 0, cap = 0),
+                              cg_rel = NaN, min_margin = NaN, anchor_err = 0.0, counts = (cand = 0, cauchy = 0, trust = 0, cap = 0, cg_exit = Dict{Symbol,Int}()),
                               history = hist)
     while nacc < steps
         tries += 1
@@ -131,8 +132,8 @@ function u_gauss_newton!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field;
         owned_map!((i, j, k) -> free(i, j, k) ? -gy(i, j, k) : 0.0, r, par)
         owned_map!((i, j, k) -> r[i, j, k] / ((1 + μ) * Dy(i, j, k)), zr, par)
         copyto!(parent(p), parent(zr))
-        rz = _dot1(par, r, zr); r0 = sqrt(_dot1(par, r, r)); cg_rel = 0.0
-        r0 == 0 && (status = :converged; break)
+        rz = _dot1(par, r, zr); rz0 = rz; cg_rel = 1.0; cg_exit = :budget
+        rz0 <= 0 && (status = :converged; break)
         ynorm2() = _sum1(par, (i, j, k) -> Dy(i, j, k) * y[i, j, k]^2)
         for _ in 1:cg_iter
             owned_map!((i, j, k) -> free(i, j, k) ? sc[i, j, k] * p[i, j, k] : 0.0, hd, par)
@@ -143,19 +144,26 @@ function u_gauss_newton!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field;
             τt = pD > 0 ? max((-dd + sqrt(max(dd^2 - pD * (ynorm2() - Δ^2), 0.0))) / pD, 0.0) : Inf
             α = pq > 0 ? rz / pq : Inf
             if α >= τt                                         # trust boundary (or negative curvature): stop on it
-                owned_map!((i, j, k) -> y[i, j, k] + τt * p[i, j, k], y, par); break
+                owned_map!((i, j, k) -> y[i, j, k] + τt * p[i, j, k], y, par)
+                cg_exit = pq > 0 ? :boundary : :negcurv
+                # residual of the RETURNED direction: r = −g − (H + μD) y on the free set
+                owned_map!((i, j, k) -> free(i, j, k) ? sc[i, j, k] * y[i, j, k] : 0.0, hd, par); Hv!(q, hd)
+                owned_map!((i, j, k) -> free(i, j, k) ? -gy(i, j, k) - (sc[i, j, k] * q[i, j, k] + μ * Dy(i, j, k) * y[i, j, k]) : 0.0, r, par)
+                cg_rel = sqrt(max(_sum1(par, (i, j, k) -> r[i, j, k]^2 / ((1 + μ) * Dy(i, j, k))), 0.0) / rz0)
+                break
             end
             owned_map!((i, j, k) -> y[i, j, k] + α * p[i, j, k], y, par)
             owned_map!((i, j, k) -> r[i, j, k] - α * q[i, j, k], r, par)
-            cg_rel = sqrt(_dot1(par, r, r)) / r0
-            cg_rel <= cg_rtol && break
             owned_map!((i, j, k) -> r[i, j, k] / ((1 + μ) * Dy(i, j, k)), zr, par)
             rzn = _dot1(par, r, zr)
+            cg_rel = sqrt(max(rzn, 0.0) / rz0)                 # preconditioned residual (coordinate-invariant)
+            cg_rel <= cg_rtol && (cg_exit = :residual; break)
             owned_map!((i, j, k) -> free(i, j, k) ? zr[i, j, k] + (rzn / rz) * p[i, j, k] : 0.0, p, par)
             rz = rzn
         end
         # ---- 2–3. candidate: actual δu, exactly feasible and inside the trust ball ----
         ncand += 1
+        nexit[cg_exit] = get(nexit, cg_exit, 0) + 1
         aerr = candidate!(δ, y, 1.0, Δ)
         pred = predicted(δ)
         # ---- 4. projected-Cauchy safeguard: steepest descent −D⁻¹g on the free set, best of a few τ ----
@@ -191,7 +199,7 @@ function u_gauss_newton!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field;
             ρ < 0.25 && (Δ = nfin / 4)
             μ = ρ > 0.75 ? max(μ / 3, 1e-12) : μ
             opt = pressure_optimality(pb, w, g[1], D1, ulo, δs, ts)
-            record && push!(hist, (accepted = nacc, f = f, rho = ρ, pred = pred, predc = predc, cg_rel = cg_rel, opt = opt,
+            record && push!(hist, (accepted = nacc, f = f, rho = ρ, pred = pred, predc = predc, cg_rel = cg_rel, cg_exit = cg_exit, opt = opt,
                                    margin = margin, anchor_err = aerr, steplen = steplen, ynorm = nfin, Delta_used = Δused, Delta = Δ,
                                    nactive = Int(_sum1(par, (i, j, k) -> act[i, j, k])), cauchy = ncauchy, trust = ntrust, cap = ncap))
             opt <= opt_tol && (status = :converged; break)
@@ -203,46 +211,77 @@ function u_gauss_newton!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field;
     end
     status != :converged && (status = nacc > 0 ? :progress : :failed)
     return (status = status, accepted = nacc, tries = tries, opt = opt, opt0 = opt0, f = f, Δ = Δ, μ = μ, cg_rel = cg_rel,
-            min_margin = margin, anchor_err = aerr, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, cap = ncap), history = hist)
+            min_margin = margin, anchor_err = aerr, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, cap = ncap, cg_exit = nexit), history = hist)
 end
 
-"""Scaled optimality of the Ã block at the state held by `w`: ‖∇_(Ã,b̄) Φ‖₂ (relative use by the caller)."""
-function atilde_gradnorm(pb::SMHSProblem, w::SMHSWork, x::MHSState, g::MHSState)
+"""
+    atilde_audit(pb, w, x, g) -> (combined, gA, gb_sigma)
+
+Scaled magnetic-block gradient at the state of `x` (`w` holds it on exit): ‖∇_Ã Φ‖₂ for the dimensionless
+Ã, and |∂Φ/∂(b̄/σ_B)| = σ_B |∂Φ/∂b̄| for the mean flux measured in units of the field uncertainty (Codex
+second follow-up: b̄ in tesla must not be mixed unscaled with Ã). `combined` = √(gA² + gb_sigma²).
+"""
+function atilde_audit(pb::SMHSProblem, w::SMHSWork, x::MHSState, g::MHSState)
     fg!(g, pb, w, x)
     par = pb.par; b = par.block
     s = 0.0
     for f in 2:4, k in axes(g[f], 3), j in 1:b.ny, i in 1:b.nx
         s += g[f][i, j, k]^2
     end
-    return sqrt(MPI.Allreduce(s, +, par.comm) + getscalar(par, g[5])^2)
+    gA = sqrt(MPI.Allreduce(s, +, par.comm))
+    σB = sqrt(_sum1(par, (i, j, k) -> pb.sig[3][i, j, k]^2) / pb.N)
+    gb = σB * abs(getscalar(par, g[5]))
+    return sqrt(gA^2 + gb^2), gA, gb
 end
 
 """
-    alternating_solve!(pb, w, x; max_outer, a_iter, u_steps, u_opt_factor, xtol, final_uopt, final_arel,
-                       collapse_du, du_max, cg_iter, cg_rtol, coord, opts, verbose) -> (status, reason, outer, history)
+    alternating_solve!(pb, w, x; max_outer, a_iter, u_steps, u_opt_factor, xtol, final_uopt, final_arel, final_aabs,
+                       floor_check, Dref, res_rel, work_budget, callback, collapse_du, du_max, cg_iter, cg_rtol,
+                       coord, opts, verbose) -> (status, reason, outer, history)
 
 Block alternation with inexact blocks: the Ã block (L-BFGS, v frozen, `a_iter` iterations) and the pressure
 block (`u_gauss_newton!`: up to `u_steps` accepted steps or optimality reduced by `u_opt_factor`; the
 trust-region state persists across cycles). A block FAILS when L-BFGS stops on a line-search failure or an EOS
 failure, or the pressure block accepts no step; budget-limited progress is not failure.
-Converged only when P and B change by ≤ `xtol` over one cycle, no block failed in it, and fresh audits at
-the same final state pass: pressure optimality ≤ `final_uopt` and ‖∇_Ã Φ‖ ≤ `final_arel` × its value at the
-start. When only the change test passes, the blocks are tightened (×4 budgets) and the loop continues.
+
+Whenever P and B change by ≤ `xtol` over a cycle, fresh audits are computed at the same final state, also when
+a block failed (for diagnosis): pressure optimality, the scaled magnetic gradient (`atilde_audit`) and, when a
+reference metric is available, the fixed-metric full-state audit (`full_audit`).
+- `converged`: no block failed, pressure optimality ≤ `final_uopt`, and the scaled magnetic gradient
+  ≤ `final_arel` × its start value + `final_aabs`.
+- `stalled` with reason "stalled_at_floor" (user decision 18 Oct 2026, Codex's four conditions): the change and
+  feasibility tests hold; the audits were computed and are reported; the caller's independent floor evidence
+  `floor_check(pb, w, x)` holds (for synthetic gates: the validated reference floor and the gate's accuracy
+  tests; production passes none, so it cannot obtain this label); and the fixed-metric diagnostic correction
+  predicts a decrease ≤ `res_rel` × Φ. This label is not `converged` (`success_mhs` is unchanged).
+- otherwise the blocks are tightened (×4 budgets) and the loop continues; `work_budget` (equivalent GN products,
+  `work_equivalent`) or `max_outer` end it with `max_iter`.
+`callback(outer, row)` runs after every cycle with the work counters saved and restored, so diagnostics it
+computes are not charged to the solver.
 """
 function alternating_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_outer::Int = 100, a_iter::Int = 500,
                             u_steps::Int = 5, u_opt_factor::Float64 = 0.5, xtol::Float64 = 1e-3,
-                            final_uopt::Float64 = 1e-6, final_arel::Float64 = 1e-6, collapse_du::Float64 = 3.0,
+                            final_uopt::Float64 = 1e-6, final_arel::Float64 = 1e-6, final_aabs::Float64 = 0.0,
+                            floor_check = nothing, Dref = nothing, res_rel::Float64 = 1e-10,
+                            work_budget::Float64 = Inf, callback = nothing, collapse_du::Float64 = 3.0,
                             du_max::Float64 = 0.5, cg_iter::Int = 100, cg_rtol::Float64 = 1e-2, coord::Symbol = :lnP,
-                            opts::LBFGSOptions = LBFGSOptions(), verbose::Bool = false)
-    par = pb.par
+                            opts::LBFGSOptions = LBFGSOptions(), verbose::Bool = false, ulo = nothing)
+    par = pb.par; b = par.block
+    w0 = work_equivalent()
     objective!(pb, w, x)
-    ulo = newfield(par); owned_map!((i, j, k) -> w.u[i, j, k] - collapse_du, ulo, par)
-    gs = similar_state(x); ga0 = atilde_gradnorm(pb, w, x, gs)
+    if ulo === nothing
+        ulo = newfield(par); owned_map!((i, j, k) -> w.u[i, j, k] - collapse_du, ulo, par)
+    end
+    gs = similar_state(x); ga0 = atilde_audit(pb, w, x, gs)[1]
     D1 = newfield(par); δs = newfield(par); ts = newfield(par)
     hist = NamedTuple[]
     Δu = NaN; μu = 1e-8; tight = 1
     for outer in 1:max_outer
-        oA = LBFGSOptions(; (k => getfield(opts, k) for k in fieldnames(LBFGSOptions))..., frozen = [1], max_iter = tight * a_iter, xtol_rel = 0.0)
+        # cap the blocks by the remaining work budget (an L-BFGS iteration costs ≈ 1–2 equivalent products)
+        rem = work_budget - (work_equivalent() - w0)
+        rem <= 0 && return max_iter, "work budget", outer - 1, hist
+        aI = isfinite(rem) ? clamp(floor(Int, rem / 2), 1, tight * a_iter) : tight * a_iter
+        oA = LBFGSOptions(; (k => getfield(opts, k) for k in fieldnames(LBFGSOptions))..., frozen = [1], max_iter = aI, xtol_rel = 0.0)
         snap = measured_snapshot(pb, w)
         ra = lbfgs!(pb, w, x; opts = oA)                 # leaves w at x
         ru = u_gauss_newton!(pb, w, x, ulo; steps = tight * u_steps, cg_iter = cg_iter, cg_rtol = cg_rtol, du_max = du_max,
@@ -252,29 +291,43 @@ function alternating_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_outer
         ch = measured_change(pb, w, snap)
         a_fail = ra.status == eos_failure || (ra.status == stalled && occursin("line search", ra.reason))
         u_fail = ru.status == :failed
-        audit = (uopt = NaN, arel = NaN)
-        status_now = :continue
-        if ch <= xtol && !a_fail && !u_fail
-            # fresh audits of both blocks at the same final state
-            gn = fg!(gs, pb, w, x)
+        audit = (uopt = NaN, arel = NaN, gA = NaN, gb_sigma = NaN, m = NaN, margin = NaN)
+        status_now = :continue; floor_ok = false
+        if ch <= xtol
+            # fresh audits at the same final state, computed even when a block failed
+            fg!(gs, pb, w, x)
             gn_diag_v!(D1, pb, w, x)
             uopt = pressure_optimality(pb, w, gs[1], D1, ulo, δs, ts)
-            arel = atilde_gradnorm(pb, w, x, gs) / max(ga0, 1e-300)
+            ac, gA, gbs = atilde_audit(pb, w, x, gs)
+            m = Dref === nothing ? NaN : full_audit(pb, w, x, Dref, ulo).m
+            margin = -global_max(par, -minimum(w.u[i, j, k] - ulo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
             objective!(pb, w, x)
-            audit = (uopt = uopt, arel = arel)
-            status_now = (uopt <= final_uopt && arel <= final_arel) ? :converged : :tighten
+            audit = (uopt = uopt, arel = ac / max(ga0, 1e-300), gA = gA, gb_sigma = gbs, m = m, margin = margin)
+            if !a_fail && !u_fail && uopt <= final_uopt && ac <= final_arel * ga0 + final_aabs
+                status_now = :converged
+            else
+                floor_ok = margin >= -1e-12 && floor_check !== nothing && floor_check(pb, w, x) && !isnan(m) && m <= res_rel * max(f, 1e-300)
+                status_now = floor_ok ? :floor : :tighten
+            end
         end
-        push!(hist, (outer = outer, f = f, terms = t, change = ch, a_status = ra.status, a_reason = ra.reason, a_iter = ra.iterations,
-                     u_status = ru.status, usteps = ru.accepted, uopt = ru.opt, a_fail = a_fail, u_fail = u_fail, audit = audit,
-                     tight = tight))
+        row = (outer = outer, f = f, terms = t, change = ch, a_status = ra.status, a_reason = ra.reason, a_iter = ra.iterations,
+               u_status = ru.status, usteps = ru.accepted, uopt = ru.opt, ucounts = ru.counts, a_fail = a_fail, u_fail = u_fail,
+               audit = audit, floor_ok = floor_ok, tight = tight, work = work_equivalent() - w0)
+        push!(hist, row)
         if verbose && rank0(par)
-            @printf("  cycle %3d: Φ %.4e  Φ_F %.3e  Φ_Q %.3e  χ² %.4f  change %.2e  Ã %s/%d%s  u %s/%d opt %.1e→%.1e%s\n", outer, f, t[1], t[2], t[3], ch,
+            @printf("  cycle %3d: Φ %.4e  Φ_F %.3e  Φ_Q %.3e  χ² %.4f  change %.2e  Ã %s/%d%s  u %s/%d opt %.1e→%.1e%s  work %.0f\n", outer, f, t[1], t[2], t[3], ch,
                     string(ra.status), ra.iterations, a_fail ? " FAIL" : "", string(ru.status), ru.accepted, ru.opt0, ru.opt,
-                    isnan(audit.uopt) ? "" : @sprintf("  audit uopt %.1e arel %.1e", audit.uopt, audit.arel))
+                    isnan(audit.uopt) ? "" : @sprintf("  audit uopt %.1e arel %.1e (gA %.1e, gb·σ %.1e) m %.1e", audit.uopt, audit.arel, audit.gA, audit.gb_sigma, audit.m),
+                    row.work)
             flush(stdout)
         end
+        if callback !== nothing
+            saved = copy(WORK_COUNTS); callback(outer, row); copyto!(WORK_COUNTS, saved)
+        end
         status_now == :converged && return converged, "P and B changed ≤ xtol; no block failed; final audits passed", outer, hist
+        status_now == :floor && return stalled, "stalled_at_floor: change ≤ xtol, feasible, floor evidence holds, diagnostic decrease ≤ res_rel·Φ", outer, hist
         status_now == :tighten && (tight = min(4tight, 16))
+        work_equivalent() - w0 >= work_budget && return max_iter, "work budget", outer, hist
     end
     return max_iter, "max_outer", max_outer, hist
 end

@@ -241,7 +241,18 @@ function phiQ_seeds!(qQ::NTuple{6,Field}, J::NTuple{3,Field}, pb::SMHSProblem, p
     return qQ
 end
 
+"""
+Work counters for the staggered problem (M5 solver comparison): `WORK_COUNTS[1]` objective (forward) calls,
+`[2]` gradient (adjoint) calls, `[3]` Gauss–Newton products. `work_equivalent()` converts them to
+equivalent GN products: an objective+gradient pair counts 1, a GN product 1 (its internal adjoint is not
+counted again), a bare objective ½.
+"""
+const WORK_COUNTS = zeros(Int, 3)
+reset_work!() = fill!(WORK_COUNTS, 0)
+work_equivalent() = 0.5WORK_COUNTS[1] + 0.5 * (WORK_COUNTS[2] - WORK_COUNTS[3]) + WORK_COUNTS[3]
+
 function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
+    WORK_COUNTS[1] += 1
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     v, Atx, Aty, Atz, xb = x
     bbar = getscalar(par, xb)
@@ -432,6 +443,7 @@ end
 # Adjoint
 # ---------------------------------------------------------------------------------------
 function gradient!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; gauge::Bool = true)
+    WORK_COUNTS[2] += 1
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     exchange_halos!(par, [w.aR..., w.fX..., w.fY..., w.fZ..., w.qS..., w.qU..., w.qN...])
     fX, fY, fZ = w.fX, w.fY, w.fZ

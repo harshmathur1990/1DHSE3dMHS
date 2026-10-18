@@ -1597,3 +1597,16 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **`gn_diag_v!` is the exact v-coordinate diagonal** (anchor rows corrected through one gauge-free GN product).
 - **Frozen-B result (Bifrost):** neither the ln P nor the p branch passes in 500 updates. Both approach the same conditional optimum: force within 0.3 %, pressure within 2 % median on identifiable nodes. That optimum raises P by 10²–10⁴ where pressure is weakly constrained.
 - **M5b follow-up (Codex, `CODEX_REVIEW_M5_FOLLOWUP.md`).** The pressure block keeps one base model per trust-region iteration (trial points in a separate workspace), fits the final step into the trust ball, and has a projected-Cauchy safeguard (≥ 0.1 of the Cauchy decrease). An Ã-block line-search failure counts as a failure. Final convergence needs fresh audits of both blocks. Corrected frozen-B repeat: `HSEMHS/reports/M5b_frozenB.md` §6. **Open:** the C1b alternation never reports `converged`, because the Ã block's line search fails at the round-off floor (decision needed).
+
+## 30. Implementation notes recorded during M5c (18 Oct 2026)
+
+- Codex's second follow-up: `CODEX_REVIEW_M5_SECOND_FOLLOWUP.md`. Assessment and plan: `CLAUDE_RESPONSE_CODEX_M5.md`.
+- **Work accounting.** `WORK_COUNTS` and `work_equivalent()`: objective + gradient = 1, GN product = 1, bare objective = ½. Solver comparisons are made at matched work.
+- **Audits** (`src/MHSAudit.jl`).
+  - `reference_metric`: a fixed D_ref at a common state, floored at 1e-6 × median per field.
+  - `full_audit`: the pressure correction s* without trust radius or cap; Ã, b̄ components with b̄ in σ_B units; the full-state diagonal-model decrease m.
+  - `atilde_audit` replaces the mixed-unit Ã/b̄ gradient norm.
+- **Pressure-block PCG.** Stops on the relative *preconditioned* residual (coordinate-invariant). Exit reasons are recorded; after a boundary exit the residual is recomputed for the returned direction.
+- **Alternation.** Audits are computed whenever the change test passes, also after block failures. The `stalled_at_floor` policy follows spec §10 (18 Oct 2026). A work budget caps the blocks.
+- **`joint_gn_solve!`** (`src/MHSJointGN.jl`) is a joint damped trust-region GN on (v, Ã, b̄) with the same safeguards: base-state model, exact pressure projection, final step inside the D-ball, projected-Cauchy fraction. The Ã gauge null space is handled by Levenberg damping; comparisons use physical quantities.
+- On C1b (8×8×65, 3000 work): the joint GN reaches Φ 2.5e-13, max RMS 1.5e-6; the alternation reaches Φ 1.6e-12, RMS 1.0e-5 (and overshot its budget before the per-block cap).

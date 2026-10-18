@@ -310,3 +310,36 @@ end
     ra = (status = H.stalled, iterations = 1, reason = "line search failed twice from steepest descent")
     @test ra.status == H.eos_failure || (ra.status == H.stalled && occursin("line search", ra.reason))
 end
+
+@testset "M5c: audits, joint trust-region GN, stalled_at_floor policy" begin
+    par = H.init_parallel(4, 4, 9); b = par.block
+    pb, x0, us, uc, grid = H.sc1_problem(par, 4, 4, 9; Bobs = (20e-4, 0.0, 50e-4), lambda_Q = 1e-3)
+    x = deepcopy(x0)
+    H.owned_map!((i, j, k) -> x[1][i, j, k] + 0.3 * sin(1.37i + 2.21j + 0.7k), x[1], par)
+    w = H.SMHSWork(par); H.objective!(pb, w, x)
+    ulo = H.newfield(par); H.owned_map!((i, j, k) -> w.u[i, j, k] - 3.0, ulo, par)
+    Dref = H.reference_metric(pb, w, x)
+    @test all(Dref[f][i, j, k] > 0 for f in 1:4 for k in axes(Dref[f], 3) for j in 1:b.ny for i in 1:b.nx)
+    a0 = H.full_audit(pb, w, x, Dref, ulo)
+    @test isfinite(a0.m) && a0.m >= 0 && a0.m_u >= 0 && a0.m_A >= 0 && length(a0.worst) > 0
+    # joint GN: feasible, inside the radius, monotone, work budget respected (to within one iteration)
+    xj = deepcopy(x); wj = H.SMHSWork(par); H.objective!(pb, wj, xj)
+    H.reset_work!()
+    st, why, nacc, res = H.joint_gn_solve!(pb, wj, xj, ulo; work_budget = 400.0, cg_iter = 30)
+    h = res.history
+    @test nacc > 0
+    @test all(q.ynorm <= q.Delta_used * (1 + 1e-9) && q.margin >= -1e-12 && q.anchor_err <= 1e-12 for q in h)
+    @test all(diff([q.f for q in h]) .<= 0)
+    @test H.work_equivalent() <= 400 + 120
+    a1 = H.full_audit(pb, wj, xj, Dref, ulo)
+    rank0(par) && @info "joint GN (4×4×9)" st why nacc a0.m a1.m res.counts
+    @test a1.m < a0.m
+    # floor label: never without floor evidence; only when all conditions hold
+    xa = deepcopy(x); wa = H.SMHSWork(par)
+    st1, why1, _, _ = H.alternating_solve!(pb, wa, xa; max_outer = 6, a_iter = 50, u_steps = 3, final_uopt = 0.0, Dref = Dref, ulo = ulo)
+    @test !occursin("stalled_at_floor", why1)
+    xb = deepcopy(x); wb = H.SMHSWork(par)
+    st2, why2, _, _ = H.alternating_solve!(pb, wb, xb; max_outer = 30, a_iter = 50, u_steps = 3, final_uopt = 0.0, Dref = Dref, ulo = ulo,
+                                           floor_check = (p, w, x) -> true, res_rel = Inf)
+    @test st2 == H.stalled && occursin("stalled_at_floor", why2)
+end

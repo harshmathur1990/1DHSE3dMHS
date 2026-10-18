@@ -51,6 +51,8 @@ include("Staggered.jl")
 include("MHSStaggered.jl")
 include("MHSGaussNewton.jl")
 include("MHSAlternate.jl")
+include("MHSAudit.jl")
+include("MHSJointGN.jl")
 include("Driver.jl")
 
 function __init__()

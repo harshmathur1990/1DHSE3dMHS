@@ -19,6 +19,7 @@ hybrid_work(w::SMHSWork, wl::SMHSWork) =
 Hv = H_GN v at the state of the last `objective!(pb, w, x)`. `wl` is scratch work.
 """
 function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MHSState; gauge::Bool = true)
+    WORK_COUNTS[3] += 1
     par = pb.par; s = pb.s; o = pb.ops; b = par.block; NZ = b.nz
     lF, lS, lU, lN = pb.lamF, pb.lamS, pb.lamU, pb.lamN; N, NF, NB, g = pb.N, pb.NF, pb.NB, pb.g
     # ---- linearized state ----
