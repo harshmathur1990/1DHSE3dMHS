@@ -8,11 +8,20 @@
 # The full-state measure is the predicted decrease of these corrections, in the units of Φ:
 #   m = (−gᵀs* − ½ s*ᵀD s*) + ½ Σ_Ã g²/D + ½ g_b̄²/D_b̄.
 
+"""All ranks' values of a local vector, concatenated (local lengths may differ between ranks)."""
+function _allgatherv(par::ParCtx, v::Vector{Float64})
+    counts = MPI.Allgather(Int32(length(v)), par.comm)
+    out = Vector{Float64}(undef, sum(counts))
+    MPI.Allgatherv!(v, MPI.VBuffer(out, counts), par.comm)
+    return out
+end
+
 """
     reference_metric(pb, w, x; floor_rel = 1e-6) -> D_ref::MHSState
 
-Positive reference diagonal at the state of `x` (`w` must hold it): the v-coordinate GN diagonal for the
-pressure, the per-layer Hutchinson GN diagonal for Ã and the exact b̄ curvature. Each field is floored at
+Positive reference diagonal at the state of `x` (`w` must hold it): `gn_diagonal!` — the v-coordinate GN
+diagonal for the pressure, per-layer Hutchinson means for Ã (of the full Hessian with the default
+`precond_atilde = :layer`, of H_GN with `:layer_gn`) and the b̄ curvature. Each field is floored at
 `floor_rel` × its global median, so a few near-zero entries cannot dominate the audit.
 """
 function reference_metric(pb::SMHSProblem, w::SMHSWork, x::MHSState; floor_rel::Float64 = 1e-6)
@@ -23,7 +32,7 @@ function reference_metric(pb::SMHSProblem, w::SMHSWork, x::MHSState; floor_rel::
         for k in axes(D[f], 3), j in 1:b.ny, i in 1:b.nx
             push!(vals, D[f][i, j, k])
         end
-        allv = MPI.Allgather(vals, par.comm)
+        allv = _allgatherv(par, vals)
         med = median(allv)
         Df = D[f]; owned_map!((i, j, k) -> max(Df[i, j, k], floor_rel * med), Df, par)
     end
@@ -50,14 +59,22 @@ function full_audit(pb::SMHSProblem, w::SMHSWork, x::MHSState, Dref::MHSState, u
                         (i, j, k) -> pb.alpha[i, j] / Dref[1][i, j, k], pb)
     # pressure part
     nodes = [(abs(s[i, j, k]), i, j, k) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx]
-    absS = MPI.Allgather(Float64[q[1] for q in vec(nodes)], par.comm)
+    absS = _allgatherv(par, Float64[q[1] for q in vec(nodes)])
     q(p) = quantile(absS, p)
     gs = _sum1(par, (i, j, k) -> g[1][i, j, k] * s[i, j, k]); sDs = _sum1(par, (i, j, k) -> Dref[1][i, j, k] * s[i, j, k]^2)
     mu = -gs - 0.5sDs
-    worst = sort(vec(nodes); rev = true)[1:min(nworst, length(nodes))]
-    wl = [(i = b.i0 + i - 1, j = b.j0 + j - 1, k = k, s = s[i, j, k], g = g[1][i, j, k], D = Dref[1][i, j, k],
-           P_over_Pref = exp(w.u[i, j, k] - pb.lnPref), bound_dist = w.u[i, j, k] - ulo[i, j, k],
-           active = (w.u[i, j, k] - ulo[i, j, k] <= 1e-6 && g[1][i, j, k] > 0)) for (_, i, j, k) in worst]
+    # global worst nodes: each rank contributes its local top `nworst`; every rank selects the global top
+    loc = sort(vec(nodes); rev = true)[1:min(nworst, length(nodes))]
+    flat = Float64[]
+    for (_, i, j, k) in loc
+        append!(flat, (abs(s[i, j, k]), b.i0 + i - 1, b.j0 + j - 1, k, s[i, j, k], g[1][i, j, k], Dref[1][i, j, k],
+                       exp(w.u[i, j, k] - pb.lnPref), w.u[i, j, k] - ulo[i, j, k],
+                       (w.u[i, j, k] - ulo[i, j, k] <= 1e-6 && g[1][i, j, k] > 0) ? 1.0 : 0.0))
+    end
+    allf = reshape(_allgatherv(par, flat), 10, :)
+    order = sortperm(allf[1, :]; rev = true)[1:min(nworst, size(allf, 2))]
+    wl = [(i = Int(allf[2, n]), j = Int(allf[3, n]), k = Int(allf[4, n]), s = allf[5, n], g = allf[6, n], D = allf[7, n],
+           P_over_Pref = allf[8, n], bound_dist = allf[9, n], active = allf[10, n] == 1.0) for n in order]
     split = ident === nothing ? (NaN, NaN) :
         (global_max(par, maximum((ident[i, j, k] ? abs(s[i, j, k]) : 0.0) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)),
          global_max(par, maximum((ident[i, j, k] ? 0.0 : abs(s[i, j, k])) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)))

@@ -1610,3 +1610,11 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **Alternation.** Audits are computed whenever the change test passes, also after block failures. The `stalled_at_floor` policy follows spec §10 (18 Oct 2026). A work budget caps the blocks.
 - **`joint_gn_solve!`** (`src/MHSJointGN.jl`) is a joint damped trust-region GN on (v, Ã, b̄) with the same safeguards: base-state model, exact pressure projection, final step inside the D-ball, projected-Cauchy fraction. The Ã gauge null space is handled by Levenberg damping; comparisons use physical quantities.
 - On C1b (8×8×65, 3000 work): the joint GN reaches Φ 2.5e-13, max RMS 1.5e-6; the alternation reaches Φ 1.6e-12, RMS 1.0e-5 (and overshot its budget before the per-block cap).
+
+## 31. Implementation notes recorded during M5d (18 Oct 2026)
+
+- Codex's M5c review: `CODEX_REVIEW_M5c_2026-10-18.md`. Results: `HSEMHS/reports/M5d_review_followup.md`; brief: `CODEX_BRIEF_M5d_2026-10-18_1430.md`.
+- **Ã preconditioner labels.** The default Ã layer diagonal is a per-layer Hutchinson estimate of the **full** Hessian (differences of ∇Φ). `precond_atilde = :layer_gn` uses GN products with the same probes. At the Bifrost checkpoint the two agree to ≤ 0.8 %.
+- **Joint GN additions:** step-geometry options (`block_scale`, `magnetic_only`, `Δ_init`, `Δ0`), per-candidate block diagnostics, and the residual recomputed after a boundary exit. **Key result:** a pressure-stiffened block scaling (×10–×100) turns ρ from 0.13 into ≈ 1 at the checkpoint.
+- **The input B is cell-centred** (`stagger_test.jl`) and not discretely divergence-free.
+- **Data-only witnesses** (`data_feasibility.jl`). Face model: max 5.13σ, 0.70 % > 3σ (the least-squares initializer: 11.17σ). Centre model: 6.55σ, 1.6 %. The data-model decision is open.

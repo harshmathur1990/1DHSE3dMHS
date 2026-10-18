@@ -343,3 +343,32 @@ end
                                            floor_check = (p, w, x) -> true, res_rel = Inf)
     @test st2 == H.stalled && occursin("stalled_at_floor", why2)
 end
+
+@testset "M5d: GN layer diagonal, joint-GN block options and diagnostics (Codex M5c review)" begin
+    par = H.init_parallel(4, 4, 9); b = par.block
+    pb, x0, us, uc, grid = H.sc1_problem(par, 4, 4, 9; Bobs = (20e-4, 0.0, 50e-4), lambda_Q = 1e-3)
+    x = deepcopy(x0)
+    H.owned_map!((i, j, k) -> x[1][i, j, k] + 0.3 * sin(1.37i + 2.21j + 0.7k), x[1], par)
+    w = H.SMHSWork(par); H.objective!(pb, w, x)
+    ulo = H.newfield(par); H.owned_map!((i, j, k) -> w.u[i, j, k] - 3.0, ulo, par)
+    Dfd = H.gn_diagonal!(H.similar_state(x), pb, w, x)
+    pb.pc_atilde = :layer_gn; H.objective!(pb, w, x)
+    Dgn = H.gn_diagonal!(H.similar_state(x), pb, w, x)
+    pb.pc_atilde = :layer
+    @test all(Dgn[f][i, j, k] > 0 for f in 2:4 for k in axes(Dgn[f], 3) for j in 1:b.ny for i in 1:b.nx)
+    @test any(abs(Dgn[f][1, 1, k] / Dfd[f][1, 1, k] - 1) > 1e-6 for f in 2:4 for k in axes(Dgn[f], 3))   # not the same estimator
+    @test all(Dgn[1][i, j, k] == Dfd[1][i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)              # pressure part unchanged
+    # magnetic-only: pressure exactly unchanged; diagnostics present and consistent
+    xm = deepcopy(x); wm = H.SMHSWork(par); H.objective!(pb, wm, xm)
+    st, why, n, res = H.joint_gn_solve!(pb, wm, xm, ulo; magnetic_only = true, max_candidates = 3, diagnostics = true)
+    @test all(xm[1][i, j, k] == x[1][i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx)
+    c = res.candidates[1]
+    @test isapprox(c.diag.share_final.u + c.diag.share_final.A + c.diag.share_final.b, 1.0; atol = 1e-10)
+    @test c.diag.share_final.u <= 1e-12 && c.diag.dPmax <= 1e-12
+    # block scaling and the full-norm radius rule keep steps feasible and inside the ball
+    for kw in ((; block_scale = (10.0, 1.0, 1.0)), (; Δ_init = :full))
+        xs = deepcopy(x); ws = H.SMHSWork(par); H.objective!(pb, ws, xs)
+        st, why, n, res = H.joint_gn_solve!(pb, ws, xs, ulo; max_candidates = 4, kw...)
+        @test all(q.ynorm <= q.Delta_used * (1 + 1e-9) && q.margin >= -1e-12 for q in res.history)
+    end
+end

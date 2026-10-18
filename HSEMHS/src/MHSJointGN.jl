@@ -2,9 +2,10 @@
 # comparison proposed in CODEX_REVIEW_M5_FOLLOWUP.md (Q3) and CODEX_REVIEW_M5_SECOND_FOLLOWUP.md (Q2).
 #
 # One model per trust-region iteration, at the accepted base state (trial points in a separate workspace):
-#   1. Steihaug–Toint PCG on (H_GN + μD) y = −g, D the full GN diagonal (exact v-diagonal; per-layer Hutchinson
-#      for Ã; exact b̄ curvature), ε-active pressure nodes fixed, D-norm trust ball, preconditioned residual
-#      stop, exit reason recorded;
+#   1. Steihaug–Toint PCG on (H_GN + μD) y = −g, D the preconditioner diagonal (`gn_diagonal!`: exact GN
+#      v-diagonal; per-layer Hutchinson means for Ã — of the full Hessian by default, of H_GN with
+#      precond_atilde = :layer_gn; b̄ curvature), ε-active pressure nodes fixed, D-norm trust ball, preconditioned
+#      residual stop, exit reason recorded (the residual is recomputed for the returned direction);
 #   2. candidate: the pressure part re-centred and projected exactly onto bounds ∩ {Σ_anchor α δu = 0}; the Ã
 #      and b̄ parts unconstrained; the WHOLE step then scaled toward 0 until it fits the D-norm ball (feasible:
 #      the box contains 0, the anchor constraint is linear);
@@ -15,16 +16,26 @@
 # removed by a quotient solve; all comparisons are made through physical quantities (P, B) and Φ.
 
 """
-    joint_gn_solve!(pb, w, x, ulo; work_budget, cg_iter, cg_rtol, du_cap, μ0, callback, verbose)
-        -> (status, reason, accepted, history)
+    joint_gn_solve!(pb, w, x, ulo; work_budget, max_accepted, max_candidates, cg_iter, cg_rtol, du_cap, μ0,
+                    Δ_init, Δ0, block_scale, magnetic_only, diagnostics, callback, verbose)
+        -> (status, reason, accepted, (history, candidates, counts))
 
-Joint trust-region GN until `work_budget` equivalent GN products (`work_equivalent`) are spent, measured from
-the call. `callback(acc, row)` runs after every accepted step with the work counters saved and restored.
-`history` rows: accepted count, Φ, terms, ρ, step norms, trust radius, CG exit, Cauchy use, margin, work.
+Joint trust-region GN until `work_budget` equivalent GN products (`work_equivalent`) are spent (or `max_accepted`
+steps accepted, or `max_candidates` candidates tried), measured from the call.
+- `Δ_init`: `:pressure` (all pressure nodes moving 0.5 in ln P; the original rule) or `:full` (0.5 in every
+  coordinate of the D-norm); `Δ0` overrides both.
+- `block_scale = (s_u, s_A, s_b)`: multiplies the pressure / Ã / b̄ parts of D in the trust norm and the
+  preconditioner (s_u > 1 makes pressure stiffer in the step geometry); `magnetic_only` freezes the pressure.
+- `diagnostics`: per candidate (not charged to the work budget) the D-norm shares of the pressure, Ã and b̄
+  parts before and after projection/capping, the actual max |ΔP/P| and max |ΔB|/max(|B|, σ), and the split
+  of the quadratic model into pressure, magnetic and cross terms.
+`callback(acc, row)` runs after every accepted step with the work counters saved and restored.
 """
 function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; work_budget::Float64 = 3000.0,
+                         max_accepted::Int = typemax(Int), max_candidates::Int = typemax(Int),
                          cg_iter::Int = 100, cg_rtol::Float64 = 1e-2, du_cap::Float64 = 5.0, μ0::Float64 = 1e-6,
-                         callback = nothing, verbose::Bool = false)
+                         Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
+                         magnetic_only::Bool = false, diagnostics::Bool = false, callback = nothing, verbose::Bool = false)
     par = pb.par; b = par.block
     w0 = work_equivalent()
     wl = SMHSWork(par); wt = SMHSWork(par)
@@ -36,13 +47,21 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
     function rebuild!()
         f = fg!(g, pb, w, x)[1]
         gn_diagonal!(D, pb, w, x)                        # leaves w at x
+        for (fld, sc) in ((1, block_scale[1]), (2, block_scale[2]), (3, block_scale[2]), (4, block_scale[2]), (5, block_scale[3]))
+            sc == 1.0 && continue
+            Df = D[fld]; owned_map!((i, j, k) -> sc * Df[i, j, k], Df, par)
+        end
         for fld in eachindex(D)
             Df = D[fld]; Di = Dinv[fld]
             owned_map!((i, j, k) -> 1 / Df[i, j, k], Di, par)
         end
-        fill_owned!((i, j, k) -> ((w.u[i, j, k] - ulo[i, j, k] <= 1e-6 && g[1][i, j, k] > 0) ? 1.0 : 0.0), act, par)
+        fill_owned!((i, j, k) -> (magnetic_only || (w.u[i, j, k] - ulo[i, j, k] <= 1e-6 && g[1][i, j, k] > 0)) ? 1.0 : 0.0, act, par)
         objective!(pb, w, x)
         return f
+    end
+    ones_state = similar_state(x)
+    for f in 1:4
+        of = ones_state[f]; owned_map!((i, j, k) -> 1.0, of, par)
     end
     rebuild!()
     free!(v) = (vf = v[1]; owned_map!((i, j, k) -> act[i, j, k] == 1.0 ? 0.0 : vf[i, j, k], vf, par); v)
@@ -67,11 +86,17 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         end
         return ae
     end
-    Δ = 0.5 * sqrt(_sum1(par, (i, j, k) -> D[1][i, j, k]))   # as in the pressure block: all nodes moving 0.5 in ln P
+    Δ = if !isnan(Δ0)
+        Δ0
+    elseif Δ_init == :full                               # 0.5 in every coordinate of the D-norm
+        0.5 * sqrt(max(sum(sdot_local(par, D[f], ones_state[f]) for f in 1:4) |> v -> MPI.Allreduce(v, +, par.comm), 1e-300))
+    else                                                 # as in the pressure block: all nodes moving 0.5 in ln P
+        0.5 * sqrt(_sum1(par, (i, j, k) -> D[1][i, j, k]))
+    end
     Δstart = Δ; μ = μ0
-    nacc = 0; ncand = 0; ncauchy = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]
+    nacc = 0; ncand = 0; ncauchy = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]; cands = NamedTuple[]
     status = max_iter; reason = "work budget"
-    while work_equivalent() - w0 < work_budget
+    while work_equivalent() - w0 < work_budget && nacc < max_accepted && ncand < max_candidates
         # ---- 1. Steihaug–Toint PCG on the full state ----
         lincomb!(r, -1.0, g, 0.0, g, par); free!(r)
         divdiag!(zr, r, D, par); lincomb!(zr, 1 / (1 + μ), zr, 0.0, zr, par); free!(zr)
@@ -89,6 +114,11 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             α = pq > 0 ? rz / pq : Inf
             if α >= τt
                 lincomb!(y, 1.0, y, τt, p, par); cg_exit = pq > 0 ? :boundary : :negcurv
+                # residual of the RETURNED direction: r = −g − (H + μD) y on the free set
+                Hv!(q, y); free!(q); divdiag!(zr, y, Dinv, par); lincomb!(q, 1.0, q, μ, zr, par)
+                lincomb!(r, -1.0, g, -1.0, q, par); free!(r)
+                divdiag!(zr, r, D, par); lincomb!(zr, 1 / (1 + μ), zr, 0.0, zr, par); free!(zr)
+                cg_rel = sqrt(max(dotN(par, r, zr), 0.0) / rz0)
                 break
             end
             lincomb!(y, 1.0, y, α, p, par)
@@ -123,12 +153,30 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             ncauchy += 1; copystate!(δ, δc, par); pred = predc; usedc = true
         end
         nfin = sqrt(max(Dnorm2(δ), 0.0))
+        diag = NamedTuple()
+        if diagnostics
+            saved = copy(WORK_COUNTS)
+            blk(v, fs) = (tmp = similar_state(x); for f in 1:5; ff = tmp[f]; vf = v[f]; owned_map!((i, j, k) -> f in fs ? vf[i, j, k] : 0.0, ff, par); end; tmp)
+            share(v) = (nt = max(Dnorm2(v), 1e-300); (u = Dnorm2(blk(v, (1,))) / nt, A = Dnorm2(blk(v, (2, 3, 4))) / nt, b = Dnorm2(blk(v, (5,))) / nt))
+            δu = blk(δ, (1,)); δA = blk(δ, (2, 3, 4, 5))
+            Hv!(q, δu); quu = 0.5 * dotN(par, δu, q); qua = dotN(par, δA, q)
+            Hv!(q, δA); qaa = 0.5 * dotN(par, δA, q)
+            gu = dotN(par, g, δu); ga = dotN(par, g, δA)
+            lincomb!(xt, 1.0, x, 1.0, δ, par); objective!(pb, wt, xt)
+            dPmax = global_max(par, maximum(abs(expm1(wt.u[i, j, k] - w.u[i, j, k])) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
+            dBmax = measured_change(pb, wt, (copy(parent(wt.u)), map(B -> copy(parent(B)), w.B)))
+            diag = (share_y = share(y), share_final = share(δ), dPmax = dPmax, dBmax = dBmax,
+                    pred_u = -(gu + quu), pred_A = -(ga + qaa), pred_cross = -qua)
+            copyto!(WORK_COUNTS, saved)
+        end
         # ---- 4. trial in a separate workspace ----
         lincomb!(xt, 1.0, x, 1.0, δ, par)
         ft, tt, oob = objective!(pb, wt, xt)
         margin = -global_max(par, -minimum(wt.u[i, j, k] - ulo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
         ρ = (oob || pred <= 0) ? -Inf : (f - ft) / pred
         Δused = Δ
+        push!(cands, (candidate = ncand, accepted = ρ > 1e-4 && ft < f && margin >= -1e-12, rho = ρ, pred = pred, actual = f - ft,
+                      Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, diag = diag))
         if ρ > 1e-4 && ft < f && margin >= -1e-12
             copystate!(x, xt, par)
             rebuild!()
@@ -155,5 +203,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             end
         end
     end
-    return status, reason, nacc, (history = hist, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, cg_exit = nexit))
+    nacc >= max_accepted && (reason = "max_accepted")
+    ncand >= max_candidates && (reason = "max_candidates")
+    return status, reason, nacc, (history = hist, candidates = cands, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, cg_exit = nexit), Δ = Δ)
 end

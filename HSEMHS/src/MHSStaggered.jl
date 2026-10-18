@@ -44,7 +44,8 @@ mutable struct SMHSProblem{E}
     NF::Float64
     NB::Float64
     wmean::Float64
-    pc_atilde::Symbol                 # Ã preconditioner diagonal: :layer (Hutchinson layer means) | :colored (exact per node, M5)
+    pc_atilde::Symbol                 # Ã preconditioner diagonal: :layer (per-layer Hutchinson mean of the FULL Hessian, from
+                                      # differences of ∇Φ) | :layer_gn (same probes, GN products) | :colored (exact GN, per node)
     pc_period::Int                    # coloring period for :colored (≥ the GN Hessian reach)
     pc_ufloor::Float64                # u diagonal floor, as a fraction of its layer median (M5)
 end
@@ -95,7 +96,7 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
                      anchor_plane::Symbol = :bottom, P_ref::Float64, g::Float64 = 274.0,
                      lambda_F::Float64 = 1.0, lambda_S::Float64 = 1e-3, lambda_U::Float64 = 0.0, lambda_N::Float64 = 0.0, data_on_faces::Bool = true, lambda_Q::Float64 = 1.0,
                      lambda_Uz::Float64 = 0.0, precond_atilde::Symbol = :layer, precond_period::Int = 5, precond_ufloor::Float64 = 0.0)
-    precond_atilde in (:layer, :colored) || invalid("precond_atilde must be :layer or :colored")
+    precond_atilde in (:layer, :layer_gn, :colored) || invalid("precond_atilde must be :layer, :layer_gn or :colored")
     ops = Ops(grid, par); s = StagOps(grid, par); b = par.block
     X = newfield(par); fill_owned!((i, j, k) -> log(T[i, j, k]), X, par)
     sig = ntuple(c -> (q = newfield(par); fill_owned!((i, j, k) -> max(sigma[c][i, j, k], 1e-12), q, par); q), 3)
@@ -561,7 +562,8 @@ function fg!(gx::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState)
 end
 
 # ---------------------------------------------------------------------------------------
-# Preconditioner: exact Gauss–Newton diagonal for u; per-layer Hutchinson means for Ã; exact for b̄
+# Preconditioner: exact Gauss–Newton diagonal for u; per-layer Hutchinson means for Ã (full Hessian by default,
+# GN with :layer_gn, exact GN per node with :colored); second derivative for b̄
 # ---------------------------------------------------------------------------------------
 """Gauss–Newton diagonal in physical u (force and λ_U terms), with the optional per-layer floor."""
 function gn_diag_u!(D1::Field, pb::SMHSProblem, w::SMHSWork)
@@ -632,8 +634,11 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
     if pb.pc_atilde == :colored
         gn_diag_colored!(D, pb, w, x)
     else
-    # Ã: Hessian–vector products by central differences of ∇Φ, averaged per layer
+    # Ã: per-layer Hutchinson means of the diagonal, from central differences of ∇Φ (:layer — the FULL Hessian,
+    # including the residual-curvature term, not the GN diagonal) or from GN products (:layer_gn, Codex M5c §2)
     ε = 1e-4
+    usegn = pb.pc_atilde == :layer_gn
+    wl2 = usegn ? SMHSWork(par) : w2
     acc = [zeros(length(axes(x[f], 3))) for f in 2:4]
     cnt = [zeros(length(axes(x[f], 3))) for f in 2:4]
     for p in 1:probes
@@ -641,12 +646,18 @@ function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; pr
             zf = z[f]
             owned_map!((i, j, k) -> isodd(hash((b.i0 + i - 1, b.j0 + j - 1, k, f, p, 0xa11)) >> 7) ? 1.0 : -1.0, zf, par)
         end
-        lincomb!(xt, 1.0, x, ε, z, par); fg!(g1, pb, w2, xt)
-        lincomb!(xt, 1.0, x, -ε, z, par); fg!(g2, pb, w2, xt)
+        if usegn
+            fill!(parent(z[1]), 0.0); fill!(parent(z[5]), 0.0)
+            gn_hvp!(g1, pb, w, wl2, z)                  # w holds the state at x
+        else
+            lincomb!(xt, 1.0, x, ε, z, par); fg!(g1, pb, w2, xt)
+            lincomb!(xt, 1.0, x, -ε, z, par); fg!(g2, pb, w2, xt)
+        end
         for (q, f) in enumerate(2:4)
             k0 = first(axes(x[f], 3))
             for k in axes(x[f], 3), j in 1:b.ny, i in 1:b.nx
-                acc[q][k-k0+1] += z[f][i, j, k] * (g1[f][i, j, k] - g2[f][i, j, k]) / (2ε)
+                hz = usegn ? g1[f][i, j, k] : (g1[f][i, j, k] - g2[f][i, j, k]) / (2ε)
+                acc[q][k-k0+1] += z[f][i, j, k] * hz
                 cnt[q][k-k0+1] += 1
             end
         end
