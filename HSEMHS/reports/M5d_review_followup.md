@@ -103,9 +103,19 @@ The data are cell-centred, apparently interpolated by the data release, and **no
 - **Under the centre model** (the observation residual for cell-centred data) the witnesses are much worse: 6.55σ and 1.6 % > 3σ, failing the 1 % tail limit. Face interpolation of the data smooths a centre-level inconsistency; the data are not discretely divergence-free.
 - **A bound-constrained data fit** (L_∞-type, as here) is required to reach admissibility at all. The least-squares A₀ does not enforce the maximum or the tail.
 
-### 5.3 Longer face run
+### 5.3 Exact LP (added 15:20)
 
-(Filled in below when the 1500-iteration run finishes.)
+`scripts/m5_bifrost/data_feasibility_lp.py` solves Codex's face-variable formulation exactly (SciPy/HiGHS interior point). It reproduces the necessary bound t ≥ 1.920000, and every solution is verified from the returned field.
+
+| LP | result | solve time | div residual | max \|c\| | > 3σ | # > 5σ |
+|---|---|---|---|---|---|---|
+| feasibility at t = 5 | **feasible** | 16 s | 1.1e-15 | 5.000 | 88.9 % (vertex) | 0 |
+| min Σ\|c\| subject to \|c\| ≤ 5 | optimal | 71 s | 5.6e-16 | 5.000 | **2.04 %** | 0 |
+| exact min t | running | | | | | |
+
+- The 5σ maximum is attainable under the face model.
+- No field found so far meets both the maximum and the 1 % tail. The L_p witness had 0.70 % above 3σ but a 5.13σ maximum.
+- The longer L_p run was stopped as superseded.
 
 ## 6. What this changes
 
