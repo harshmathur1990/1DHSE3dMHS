@@ -46,8 +46,8 @@ if mode == "check"
     for q in 1:3
         H.owned_map!((i, j, k) -> 0.5abs((w.B[q][i, j, k] - pb.Bobsf[q][i, j, k]) * sqrt(pb.invsf2[q][i, j, k])), sh[q], par)
     end
-    if get(ARGS, 5, "hinge") == "barrier"           # barrier at twice the current |c| (all faces inside)
-        for q in 1:3; shq = sh[q]; H.owned_map!((i, j, k) -> 4shq[i, j, k] + 1e-3, shq, par); end
+    if get(ARGS, 5, "hinge") == "barrier"           # barrier at 2|c| + 1 (all faces well inside)
+        for q in 1:3; shq = sh[q]; H.owned_map!((i, j, k) -> 4shq[i, j, k] + 1.0, shq, par); end
         H.set_face_hinge!(pb, sh; lambda = lamH, kind = :barrier)
     else
         H.set_face_hinge!(pb, sh; lambda = lamH)
