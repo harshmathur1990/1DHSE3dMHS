@@ -1626,3 +1626,11 @@ Each milestone ends with its gate report committed under `reports/` and the numb
 - **Face-model data admissibility is attainable.** A divergence-free field exists with max 4.999σ and 0.615 % > 3σ (fixed-support LP from the p = 128 witness; 1e-3 margin; a numerically verified witness). Centre-model feasibility is unresolved.
 - **`joint_gn_solve!(anchor_tangent = true)`**: projected PCG on the pressure anchor constraint. It removes the projection inflation but does not improve continuations.
 - **3000-product comparison from three starts:** joint ×100 is the most consistent arm, and pressure-limited joint arms beat both alternations. No arm converges.
+
+## 33. Implementation notes recorded during M5f (19 Oct 2026)
+
+- Codex's M5e review: `CODEX_REVIEW_M5e_2026-10-18.md`. Results: `HSEMHS/reports/M5f_codex_m5e_followup.md`; brief: `CODEX_BRIEF_M5f_2026-10-19.md`. Runs on the UiO cluster (repository copy `/mn/stornext/d9/data/harshm/MHS`).
+- **Face-bound terms** (`set_face_hinge!`, `kind = :hinge | :barrier`) in the objective, gradient and GN product; **hard face bounds** in `joint_gn_solve!(face_hard, bound_tau)` by fraction to the boundary (B linear in Ã, b̄; no clipping). Defaults off.
+- **Gentle face-admissible field** (`data_qp.py`): mean c² 0.3235 on the proven support (unconstrained 0.3165; LP vertex 7.50); reconstructed into (Ã, b̄) exactly (`make_qp_state.jl`, gauge Ãz = 0).
+- **Centre-model maximum witness 3.946σ** (`centre_bracket.py`, PDHG on the reduced formulation; verified); its centre tail is 1.41 % (> 1 %). HiGHS IPX gave no verdict on either formulation (basis construction).
+- **Data-feasible pilot:** joint ×100 with the barrier (λ 0.1, τ 0.99) keeps face max ≤ 4.999σ and the tail at 0.565 % while Φ falls 60.6 → 0.432 (max layer RMS 109) in 30000 products; not converged; τ 0.9 / 0.999 collapse.
