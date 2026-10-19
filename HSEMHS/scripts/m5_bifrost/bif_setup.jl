@@ -2,8 +2,8 @@
 using HSEMHS, MPI, HDF5, Printf, Statistics
 const H = HSEMHS
 H.ensure_mpi()
-const BIF = "/Users/harshm/Documents/WorkRepo/MHS/IO/input-mhs-hse.nc"
-const TAB = "/Users/harshm/Documents/WorkRepo/MHS/HSEMHS/cache/eos_table.h5"
+const BIF = normpath(joinpath(@__DIR__, "..", "..", "..", "IO", "input-mhs-hse.nc"))
+const TAB = normpath(joinpath(@__DIR__, "..", "..", "cache", "eos_table.h5"))
 function bif_problem(c, sz; kw...)
     raw = h5open(BIF) do f
         (x = read(f["x"]), y = read(f["y"]), z = read(f["z"]), T = read(f["temperature"]), Bx = read(f["B_x"]), By = read(f["B_y"]), Bz = read(f["B_z"]),

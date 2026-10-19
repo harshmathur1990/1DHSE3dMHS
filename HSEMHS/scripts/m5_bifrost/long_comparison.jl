@@ -12,7 +12,7 @@
 include(joinpath(@__DIR__, "bif_setup.jl"))
 start = ARGS[1]; tag = ARGS[2]; budget = parse(Float64, get(ARGS, 3, "3000"))
 arms = split(get(ARGS, 4, "alt,magtr-alt,joint-x100,joint-cap,joint-at,joint-x100-at"), ",")
-ck = "/Users/harshm/Documents/WorkRepo/MHS/HSEMHS/out/m5c/ck.h5"            # u_init (collapse bound) lives here
+ck = normpath(joinpath(@__DIR__, "..", "..", "out", "m5c", "ck.h5"))            # u_init (collapse bound) lives here
 pb, x0, par, b, NZ = bif_problem(12, 2; lambda_F = 1e-4, lambda_Q = 1e-3)
 uinit = H.newfield(par)
 h5open(start) do f
