@@ -36,6 +36,7 @@ ap.add_argument("--support", default="")
 ap.add_argument("--solver", choices=("highs-ipm", "highs-ds", "highs"), default="highs-ipm")
 ap.add_argument("--time-limit", type=float, default=float("inf"))
 ap.add_argument("--out", default="")
+ap.add_argument("--disp", action="store_true", help="HiGHS progress output (presolve, IPX iterations, crossover)")
 args = ap.parse_args()
 log = lambda *a: print(time.strftime("%H:%M:%S"), *a, flush=True)
 
@@ -89,7 +90,7 @@ def verify(Bf, tag):
     return out
 
 def run(cost, A_ub, b_ub, A_eq, b_eq, bounds, tag):
-    opts = {"primal_feasibility_tolerance": 1e-9}
+    opts = {"primal_feasibility_tolerance": 1e-9, "disp": args.disp}
     if np.isfinite(args.time_limit):
         opts["time_limit"] = args.time_limit
     tm = time.time()
