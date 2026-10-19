@@ -9,7 +9,7 @@ L C = 0 (vertical pairing of q = Hy Dx Cx + Hx Dy Cy with the Cz difference, plu
 necessary and sufficient for C to come from a divergence-free B. In c-variables: A c = r, A = L diag(σ_c), r = −L y_c.
 
   LOWER bound, for ANY multiplier λ (weak duality):  t* ≥ λᵀr / ‖Aᵀλ‖₁.  Checked exactly at every report.
-  UPPER bound: reconstruct B from C = y + σ c (Fourier inversion of Hx, Hy + divergence recurrence; exactly
+  UPPER bound: project c onto {A c = r} (CG on A Aᵀ), reconstruct B from C = y + σ c (Fourier inversion of Hx, Hy + divergence recurrence; exactly
                divergence-free by construction), recompute H B and report the TRUE max |c| of that physical field.
 So t* ∈ [best LB, best UB] at all times; LB > 5 would show centre infeasibility at t = 5 (numerically, relying on
 the necessity of L C = 0, which the random-curl check verifies), UB ≤ 5 gives a witness (saved).
@@ -20,7 +20,7 @@ usage (from HSEMHS/): python3 centre_bracket.py --obs out/m5d/observations.h5 --
                       [--wall 3000] [--report 200] [--restart 1000]
 """
 import argparse, time, os, sys
-import numpy as np, h5py, scipy.sparse as sp
+import numpy as np, h5py, scipy.sparse as sp, scipy.sparse.linalg as spla
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--obs", required=True)
@@ -87,7 +87,14 @@ def reconstruct(C):                                   # (identical to codex_m5e_
     new_bx = np.divide(target_d - dysym * by, dxsym, out=np.zeros_like(bx), where=abs(dxsym) > 1e-12 / dx[0]); bx = np.where(zx, new_bx, bx)
     new_by = np.divide(target_d - dxsym * bx, dysym, out=np.zeros_like(by), where=abs(dysym) > 1e-12 / dy[0]); by = np.where(zy & ~zx, new_by, by)
     return [np.fft.ifftn(v, axes=(0, 1)).real for v in (bx, by, bz)]
-def true_max(c):
+AAt = spla.LinearOperator((m, m), matvec=lambda v: A @ (A.T @ v), dtype=float)
+def project(c):
+    """Minimum-norm correction onto {A c = r}: c + Aᵀ (A Aᵀ)⁻¹ (r − A c), CG to 1e-13 (A Aᵀ is SPD on range(A))."""
+    z, info = spla.cg(AAt, r - A @ c, rtol=1e-13, atol=0.0, maxiter=20000)
+    return c + A.T @ z
+def true_max(c, proj=True):
+    if proj:
+        c = project(c)
     C = [(y + s * c)[q * n:(q + 1) * n].reshape(nx, ny, nz) for q in range(3)]
     B = reconstruct(C); pred = centre(B)
     cor = np.concatenate([((v - o) / sg).ravel() for v, o, sg in zip(pred, obs, sig)])
