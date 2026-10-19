@@ -10,12 +10,13 @@
 # steps and work, and the max |ΔP/P|, |ΔB|/max(|B|, σ) over the last interval (windowed changes). A checkpoint
 # (x1..x5) is saved at every log point.
 # usage (from HSEMHS/): julia --project=. -t 8 scripts/m5_bifrost/m5f_pilot.jl START.h5 FIELD.h5 OUTDIR mode budget
-#                        [interval=500] [lambda_hinge=100] [band=0.05] [margin=1e-3]
+#                        [interval=500] [lambda_hinge=100] [band=0.05] [margin=1e-3] [bound_tau=0.999]
 #                        julia ... m5f_pilot.jl START.h5 FIELD.h5 OUTDIR check [hinge|barrier]  (gradient / GN checks)
 include(joinpath(@__DIR__, "bif_setup.jl"))
 start, fieldf, outdir, mode = ARGS[1], ARGS[2], ARGS[3], ARGS[4]
 budget = something(tryparse(Float64, get(ARGS, 5, "3000")), 3000.0); interval = parse(Float64, get(ARGS, 6, "500"))
 lamH = parse(Float64, get(ARGS, 7, "100")); band = parse(Float64, get(ARGS, 8, "0.05")); margin = parse(Float64, get(ARGS, 9, "1e-3"))
+btau = parse(Float64, get(ARGS, 10, "0.999"))
 mkpath(outdir)
 ck = normpath(joinpath(@__DIR__, "..", "..", "out", "m5c", "ck.h5"))
 pb, x0, par, b, NZ = bif_problem(12, 2; lambda_F = 1e-4, lambda_Q = 1e-3)
@@ -73,8 +74,8 @@ mode == "hard" && H.set_face_hinge!(pb, soft; lambda = lamH)
 mode == "barrier" && H.set_face_hinge!(pb, hard; lambda = lamH, kind = :barrier)
 f0, t0, _ = H.objective!(pb, w, x0)
 c = cvals(w); viol = maximum(abs.(c) .- HV)
-@printf("start %s: Φ %.6f | |S| = %d | hard bounds 5/3 − %.0e, soft band %.3f, λ_H %.0f | max(|c| − hard) %.3e%s\n",
-        start, f0, nS, margin, band, lamH, viol, hardmode && viol > 0 ? "  START VIOLATES THE HARD BOUNDS" : "")
+@printf("start %s: Φ %.6f | |S| = %d | hard bounds 5/3 − %.0e, soft band %.3f, λ_H %g, τ %g | max(|c| − hard) %.3e%s\n",
+        start, f0, nS, margin, band, lamH, btau, viol, hardmode && viol > 0 ? "  START VIOLATES THE HARD BOUNDS" : "")
 hardmode && viol > 0 && error("start outside the hard bounds")
 # default-rule radius at this state (as in long_comparison.jl)
 xr = deepcopy(x0); wr = H.SMHSWork(par); H.objective!(pb, wr, xr)
@@ -136,7 +137,7 @@ function cb(acc, row)
 end
 tm = time()
 st, why, n, res = H.joint_gn_solve!(pb, w, x, ulo; work_budget = budget, Δ0 = Δc, block_scale = (100.0, 1.0, 1.0),
-                                     face_hard = hardmode ? hard : nothing, callback = cb)
+                                     face_hard = hardmode ? hard : nothing, bound_tau = btau, callback = cb)
 logpoint(x, H.work_equivalent(), mode * "-end")
 nb = count(cd -> cd.bound_frac < 1, res.candidates)
 @printf("%s done: %s (%s); accepted %d / %d candidates; Cauchy %d; bound-truncated %d (median fraction %.3g); wall %.0f s; common Δ0 %.4f\n",

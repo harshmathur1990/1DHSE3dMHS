@@ -33,8 +33,9 @@ steps accepted, or `max_candidates` candidates tried), measured from the call.
   parts before and after projection/capping, the actual max |ΔP/P| and max |ΔB|/max(|B|, σ), and the split
   of the quadratic model into pressure, magnetic and cross terms.
 - `face_hard`: per-face hard data bounds |c_f| ≤ face_hard[q][i, j, k] (σ units, layout of `Bobsf`; M5f pilot). B is
-  linear in (Ã, b̄), so every candidate is scaled by the fraction to the boundary (0.999 of the largest feasible
-  fraction) before its trial; the base state must satisfy the bounds. B stays exactly divergence-free (no clipping).
+  linear in (Ã, b̄), so every candidate is scaled by the fraction to the boundary (`bound_tau` × the largest
+  feasible fraction) before its trial; a rejected truncated candidate shrinks the radius from Δ, not from its
+  truncated length; the base state must satisfy the bounds. B stays exactly divergence-free (no clipping).
   Combine with `set_face_hinge!` so that the model itself sees the bounds.
 `callback(acc, row)` runs after every accepted step with the work counters saved and restored.
 """
@@ -43,7 +44,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                          cg_iter::Int = 100, cg_rtol::Float64 = 1e-2, du_cap::Float64 = 5.0, μ0::Float64 = 1e-6,
                          Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
                          magnetic_only::Bool = false, anchor_tangent::Bool = false, diagnostics::Bool = false,
-                         face_hard = nothing, callback = nothing, verbose::Bool = false)
+                         face_hard = nothing, bound_tau::Float64 = 0.999, callback = nothing, verbose::Bool = false)
     par = pb.par; b = par.block
     w0 = work_equivalent()
     wl = SMHSWork(par); wt = SMHSWork(par)
@@ -210,7 +211,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             end
             αb = -global_max(par, -minimum(am))
             if αb < 1
-                nbound += 1; lincomb!(δ, 0.999αb, δ, 0.0, δ, par)
+                nbound += 1; lincomb!(δ, bound_tau * αb, δ, 0.0, δ, par)
                 pred = predicted(δ); nfin = sqrt(max(Dnorm2(δ), 0.0))
             end
         end
@@ -242,7 +243,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                 saved = copy(WORK_COUNTS); callback(nacc, row); copyto!(WORK_COUNTS, saved)
             end
         else
-            Δ = nfin / 4; μ = min(4μ, 1e2)
+            Δ = (αb < 1 ? Δused : nfin) / 4; μ = min(4μ, 1e2)
             if Δ < 1e-14 * Δstart
                 status = stalled; reason = "trust radius collapsed"; break
             end
