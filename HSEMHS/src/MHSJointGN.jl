@@ -32,6 +32,10 @@ steps accepted, or `max_candidates` candidates tried), measured from the call.
 - `diagnostics`: per candidate (not charged to the work budget) the D-norm shares of the pressure, Ã and b̄
   parts before and after projection/capping, the actual max |ΔP/P| and max |ΔB|/max(|B|, σ), and the split
   of the quadratic model into pressure, magnetic and cross terms.
+- `face_hard`: per-face hard data bounds |c_f| ≤ face_hard[q][i, j, k] (σ units, layout of `Bobsf`; M5f pilot). B is
+  linear in (Ã, b̄), so every candidate is scaled by the fraction to the boundary (0.999 of the largest feasible
+  fraction) before its trial; the base state must satisfy the bounds. B stays exactly divergence-free (no clipping).
+  Combine with `set_face_hinge!` so that the model itself sees the bounds.
 `callback(acc, row)` runs after every accepted step with the work counters saved and restored.
 """
 function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; work_budget::Float64 = 3000.0,
@@ -39,7 +43,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                          cg_iter::Int = 100, cg_rtol::Float64 = 1e-2, du_cap::Float64 = 5.0, μ0::Float64 = 1e-6,
                          Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
                          magnetic_only::Bool = false, anchor_tangent::Bool = false, diagnostics::Bool = false,
-                         callback = nothing, verbose::Bool = false)
+                         face_hard = nothing, callback = nothing, verbose::Bool = false)
     par = pb.par; b = par.block
     w0 = work_equivalent()
     wl = SMHSWork(par); wt = SMHSWork(par)
@@ -113,7 +117,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         end
         return zz
     end
-    nacc = 0; ncand = 0; ncauchy = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]; cands = NamedTuple[]
+    nacc = 0; ncand = 0; ncauchy = 0; nbound = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]; cands = NamedTuple[]
     status = max_iter; reason = "work budget"
     while work_equivalent() - w0 < work_budget && nacc < max_accepted && ncand < max_candidates
         # ---- 1. Steihaug–Toint PCG on the full state ----
@@ -188,6 +192,28 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                     pred_u = -(gu + quu), pred_A = -(ga + qaa), pred_cross = -qua)
             copyto!(WORK_COUNTS, saved)
         end
+        # ---- 3b. hard face bounds: fraction to the boundary (B is linear in Ã, b̄) ----
+        αb = 1.0
+        if face_hard !== nothing
+            lincomb!(xt, 1.0, x, 1.0, δ, par); objective!(pb, wt, xt)
+            am = fill(1.0, Threads.maxthreadid())
+            for q in 1:3
+                B0 = w.B[q]; B1 = wt.B[q]; Bo = pb.Bobsf[q]; iv = pb.invsf2[q]; ub = face_hard[q]
+                forrows(collect(axes(B0, 3)), par) do i, j, k
+                    isg = sqrt(iv[i, j, k]); c0 = (B0[i, j, k] - Bo[i, j, k]) * isg; c1 = (B1[i, j, k] - Bo[i, j, k]) * isg
+                    u = ub[i, j, k]
+                    if abs(c1) > u
+                        dc = c1 - c0; a = dc > 0 ? (u - c0) / dc : (-u - c0) / dc
+                        am[Threads.threadid()] = min(am[Threads.threadid()], max(a, 0.0))
+                    end
+                end
+            end
+            αb = -global_max(par, -minimum(am))
+            if αb < 1
+                nbound += 1; lincomb!(δ, 0.999αb, δ, 0.0, δ, par)
+                pred = predicted(δ); nfin = sqrt(max(Dnorm2(δ), 0.0))
+            end
+        end
         # ---- 4. trial in a separate workspace ----
         lincomb!(xt, 1.0, x, 1.0, δ, par)
         ft, tt, oob = objective!(pb, wt, xt)
@@ -195,7 +221,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         ρ = (oob || pred <= 0) ? -Inf : (f - ft) / pred
         Δused = Δ
         push!(cands, (candidate = ncand, accepted = ρ > 1e-4 && ft < f && margin >= -1e-12, rho = ρ, pred = pred, actual = f - ft,
-                      Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, diag = diag))
+                      Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, bound_frac = αb, diag = diag))
         if ρ > 1e-4 && ft < f && margin >= -1e-12
             copystate!(x, xt, par)
             rebuild!()
@@ -224,5 +250,5 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
     end
     nacc >= max_accepted && (reason = "max_accepted")
     ncand >= max_candidates && (reason = "max_candidates")
-    return status, reason, nacc, (history = hist, candidates = cands, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, cg_exit = nexit), Δ = Δ)
+    return status, reason, nacc, (history = hist, candidates = cands, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, bound = nbound, cg_exit = nexit), Δ = Δ)
 end

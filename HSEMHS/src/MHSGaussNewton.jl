@@ -121,7 +121,16 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
     if pb.dfaces
         for c in 1:3
             dBc = dB[c]; iv = pb.invsf2[c]
-            owned_map!((i, j, k) -> 2dBc[i, j, k] * iv[i, j, k] / NB, wl.gBd[c], par)
+            hg = pb.hinge
+            if hg === nothing
+                owned_map!((i, j, k) -> 2dBc[i, j, k] * iv[i, j, k] / NB, wl.gBd[c], par)
+            else                                       # Φ_H: GN curvature 2λ σ⁻² on the faces active at the base state
+                Bc = w.B[c]; Bo = pb.Bobsf[c]; sf = hg.soft[c]; lH = hg.lam
+                owned_map!(wl.gBd[c], par) do i, j, k
+                    act = abs(Bc[i, j, k] - Bo[i, j, k]) * sqrt(iv[i, j, k]) > sf[i, j, k]
+                    2dBc[i, j, k] * iv[i, j, k] * (1 + (act ? lH : 0.0)) / NB
+                end
+            end
         end
     end
     return gradient!(Hv, pb, hybrid_work(w, wl), v; gauge = gauge)

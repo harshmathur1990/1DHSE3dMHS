@@ -48,6 +48,7 @@ mutable struct SMHSProblem{E}
                                       # differences of ∇Φ) | :layer_gn (same probes, GN products) | :colored (exact GN, per node)
     pc_period::Int                    # coloring period for :colored (≥ the GN Hessian reach)
     pc_ufloor::Float64                # u diagonal floor, as a fraction of its layer median (M5)
+    hinge::Any                        # nothing, or a face-bound hinge penalty (M5f; `set_face_hinge!`), folded into term 2
 end
 
 newscalar(par::ParCtx) = OffsetArray(zeros(par.block.nx + 2, par.block.ny + 2, 1), 0:par.block.nx+1, 0:par.block.ny+1, 1:1)
@@ -124,7 +125,23 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
     NB = data_on_faces ? Float64(NX) * NY * (3NZ + 1) : 3N
     return SMHSProblem(par, grid, s, ops, eos, X, Bobs, sig, invS2f, alpha, ka, log(P_ref), g,
                        lambda_F, lambda_S, lambda_U, lambda_Uz, lambda_N, data_on_faces, Bobsf, invsf2, lambda_Q, zeros(NZ + 1), zeros(NZ), Aref, N, Float64(NX) * NY * (3NZ - 5), NB, wmean,
-                       precond_atilde, precond_period, precond_ufloor)
+                       precond_atilde, precond_period, precond_ufloor, nothing)
+end
+
+"""
+    set_face_hinge!(pb, soft; lambda) / set_face_hinge!(pb, nothing)
+
+Face-bound hinge penalty (M5f pilot, Codex M5e review §2(b)): with c_f = (B_f − I·y_f)/σ_f on every face,
+    Φ_H = (λ/N_B) Σ_f max(|c_f| − s_f, 0)²,
+s_f = `soft[q][i, j, k]` (σ units; same layout as `Bobsf`). Requires data on faces. Φ_H is added to term 2 (N + Q)
+of `objective!`; its last value is in `pb.hinge.val[]`. The hard bounds themselves are enforced by
+`joint_gn_solve!(…; face_hard)` (fraction to the boundary); the hinge only keeps the model away from them.
+"""
+function set_face_hinge!(pb::SMHSProblem, soft; lambda::Float64 = 1.0)
+    soft === nothing && (pb.hinge = nothing; return pb)
+    pb.dfaces || invalid("the face hinge needs data_on_faces")
+    pb.hinge = (soft = soft, lam = lambda, val = Ref(0.0))
+    return pb
 end
 
 """Horizontal (x-, y-face) force equations exist on layers 2…NZ−1 only: the top and bottom layers
@@ -366,14 +383,23 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         end
     end
     # ---- faces: data term against Bobs interpolated to faces (option) ----
-    pD = zeros(b.ny, NZ + 1)
+    pD = zeros(b.ny, NZ + 1); pH = zeros(b.ny, NZ + 1)
     if pb.dfaces
+        hg = pb.hinge
         for c in 1:3
             Bc = B[c]; Bo = pb.Bobsf[c]; iv = pb.invsf2[c]; gd = w.gBd[c]
+            sf = hg === nothing ? nothing : hg.soft[c]; lH = hg === nothing ? 0.0 : hg.lam
             forrows(collect(axes(Bc, 3)), par) do i, j, k
                 d = Bc[i, j, k] - Bo[i, j, k]
                 pD[j, k-first(axes(Bc, 3))+1] += d^2 * iv[i, j, k]
                 gd[i, j, k] = 2d * iv[i, j, k] / NB
+                if sf !== nothing
+                    isg = sqrt(iv[i, j, k]); cf = d * isg; e = abs(cf) - sf[i, j, k]
+                    if e > 0
+                        pH[j, k-first(axes(Bc, 3))+1] += lH * e^2
+                        gd[i, j, k] += 2lH * e * sign(cf) * isg / NB
+                    end
+                end
             end
         end
     end
@@ -434,8 +460,10 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
         eQ += pQ[j, k]
     end
     push!(loc, eQ)
+    push!(loc, sum(pH))
     t = MPI.Allreduce(loc, +, par.comm)
-    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N + pb.lamQ * pb.lamF * t[10] / NF, (t[4] + t[9]) / NB, lS * t[5] / N, t[7] / N)
+    pb.hinge === nothing || (pb.hinge.val[] = t[11] / NB)
+    terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N + pb.lamQ * pb.lamF * t[10] / NF + t[11] / NB, (t[4] + t[9]) / NB, lS * t[5] / N, t[7] / N)
     oob = t[6] > 0
     return oob ? Inf : sum(terms), terms, oob
 end
