@@ -127,8 +127,14 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
             else                                       # Φ_H: GN curvature 2λ σ⁻² on the faces active at the base state
                 Bc = w.B[c]; Bo = pb.Bobsf[c]; sf = hg.soft[c]; lH = hg.lam
                 owned_map!(wl.gBd[c], par) do i, j, k
-                    act = abs(Bc[i, j, k] - Bo[i, j, k]) * sqrt(iv[i, j, k]) > sf[i, j, k]
-                    2dBc[i, j, k] * iv[i, j, k] * (1 + (act ? lH : 0.0)) / NB
+                    cf = (Bc[i, j, k] - Bo[i, j, k]) * sqrt(iv[i, j, k])
+                    extra = if hg.barrier                  # ½ λ φ''(c), φ = −log(1 − c²/u²)
+                        u2 = sf[i, j, k]^2; q = u2 - cf^2
+                        q > 0 ? lH * (u2 + cf^2) / q^2 : 0.0
+                    else
+                        abs(cf) > sf[i, j, k] ? lH : 0.0
+                    end
+                    2dBc[i, j, k] * iv[i, j, k] * (1 + extra) / NB
                 end
             end
         end

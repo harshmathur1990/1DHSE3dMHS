@@ -129,18 +129,22 @@ function SMHSProblem(par::ParCtx, grid::Grid, T::Field, Bobs::NTuple{3,Field}, s
 end
 
 """
-    set_face_hinge!(pb, soft; lambda) / set_face_hinge!(pb, nothing)
+    set_face_hinge!(pb, soft; lambda, kind = :hinge) / set_face_hinge!(pb, nothing)
 
 Face-bound hinge penalty (M5f pilot, Codex M5e review §2(b)): with c_f = (B_f − I·y_f)/σ_f on every face,
     Φ_H = (λ/N_B) Σ_f max(|c_f| − s_f, 0)²,
 s_f = `soft[q][i, j, k]` (σ units; same layout as `Bobsf`). Requires data on faces. Φ_H is added to term 2 (N + Q)
 of `objective!`; its last value is in `pb.hinge.val[]`. The hard bounds themselves are enforced by
 `joint_gn_solve!(…; face_hard)` (fraction to the boundary); the hinge only keeps the model away from them.
+`kind = :barrier`: instead a log barrier on the bounds themselves (`soft` is then the HARD bound u_f),
+    Φ_H = (λ/N_B) Σ_f −log(1 − (c_f/u_f)²)          (+∞ outside),
+convex in c, so its exact second derivative 2(u² + c²)/(u² − c²)² enters the GN product and keeps it PSD.
 """
-function set_face_hinge!(pb::SMHSProblem, soft; lambda::Float64 = 1.0)
+function set_face_hinge!(pb::SMHSProblem, soft; lambda::Float64 = 1.0, kind::Symbol = :hinge)
     soft === nothing && (pb.hinge = nothing; return pb)
     pb.dfaces || invalid("the face hinge needs data_on_faces")
-    pb.hinge = (soft = soft, lam = lambda, val = Ref(0.0))
+    kind in (:hinge, :barrier) || invalid("kind must be :hinge or :barrier")
+    pb.hinge = (soft = soft, lam = lambda, val = Ref(0.0), barrier = kind == :barrier)
     return pb
 end
 
@@ -394,10 +398,21 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
                 pD[j, k-first(axes(Bc, 3))+1] += d^2 * iv[i, j, k]
                 gd[i, j, k] = 2d * iv[i, j, k] / NB
                 if sf !== nothing
-                    isg = sqrt(iv[i, j, k]); cf = d * isg; e = abs(cf) - sf[i, j, k]
-                    if e > 0
-                        pH[j, k-first(axes(Bc, 3))+1] += lH * e^2
-                        gd[i, j, k] += 2lH * e * sign(cf) * isg / NB
+                    isg = sqrt(iv[i, j, k]); cf = d * isg
+                    if hg.barrier
+                        u2 = sf[i, j, k]^2; q = u2 - cf^2
+                        if q > 0
+                            pH[j, k-first(axes(Bc, 3))+1] -= lH * log(q / u2)
+                            gd[i, j, k] += 2lH * cf / q * isg / NB
+                        else
+                            pH[j, k-first(axes(Bc, 3))+1] = Inf
+                        end
+                    else
+                        e = abs(cf) - sf[i, j, k]
+                        if e > 0
+                            pH[j, k-first(axes(Bc, 3))+1] += lH * e^2
+                            gd[i, j, k] += 2lH * e * sign(cf) * isg / NB
+                        end
                     end
                 end
             end
@@ -464,7 +479,7 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     t = MPI.Allreduce(loc, +, par.comm)
     pb.hinge === nothing || (pb.hinge.val[] = t[11] / NB)
     terms = (lF * (t[1] + t[2] + t[3]) / NF, lN * t[8] / N + pb.lamQ * pb.lamF * t[10] / NF + t[11] / NB, (t[4] + t[9]) / NB, lS * t[5] / N, t[7] / N)
-    oob = t[6] > 0
+    oob = t[6] > 0 || !isfinite(t[11])
     return oob ? Inf : sum(terms), terms, oob
 end
 

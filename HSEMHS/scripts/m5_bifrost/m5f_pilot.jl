@@ -3,17 +3,18 @@
 # limits preserved as HARD bounds on the fixed support of FIELD.h5 (support1..3: |c| ≤ t5 − m on S, t3 − m off S),
 # enforced by fraction-to-the-boundary truncation, plus a hinge penalty from the soft thresholds (bounds − band)
 # so the GN model sees them. mode = "hard" (that) or "free" (same start and solver, no bounds or hinge: the drift
-# diagnostic of option (a)).
+# diagnostic of option (a)), or "barrier" (hard bounds + log barrier −λ log(1 − (c/u)²) on the hard bounds u
+# instead of the hinge; band unused).
 # Logs at fixed work intervals: objective components, raw force, all-layer RMS and p99 with the worst location,
 # max and tail for both observation operators, pressure stationarity, anchor and bound errors, accepted/rejected
 # steps and work, and the max |ΔP/P|, |ΔB|/max(|B|, σ) over the last interval (windowed changes). A checkpoint
 # (x1..x5) is saved at every log point.
 # usage (from HSEMHS/): julia --project=. -t 8 scripts/m5_bifrost/m5f_pilot.jl START.h5 FIELD.h5 OUTDIR mode budget
 #                        [interval=500] [lambda_hinge=100] [band=0.05] [margin=1e-3]
-#                        julia ... m5f_pilot.jl START.h5 FIELD.h5 OUTDIR check     (hinge gradient / GN checks only)
+#                        julia ... m5f_pilot.jl START.h5 FIELD.h5 OUTDIR check [hinge|barrier]  (gradient / GN checks)
 include(joinpath(@__DIR__, "bif_setup.jl"))
 start, fieldf, outdir, mode = ARGS[1], ARGS[2], ARGS[3], ARGS[4]
-budget = parse(Float64, get(ARGS, 5, "3000")); interval = parse(Float64, get(ARGS, 6, "500"))
+budget = something(tryparse(Float64, get(ARGS, 5, "3000")), 3000.0); interval = parse(Float64, get(ARGS, 6, "500"))
 lamH = parse(Float64, get(ARGS, 7, "100")); band = parse(Float64, get(ARGS, 8, "0.05")); margin = parse(Float64, get(ARGS, 9, "1e-3"))
 mkpath(outdir)
 ck = normpath(joinpath(@__DIR__, "..", "..", "out", "m5c", "ck.h5"))
@@ -45,7 +46,12 @@ if mode == "check"
     for q in 1:3
         H.owned_map!((i, j, k) -> 0.5abs((w.B[q][i, j, k] - pb.Bobsf[q][i, j, k]) * sqrt(pb.invsf2[q][i, j, k])), sh[q], par)
     end
-    H.set_face_hinge!(pb, sh; lambda = lamH)
+    if get(ARGS, 5, "hinge") == "barrier"           # barrier at twice the current |c| (all faces inside)
+        for q in 1:3; shq = sh[q]; H.owned_map!((i, j, k) -> 4shq[i, j, k] + 1e-3, shq, par); end
+        H.set_face_hinge!(pb, sh; lambda = lamH, kind = :barrier)
+    else
+        H.set_face_hinge!(pb, sh; lambda = lamH)
+    end
     g = H.similar_state(x0); f0 = H.fg!(g, pb, w, x0)[1]
     d = H.similar_state(x0); for q in 2:4; dq = d[q]; H.owned_map!((i, j, k) -> randn(), dq, par); end
     gd = H.dotN(par, g, d)
@@ -62,8 +68,9 @@ if mode == "check"
     exit(0)
 end
 
-hardmode = mode == "hard"
-hardmode && H.set_face_hinge!(pb, soft; lambda = lamH)
+hardmode = mode in ("hard", "barrier")
+mode == "hard" && H.set_face_hinge!(pb, soft; lambda = lamH)
+mode == "barrier" && H.set_face_hinge!(pb, hard; lambda = lamH, kind = :barrier)
 f0, t0, _ = H.objective!(pb, w, x0)
 c = cvals(w); viol = maximum(abs.(c) .- HV)
 @printf("start %s: Φ %.6f | |S| = %d | hard bounds 5/3 − %.0e, soft band %.3f, λ_H %.0f | max(|c| − hard) %.3e%s\n",
