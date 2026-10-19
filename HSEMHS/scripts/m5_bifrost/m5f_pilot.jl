@@ -40,10 +40,10 @@ const HV = hvals()
 
 if mode == "check"
     # hinge with thresholds at half the current |c| (many faces active): directional derivative and GN symmetry
-    H.objective!(pb, w, x0); c0 = cvals(w); n = 0
+    H.objective!(pb, w, x0)
     sh = (H.newfield(par), H.newfield(par), H.newfield0(par))
-    for q in 1:3, k in axes(sh[q], 3), j in 1:b.ny, i in 1:b.nx
-        n += 1; sh[q][i, j, k] = 0.5abs(c0[n])
+    for q in 1:3
+        H.owned_map!((i, j, k) -> 0.5abs((w.B[q][i, j, k] - pb.Bobsf[q][i, j, k]) * sqrt(pb.invsf2[q][i, j, k])), sh[q], par)
     end
     H.set_face_hinge!(pb, sh; lambda = lamH)
     g = H.similar_state(x0); f0 = H.fg!(g, pb, w, x0)[1]
