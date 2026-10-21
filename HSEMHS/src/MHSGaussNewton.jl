@@ -42,7 +42,7 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
     dP = wl.P
     jr = axes(dP, 2); nj = length(jr)
     Threads.@threads :static for jk in 1:(nj*NZ)                 # (j, k) rows, halos included
-        j = jr[(jk-1)%nj+1]; k = (jk - 1) ÷ nj + 1
+        j = first(jr) + (jk - 1) % nj; k = (jk - 1) ÷ nj + 1
         @inbounds for i in axes(dP, 1)
             dP[i, j, k] = w.P[i, j, k] * du[i, j, k]
         end
