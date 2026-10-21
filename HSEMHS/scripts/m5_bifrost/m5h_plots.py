@@ -26,14 +26,13 @@ if m.any():
     for col, c, lab in (("dz_max_m", S1, "max over columns"), ("dz_p99_m", S2, "p99"), ("dz_median_m", S3, "median")):
         y = np.where(h[col][m] > 0, h[col][m], np.nan)
         ax.plot(acc[m], y, color=c, lw=2, marker="o", ms=4, label=lab)
-        ax.annotate(lab, (acc[m][-1], y[-1]), xytext=(6, 0), textcoords="offset points", va="center", color=INK2, fontsize=9)
 ax.axhline(1e-3, color=INK, lw=1.2, ls="--")
 ax.annotate("threshold 1e-3 m", (0.01, 1e-3), xycoords=("axes fraction", "data"), xytext=(0, 4), textcoords="offset points", color=INK, fontsize=9)
 ax.set_yscale("log"); ax.set_xlabel("accepted iteration"); ax.set_ylabel("|Δz(τ500 = 1)| between adjacent accepted iterations [m]")
 last = h[-1]
 ax.set_title(f"Height change of τ500 = 1 — 504 × 504 columns; latest max {last['dz_max_m']:.3g} m at accepted {int(last['accepted'])}",
              loc="left", fontsize=10.5)
-ax.legend(frameon=False, loc="upper right")
+ax.legend(frameon=False, loc="center right")
 fig.tight_layout(); fig.savefig(os.path.join(out, "height_change.png"), dpi=150); plt.close(fig)
 
 fig, ax = plt.subplots(figsize=(8, 3.6))
