@@ -73,6 +73,22 @@ ts = @testset "MPI n=$R" begin
         @test H.face_violation(pb, w, hard)[1] < 0
         @test MPI.Allreduce(n, max, comm) == MPI.Allreduce(n, min, comm)
     end
+    # M5h: τ = 1 height change — global maximum, its column and the validity counts agree on every rank
+    let par = H.init_parallel(8, 8, 9), b = par.block
+        pb, x, _, _, _ = H.sc1_problem(par, 8, 8, 9; Bobs = (0.0, 0.0, 0.005), lambda_F = 1e-4, lambda_Q = 1e-3, P_ref = 2.0e5)
+        w = H.SMHSWork(par); H.objective!(pb, w, x)
+        z0 = fill(NaN, b.nx, b.ny); f0 = zeros(UInt8, b.nx, b.ny); H.tau1_heights!(z0, f0, pb, w.u)
+        gi, gj = 7, 8
+        xp = deepcopy(x)
+        if b.i0 <= gi <= b.i0 + b.nx - 1 && b.j0 <= gj <= b.j0 + b.ny - 1
+            for k in 1:b.nz-1; xp[1][gi-b.i0+1, gj-b.j0+1, k] += 0.2; end
+        end
+        H.objective!(pb, w, xp)
+        z1 = similar(z0); f1 = similar(f0); H.tau1_heights!(z1, f1, pb, w.u)
+        s = H.tau1_change_stats(par, z1, f1, z0, f0)
+        @test (s.worst_i, s.worst_j) == (gi, gj) && s.dz_max > 0 && s.all_valid && s.ncomparable == 64
+        @test MPI.Allreduce(s.dz_max, max, comm) == MPI.Allreduce(s.dz_max, min, comm)
+    end
     # a grid too small for the process grid is rejected on every rank (no deadlock)
     @test_throws H.InvalidInput H.init_parallel(R + 1, 4, 5; px = R, py = 1)
     # reader on fixtures (10×8×9) with this rank count

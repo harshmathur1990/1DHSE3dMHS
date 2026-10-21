@@ -32,6 +32,7 @@ include("test_staggered.jl")
 include("test_stag_gradient.jl")
 include("test_gateC_staggered.jl")
 include("test_face_bounds.jl")
+include("test_tau_height.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks
 @testset "MPI ranks" begin

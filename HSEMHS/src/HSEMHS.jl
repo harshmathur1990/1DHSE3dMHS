@@ -53,6 +53,7 @@ include("MHSGaussNewton.jl")
 include("MHSAlternate.jl")
 include("MHSAudit.jl")
 include("MHSJointGN.jl")
+include("TauHeight.jl")
 include("Driver.jl")
 
 function __init__()
