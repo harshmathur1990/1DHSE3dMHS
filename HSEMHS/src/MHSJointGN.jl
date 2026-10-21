@@ -36,16 +36,35 @@ steps accepted, or `max_candidates` candidates tried), measured from the call.
   linear in (Ã, b̄), so every candidate is scaled by the fraction to the boundary (`bound_tau` × the largest
   feasible fraction) before its trial; a rejected truncated candidate shrinks the radius from Δ, not from its
   truncated length; the base state must satisfy the bounds. B stays exactly divergence-free (no clipping).
-  Combine with `set_face_hinge!` so that the model itself sees the bounds.
-`callback(acc, row)` runs after every accepted step with the work counters saved and restored.
+  Combine with `set_face_hinge!` so that the model itself sees the bounds. M5g (Codex M5f review finding 2): the GN
+  and Cauchy candidates are each made face-feasible BEFORE their model decreases are compared, the Cauchy search
+  truncates every trial, and the fraction is computed from the exact linear map δB = A_ref curl δÃ + δb̄ ẑ. With the
+  barrier's local curvature in D (`gn_diagonal!`), the Cauchy direction −D⁻¹g is barrier-scaled, so it moves little in
+  coordinates that push active faces outward; radial truncation alone guarantees no tangent motion. Inputs are
+  validated (0 < `bound_tau` < 1, finite positive bounds, a feasible base — strictly inside with a barrier), and the
+  trial state is re-checked against the bounds (`bound_check_tol`, σ units) before acceptance.
+`callback(acc, row)` runs after every accepted step with the work counters saved and restored; returning `:stop` ends
+the solve (status `stalled`, reason "callback stop": a declared stagnation stop). `cand_sink` (a Ref) receives the live
+candidate vector.
+The result tuple also carries `μ` and `Δ` (restart state).
 """
 function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; work_budget::Float64 = 3000.0,
                          max_accepted::Int = typemax(Int), max_candidates::Int = typemax(Int),
                          cg_iter::Int = 100, cg_rtol::Float64 = 1e-2, du_cap::Float64 = 5.0, μ0::Float64 = 1e-6,
                          Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
                          magnetic_only::Bool = false, anchor_tangent::Bool = false, diagnostics::Bool = false,
-                         face_hard = nothing, bound_tau::Float64 = 0.999, callback = nothing, verbose::Bool = false)
+                         face_hard = nothing, bound_tau::Float64 = 0.999, bound_check_tol::Float64 = 1e-9,
+                         callback = nothing, cand_sink = nothing, verbose::Bool = false)
     par = pb.par; b = par.block
+    if face_hard !== nothing
+        0 < bound_tau < 1 || invalid("joint_gn_solve!: bound_tau must lie in (0, 1)")
+        pb.dfaces || invalid("joint_gn_solve!: face_hard needs data_on_faces")
+        objective!(pb, w, x)
+        v, nbad = face_violation(pb, w, face_hard)
+        nbad == 0 || invalid("joint_gn_solve!: face_hard bounds must be finite and > 0 ($nbad faces are not)")
+        strict = pb.hinge !== nothing && pb.hinge.barrier
+        (strict ? v < 0 : v <= 0) || invalid("joint_gn_solve!: the base state violates face_hard (max(|c| − u) = $v)")
+    end
     w0 = work_equivalent()
     wl = SMHSWork(par); wt = SMHSWork(par)
     g = similar_state(x); D = similar_state(x); Dinv = similar_state(x)
@@ -79,6 +98,14 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
     function predicted(dlt)
         Hv!(q, dlt)
         return -(dotN(par, g, dlt) + 0.5 * dotN(par, dlt, q))
+    end
+    # face bounds: largest feasible fraction of dlt from the exact linear map (scratch: wt.A, wt.B), then scale by
+    # bound_tau × that fraction when it is < 1; returns the fraction (1 without bounds)
+    function bound_truncate!(dlt)
+        face_hard === nothing && return 1.0
+        a = face_fraction(pb, w, wt, dlt, face_hard)
+        a < 1 && lincomb!(dlt, bound_tau * a, dlt, 0.0, dlt, par)
+        return a
     end
     # actual step from a direction: project the pressure part, keep Ã/b̄, fit the whole step into the ball
     ntrust = 0
@@ -118,7 +145,8 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         end
         return zz
     end
-    nacc = 0; ncand = 0; ncauchy = 0; nbound = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]; cands = NamedTuple[]
+    nacc = 0; ncand = 0; ncauchy = 0; nbound = 0; nexit = Dict{Symbol,Int}(); hist = NamedTuple[]
+    cands = cand_sink === nothing ? NamedTuple[] : (cand_sink[] = NamedTuple[])   # cand_sink: a Ref the caller can read live
     status = max_iter; reason = "work budget"
     while work_equivalent() - w0 < work_budget && nacc < max_accepted && ncand < max_candidates
         # ---- 1. Steihaug–Toint PCG on the full state ----
@@ -155,30 +183,33 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             rz = rzn
         end
         nexit[cg_exit] = get(nexit, cg_exit, 0) + 1
-        # ---- 2. candidate ----
+        # ---- 2. candidate: projected, fitted into the ball, then made face-feasible ----
         ncand += 1
         aerr = candidate!(δ, y, 1.0, Δ)
+        αg = bound_truncate!(δ)
         pred = predicted(δ)
-        # ---- 3. projected-Cauchy safeguard ----
+        # ---- 3. projected-Cauchy safeguard, every trial face-feasible before its model decrease is computed ----
         lincomb!(r, -1.0, g, 0.0, g, par); free!(r); prec!(cdir, r, 0.0)   # projected steepest descent −P D⁻¹ g
         cn = sqrt(max(Dnorm2(cdir), 0.0))
-        predc = -Inf; τc = cn > 0 ? Δ / cn : 0.0
+        predc = -Inf; αc = 1.0; τc = cn > 0 ? Δ / cn : 0.0
         for _ in 1:20
-            candidate!(xt, cdir, τc, Δ); pc = predicted(xt)
+            candidate!(xt, cdir, τc, Δ); at = bound_truncate!(xt); pc = predicted(xt)
             if pc > predc
-                predc = pc; copystate!(δc, xt, par)
+                predc = pc; αc = at; copystate!(δc, xt, par)
             elseif predc > 0
                 break
             end
             τc /= 2
         end
-        usedc = false
+        usedc = false; pred_gn = pred
         if predc > 0 && pred < 0.1 * predc
             ncauchy += 1; copystate!(δ, δc, par); pred = predc; usedc = true
         end
+        αb = usedc ? αc : αg
+        αb < 1 && (nbound += 1)
         nfin = sqrt(max(Dnorm2(δ), 0.0))
         diag = NamedTuple()
-        if diagnostics
+        if diagnostics                                    # of the FINAL (selected, face-feasible) step
             saved = copy(WORK_COUNTS)
             blk(v, fs) = (tmp = similar_state(x); for f in 1:5; ff = tmp[f]; vf = v[f]; owned_map!((i, j, k) -> f in fs ? vf[i, j, k] : 0.0, ff, par); end; tmp)
             share(v) = (nt = max(Dnorm2(v), 1e-300); (u = Dnorm2(blk(v, (1,))) / nt, A = Dnorm2(blk(v, (2, 3, 4))) / nt, b = Dnorm2(blk(v, (5,))) / nt))
@@ -188,42 +219,23 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             gu = dotN(par, g, δu); ga = dotN(par, g, δA)
             lincomb!(xt, 1.0, x, 1.0, δ, par); objective!(pb, wt, xt)
             dPmax = global_max(par, maximum(abs(expm1(wt.u[i, j, k] - w.u[i, j, k])) for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
-            dBmax = measured_change(pb, wt, (copy(parent(wt.u)), map(B -> copy(parent(B)), w.B)))
+            dBmax = measured_change_B(pb, wt, (copy(parent(wt.u)), map(B -> copy(parent(B)), w.B)))
             diag = (share_y = share(y), share_final = share(δ), dPmax = dPmax, dBmax = dBmax,
                     pred_u = -(gu + quu), pred_A = -(ga + qaa), pred_cross = -qua)
             copyto!(WORK_COUNTS, saved)
-        end
-        # ---- 3b. hard face bounds: fraction to the boundary (B is linear in Ã, b̄) ----
-        αb = 1.0
-        if face_hard !== nothing
-            lincomb!(xt, 1.0, x, 1.0, δ, par); objective!(pb, wt, xt)
-            am = fill(1.0, Threads.maxthreadid())
-            for q in 1:3
-                B0 = w.B[q]; B1 = wt.B[q]; Bo = pb.Bobsf[q]; iv = pb.invsf2[q]; ub = face_hard[q]
-                forrows(collect(axes(B0, 3)), par) do i, j, k
-                    isg = sqrt(iv[i, j, k]); c0 = (B0[i, j, k] - Bo[i, j, k]) * isg; c1 = (B1[i, j, k] - Bo[i, j, k]) * isg
-                    u = ub[i, j, k]
-                    if abs(c1) > u
-                        dc = c1 - c0; a = dc > 0 ? (u - c0) / dc : (-u - c0) / dc
-                        am[Threads.threadid()] = min(am[Threads.threadid()], max(a, 0.0))
-                    end
-                end
-            end
-            αb = -global_max(par, -minimum(am))
-            if αb < 1
-                nbound += 1; lincomb!(δ, bound_tau * αb, δ, 0.0, δ, par)
-                pred = predicted(δ); nfin = sqrt(max(Dnorm2(δ), 0.0))
-            end
         end
         # ---- 4. trial in a separate workspace ----
         lincomb!(xt, 1.0, x, 1.0, δ, par)
         ft, tt, oob = objective!(pb, wt, xt)
         margin = -global_max(par, -minimum(wt.u[i, j, k] - ulo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
+        bviol = face_hard === nothing ? -Inf : face_violation(pb, wt, face_hard)[1]
         ρ = (oob || pred <= 0) ? -Inf : (f - ft) / pred
         Δused = Δ
-        push!(cands, (candidate = ncand, accepted = ρ > 1e-4 && ft < f && margin >= -1e-12, rho = ρ, pred = pred, actual = f - ft,
-                      Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, bound_frac = αb, diag = diag))
-        if ρ > 1e-4 && ft < f && margin >= -1e-12
+        ok = ρ > 1e-4 && ft < f && margin >= -1e-12 && bviol <= bound_check_tol
+        push!(cands, (candidate = ncand, accepted = ok, rho = ρ, pred = pred, pred_gn = pred_gn, predc = predc, actual = f - ft,
+                      Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, bound_frac = αb,
+                      bound_frac_gn = αg, bound_frac_cauchy = αc, bound_viol = bviol, mu = μ, diag = diag))
+        if ok
             copystate!(x, xt, par)
             rebuild!()
             nacc += 1
@@ -231,8 +243,8 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             ρ < 0.25 && (Δ = nfin / 4)
             μ = ρ > 0.75 ? max(μ / 3, 1e-12) : (ρ < 0.25 ? min(4μ, 1e2) : μ)
             row = (accepted = nacc, f = f, terms = tt, rho = ρ, pred = pred, predc = predc, cauchy = usedc, ynorm = nfin,
-                   Delta_used = Δused, Delta = Δ, cg_exit = cg_exit, cg_rel = cg_rel, margin = margin, anchor_err = aerr,
-                   work = work_equivalent() - w0)
+                   Delta_used = Δused, Delta = Δ, mu = μ, cg_exit = cg_exit, cg_rel = cg_rel, margin = margin, anchor_err = aerr,
+                   bound_frac = αb, bound_viol = bviol, work = work_equivalent() - w0)
             push!(hist, row)
             if verbose && rank0(par) && nacc % 10 == 0
                 @printf("  jgn %4d: Φ %.6e  Φ_F %.3e  ρ %.2f  ‖δ‖_D/Δ %.2f  CG %s  Cauchy %d/%d  work %.0f\n", nacc, f, tt[1], ρ, nfin / Δused,
@@ -240,7 +252,8 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                 flush(stdout)
             end
             if callback !== nothing
-                saved = copy(WORK_COUNTS); callback(nacc, row); copyto!(WORK_COUNTS, saved)
+                saved = copy(WORK_COUNTS); cbr = callback(nacc, row); copyto!(WORK_COUNTS, saved)
+                cbr === :stop && (status = stalled; reason = "callback stop"; break)
             end
         else
             Δ = (αb < 1 ? Δused : nfin) / 4; μ = min(4μ, 1e2)
@@ -249,7 +262,62 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             end
         end
     end
-    nacc >= max_accepted && (reason = "max_accepted")
-    ncand >= max_candidates && (reason = "max_candidates")
-    return status, reason, nacc, (history = hist, candidates = cands, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, bound = nbound, cg_exit = nexit), Δ = Δ)
+    reason == "callback stop" || (nacc >= max_accepted && (reason = "max_accepted"))
+    reason == "callback stop" || (ncand >= max_candidates && (reason = "max_candidates"))
+    return status, reason, nacc, (history = hist, candidates = cands, counts = (cand = ncand, cauchy = ncauchy, trust = ntrust, bound = nbound, cg_exit = nexit), Δ = Δ, μ = μ)
+end
+
+"""
+    face_violation(pb, w, u) -> (max(|c_f| − u_f), number of non-finite or non-positive u_f)
+
+At the state of the last `objective!(pb, w, ·)`, c_f = (B_f − I·y_f)/σ_f over every owned face (all ranks).
+"""
+function face_violation(pb::SMHSProblem, w::SMHSWork, u)
+    par = pb.par; b = par.block
+    m = -Inf; nbad = 0
+    for q in 1:3
+        Bc = w.B[q]; Bo = pb.Bobsf[q]; iv = pb.invsf2[q]; uq = u[q]
+        for k in axes(Bc, 3), j in 1:b.ny, i in 1:b.nx
+            t = uq[i, j, k]
+            (isfinite(t) && t > 0) || (nbad += 1; continue)
+            m = max(m, abs((Bc[i, j, k] - Bo[i, j, k]) * sqrt(iv[i, j, k])) - t)
+        end
+    end
+    return global_max(par, m), MPI.Allreduce(nbad, +, par.comm)
+end
+
+"""
+    fraction_to_boundary(c0, dc, u) -> α
+
+Largest α ∈ [0, 1] with |c0 + α dc| ≤ u, for a face inside its bound (|c0| ≤ u).
+"""
+@inline function fraction_to_boundary(c0::Float64, dc::Float64, u::Float64)
+    dc == 0 && return 1.0
+    a = dc > 0 ? (u - c0) / dc : (-u - c0) / dc
+    return clamp(a, 0.0, 1.0)
+end
+
+"""
+    face_fraction(pb, w, ws, δ, u) -> α
+
+Largest α ∈ [0, 1] such that the state at `w` (its B) moved by α δ satisfies every face bound u, computed from the
+exact linear map δB = A_ref curl δÃ + δb̄ ẑ (ws.A, ws.B are scratch; no objective evaluation, no work counted).
+"""
+function face_fraction(pb::SMHSProblem, w::SMHSWork, ws::SMHSWork, δ::MHSState, u)
+    par = pb.par; b = par.block; Ar = pb.Aref
+    for c in 1:3
+        δc = δ[c+1]; owned_map!((i, j, k) -> Ar * δc[i, j, k], ws.A[c], par)
+    end
+    exchange_halos!(par, collect(ws.A))
+    curlA!(ws.B, ws.A, getscalar(par, δ[5]), pb.s, par)
+    am = fill(1.0, Threads.maxthreadid())
+    for q in 1:3
+        B0 = w.B[q]; dB = ws.B[q]; Bo = pb.Bobsf[q]; iv = pb.invsf2[q]; uq = u[q]
+        forrows(collect(axes(B0, 3)), par) do i, j, k
+            isg = sqrt(iv[i, j, k])
+            a = fraction_to_boundary((B0[i, j, k] - Bo[i, j, k]) * isg, dB[i, j, k] * isg, uq[i, j, k])
+            a < am[Threads.threadid()] && (am[Threads.threadid()] = a)
+        end
+    end
+    return -global_max(par, -minimum(am))
 end

@@ -44,6 +44,35 @@ ts = @testset "MPI n=$R" begin
         @test divrel <= 1e-14
         @test all(errs[nm] <= 1e-13 for nm in ("C", "Cstar", "H", "G"))
     end
+    # M5g: face bounds with the limiting face on the last rank — global fraction to the boundary, violation and a
+    # bounded joint GN step agree on every rank (Codex M5f review finding 7)
+    let par = H.init_parallel(8, 8, 9), b = par.block
+        pb, x, _, _, _ = H.sc1_problem(par, 8, 8, 9; Bobs = (0.0, 0.0, 0.005), lambda_F = 1e-4, lambda_Q = 1e-3)
+        w = H.SMHSWork(par); H.objective!(pb, w, x)
+        gi, gj, gk = 7, 8, 4                                           # a corner face: not on rank 0 when R > 1
+        mine = b.i0 <= gi <= b.i0 + b.nx - 1 && b.j0 <= gj <= b.j0 + b.ny - 1
+        hard = (H.newfield(par; fill = 50.0), H.newfield(par; fill = 50.0), H.newfield0(par; fill = 50.0))
+        c0 = 0.0; isg = 0.0
+        if mine
+            i, j = gi - b.i0 + 1, gj - b.j0 + 1
+            isg = sqrt(pb.invsf2[3][i, j, gk]); c0 = (w.B[3][i, j, gk] - pb.Bobsf[3][i, j, gk]) * isg
+            hard[3][i, j, gk] = abs(c0) + 0.25
+        end
+        c0 = MPI.Allreduce(c0, +, comm); isg = MPI.Allreduce(isg, +, comm)
+        @test MPI.Allreduce(mine ? 1 : 0, +, comm) == 1
+        @test R == 1 || !(mine && par.rank == 0)
+        d = H.similar_state(x); H.setscalar!(par, d[5], 1.0)          # b̄ shifts every z-face by 1 (T)
+        a = H.face_fraction(pb, w, H.SMHSWork(par), d, hard)
+        @test isapprox(a, 0.25 / isg; rtol = 1e-10)
+        @test MPI.Allreduce(a, max, comm) == MPI.Allreduce(a, min, comm)
+        @test isapprox(H.face_violation(pb, w, hard)[1], -0.25; rtol = 1e-12)
+        H.set_face_hinge!(pb, hard; lambda = 0.1, kind = :barrier)
+        ulo = H.newfield(par); H.owned_map!((i, j, k) -> w.u[i, j, k] - 3.0, ulo, par)
+        st, why, n, res = H.joint_gn_solve!(pb, w, x, ulo; face_hard = hard, bound_tau = 0.99, max_candidates = 3)
+        H.objective!(pb, w, x)
+        @test H.face_violation(pb, w, hard)[1] < 0
+        @test MPI.Allreduce(n, max, comm) == MPI.Allreduce(n, min, comm)
+    end
     # a grid too small for the process grid is rejected on every rank (no deadlock)
     @test_throws H.InvalidInput H.init_parallel(R + 1, 4, 5; px = R, py = 1)
     # reader on fixtures (10×8×9) with this rank count

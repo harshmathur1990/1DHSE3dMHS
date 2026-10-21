@@ -17,7 +17,8 @@ Proj_div(v) = v − Aᵀ M⁻¹ (A v − r), A = Div·diag(σ), r = −Div·I·y
 Stopped when ‖x − z‖_∞ ≤ tol and the dual residual ρ‖z − z_prev‖_∞ ≤ tol. The returned field is x (exactly
 divergence-free to the solve accuracy), and it is verified independently: divergence recomputed from the metrics,
 face and centre residuals recomputed, bounds checked against the TRUE thresholds 5 and 3 and against t5−m, t3−m.
-Optimality: the KKT gap is reported as the objective drop over the last iterations and the primal/dual residuals.
+Stopping evidence: the ADMM primal/dual residuals and the objective history. These are not a computed KKT gap or a
+certificate of optimality (M5f review): the result is an approximate QP optimum; its feasibility is checked separately.
 
 usage: python3 data_qp.py --obs out/m5d/observations.h5 --support out/m5d/support_p128_above3.npy \
            --margin 0.05 --out out/m5f/qp_m0.05.npz [--tol 1e-6] [--max-iter 20000]

@@ -54,7 +54,7 @@ Divergence of every field is ≤ 1e-21 T/m (relative ≤ 8e-13).
 
 The bottleneck in both is IPX's basis construction, not its interior-point iterations. Neither run says anything about feasibility.
 
-**Independent backend with a certified bracket (`centre_bracket.py`).**
+**Independent backend with a numerically verified bracket (`centre_bracket.py`; "certified" was too strong, M5g).**
 
 *Method.* PDHG (Chambolle–Pock, diagonal preconditioning, restart to the average every 1000 iterations) on min ‖c‖∞ subject to A c = r in Codex's reduced formulation.
 
@@ -86,7 +86,7 @@ This field's face residual is 82.9σ, with 12 % of faces above 3σ: the centre w
 - layer RMS and p99 with the worst location;
 - face and centre maxima and tails;
 - pressure optimality, anchor and bound errors, accepted steps and work;
-- windowed max |ΔP/P| and |ΔB|.
+- windowed max |ΔP/P| and |ΔB| *(M5g correction: the logged ΔB was max(|ΔP/P|, |ΔB|/max(|B|, σ)), so it repeated the pressure change; fixed in `m5f_pilot.jl`)*.
 
 **3000-product pilots** (wall 20–180 s each):
 
@@ -127,9 +127,9 @@ At the end:
 
 **Reading:**
 - **Force decreases while the face-model data limits stay satisfied.** This answers the pilot's question for this start and these settings.
-- The data-feasible run ends **below every earlier unconstrained run at the same budget**. Its max layer RMS is 109, against 151–345 for the M5e 3000-product arms, which also carried the 11.15σ data outlier. Its Φ is 0.432, against 0.469–0.87 there.
+- ~~The data-feasible run ends below every earlier unconstrained run at the same budget.~~ **Corrected in M5g (Codex M5f review, finding 4):** this compared 30050 products with the M5e arms' 3000, from a different start (pressure of the M5e ×100 endpoint), and a Φ that includes the barrier term against Φ without it. It is not a matched comparison and supports no claim that the bounded solver is faster or better. What it does show is a force reduction within this run (raw force 6.03e5 → 604) while the face limits stayed satisfied.
 - **It has not converged.** Each of the last three 2500-product windows lowered Φ by only ~0.4 %, and the windowed pressure change is still ~10². Max layer RMS 109 is still a factor of about 1e4 above the 0.01 target. This is a plateau-like slowdown, not a convergence and not an infeasibility proof.
-- **The bound handling is fragile.** τ = 0.9 and τ = 0.999 both collapse. Only τ = 0.99 completes, and the reason is understood only qualitatively: the barrier's per-face curvature is invisible to the per-layer Ã preconditioner, so CG directions dive at bound faces. τ = 0.99 succeeding should not be read as robust. A proper interior-point treatment (barrier continuation with that curvature in the preconditioner) is the solver issue to decide on before longer runs.
+- **The bound handling is fragile.** τ = 0.9 and τ = 0.999 both collapse. Only τ = 0.99 completes, and the reason is understood only qualitatively. *(Corrected in M5g: the GN product, and therefore CG, does contain the exact barrier curvature. The per-layer preconditioner averaged it, and near bounds its finite-difference probes could leave the barrier domain, so poor or invalid preconditioning is a hypothesis, supported by a reproduced failure case. The bounded step also lost its Cauchy safeguard after truncation; see `M5g_codex_m5f_followup.md`.)* τ = 0.99 succeeding should not be read as robust. A proper interior-point treatment (barrier continuation with that curvature in the preconditioner) is the solver issue to decide on before longer runs.
 - The run's own state is checkpointed every 2500 products (x and Δ). The damping μ is not saved, so a restart would be a declared new experiment.
 
 ## 4. What is still open

@@ -108,7 +108,7 @@ function logpoint(x, work, tag)
     a = H.full_audit(pb, wx, x, Dref, ulo)
     H.objective!(pb, wx, x)
     dPw = maximum(abs(expm1(wx.u[i, j, k] - snap_prev[][1][i - wx.u.offsets[1], j - wx.u.offsets[2], k - wx.u.offsets[3]])) for i in 1:b.nx, j in 1:b.ny, k in 1:NZ)
-    dBw = H.measured_change(pb, wx, snap_prev[])
+    dBw = H.measured_change_B(pb, wx, snap_prev[])   # magnetic only (M5g; it was max(ΔP/P, ΔB) before)
     snap_prev[] = H.measured_snapshot(pb, wx)
     margin_u = minimum(wx.u[i, j, k] - ulo[i, j, k] for k in 1:NZ, j in 1:b.ny, i in 1:b.nx)
     nacc = length(acc_rows); aerr = nacc > 0 ? acc_rows[end].anchor_err : NaN

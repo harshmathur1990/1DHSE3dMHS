@@ -144,8 +144,76 @@ function set_face_hinge!(pb::SMHSProblem, soft; lambda::Float64 = 1.0, kind::Sym
     soft === nothing && (pb.hinge = nothing; return pb)
     pb.dfaces || invalid("the face hinge needs data_on_faces")
     kind in (:hinge, :barrier) || invalid("kind must be :hinge or :barrier")
+    isfinite(lambda) && (kind == :barrier ? lambda > 0 : lambda >= 0) ||
+        invalid("set_face_hinge!: lambda must be finite and " * (kind == :barrier ? "> 0" : "≥ 0"))
+    # thresholds: finite, > 0 for a barrier (u_f), ≥ 0 for a hinge (s_f), on every owned face (all ranks agree)
+    bad = 0
+    for q in 1:3, k in axes(pb.Bobsf[q], 3), j in 1:pb.par.block.ny, i in 1:pb.par.block.nx
+        t = soft[q][i, j, k]
+        (isfinite(t) && (kind == :barrier ? t > 0 : t >= 0)) || (bad += 1)
+    end
+    MPI.Allreduce(bad, +, pb.par.comm) == 0 || invalid("set_face_hinge!: thresholds must be finite and " * (kind == :barrier ? "> 0" : "≥ 0"))
     pb.hinge = (soft = soft, lam = lambda, val = Ref(0.0), barrier = kind == :barrier)
     return pb
+end
+
+"""
+    face_curvature!(hf, pb, w) -> hf
+
+Second derivative of Φ_H with respect to the face field B_f at the state of the last `objective!` (M5g, Codex M5f review
+finding 1): hf_f = (λ/N_B) φ''(c_f)/σ_f² with φ = −log(1 − c²/u²) (barrier: φ'' = 2(u² + c²)/(u² − c²)²) or
+φ = max(|c| − s, 0)² (hinge: φ'' = 2 on active faces). This is exactly the face weight the GN product adds
+(`gn_hvp!`), evaluated at the interior base state only — never at a probe. Zero without a hinge.
+"""
+function face_curvature!(hf::NTuple{3,Field}, pb::SMHSProblem, w::SMHSWork)
+    hg = pb.hinge; par = pb.par
+    for q in 1:3
+        if hg === nothing
+            fill!(parent(hf[q]), 0.0); continue
+        end
+        Bc = w.B[q]; Bo = pb.Bobsf[q]; iv = pb.invsf2[q]; sf = hg.soft[q]; lH = hg.lam; NB = pb.NB
+        fill!(parent(hf[q]), 0.0)
+        owned_map!(hf[q], par) do i, j, k
+            cf = (Bc[i, j, k] - Bo[i, j, k]) * sqrt(iv[i, j, k])
+            if hg.barrier
+                u2 = sf[i, j, k]^2; qq = u2 - cf^2
+                qq > 0 ? 2lH * (u2 + cf^2) / qq^2 * iv[i, j, k] / NB : Inf
+            else
+                abs(cf) > sf[i, j, k] ? 2lH * iv[i, j, k] / NB : 0.0
+            end
+        end
+    end
+    exchange_halos!(par, collect(hf))
+    return hf
+end
+
+"""
+    face_curvature_diag!(D, pb, w, hf) -> D
+
+Adds the exact diagonal of Cᵀ diag(hf) C (C: (Ã, b̄) → face B, B = A_ref curl Ã + b̄ ẑ) to the Ã and b̄ entries of D:
+squared curl-stencil coefficients for Ã (the stencil of `curlA_T!`), Σ_z-faces hf for b̄. Local, so the spatial
+variation of the barrier curvature near active faces is kept (Codex M5f review finding 1).
+"""
+function face_curvature_diag!(D::MHSState, pb::SMHSProblem, hf::NTuple{3,Field})
+    par = pb.par; s = pb.s; NZ = s.nz; A2 = pb.Aref^2
+    hx, hy, hzf = hf
+    owned_map!(D[2], par) do i, j, k            # Ãx (i, j+½, k+½): By(k), By(k+1), Bz(j), Bz(j+1)
+        t = (k >= 1 ? hy[i, j, k] / s.hz[k]^2 : 0.0) + (k + 1 <= NZ ? hy[i, j, k+1] / s.hz[k+1]^2 : 0.0) +
+            hzf[i, j, k] / s.dyc[j]^2 + hzf[i, j+1, k] / s.dyc[j+1]^2
+        D[2][i, j, k] + A2 * t
+    end
+    owned_map!(D[3], par) do i, j, k            # Ãy (i+½, j, k+½): Bx(k), Bx(k+1), Bz(i), Bz(i+1)
+        t = (k >= 1 ? hx[i, j, k] / s.hz[k]^2 : 0.0) + (k + 1 <= NZ ? hx[i, j, k+1] / s.hz[k+1]^2 : 0.0) +
+            hzf[i, j, k] / s.dxc[i]^2 + hzf[i+1, j, k] / s.dxc[i+1]^2
+        D[3][i, j, k] + A2 * t
+    end
+    owned_map!(D[4], par) do i, j, k            # Ãz (i+½, j+½, k): Bx(j), Bx(j+1), By(i), By(i+1)
+        t = hx[i, j, k] / s.dyc[j]^2 + hx[i, j+1, k] / s.dyc[j+1]^2 + hy[i, j, k] / s.dxc[i]^2 + hy[i+1, j, k] / s.dxc[i+1]^2
+        D[4][i, j, k] + A2 * t
+    end
+    hb = sdot_ones(par, hzf)
+    rank0(par) && (D[5][1, 1, 1] += hb)
+    return D
 end
 
 """Horizontal (x-, y-face) force equations exist on layers 2…NZ−1 only: the top and bottom layers
@@ -669,7 +737,31 @@ function gn_diag_v!(D1::Field, pb::SMHSProblem, w::SMHSWork, x::MHSState)
     return D1
 end
 
-function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; probes::Int = 4)
+"""
+    gn_diagonal!(D, pb, w, x; probes = 4, barrier_safe = true)
+
+Preconditioner diagonal at the state x (`w` must hold the state at x). With a face hinge or barrier set
+(`set_face_hinge!`) and `barrier_safe` (M5g, Codex M5f review finding 1), every probe-based estimate (the Ã layer
+means and the b̄ finite difference) is taken with the face term switched off, so no probe can leave the barrier
+domain, and the face term's exact local diagonal (`face_curvature_diag!`, from the base state) is added instead —
+replacing, not double counting, the layer-averaged contribution. `barrier_safe = false` is the pre-M5g estimate
+(kept only to audit how often its probes left the domain).
+"""
+function gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; probes::Int = 4, barrier_safe::Bool = true)
+    hg = pb.hinge
+    (barrier_safe && hg !== nothing) || return _gn_diagonal!(D, pb, w, x; probes = probes)
+    pb.hinge = nothing
+    try
+        _gn_diagonal!(D, pb, w, x; probes = probes)
+    finally
+        pb.hinge = hg
+    end
+    hf = (newfield(pb.par), newfield(pb.par), newfield0(pb.par))
+    face_curvature!(hf, pb, w)
+    return face_curvature_diag!(D, pb, hf)
+end
+
+function _gn_diagonal!(D::MHSState, pb::SMHSProblem, w::SMHSWork, x::MHSState; probes::Int = 4)
     par = pb.par; b = par.block; NZ = b.nz
     gn_diag_v!(D[1], pb, w, x)
     w2 = SMHSWork(par)
@@ -859,16 +951,27 @@ measured_snapshot(pb::SMHSProblem, w::SMHSWork) = (copy(parent(w.u)), map(B -> c
 """
     measured_change(pb, w, snap) -> max relative change since `snap`
 
-max(max |ΔP/P|, max |ΔB|/max(|B|, σ)) over owned centres / faces; |ΔP/P| = |e^{Δu} − 1|.
+max(max |ΔP/P|, max |ΔB|/max(|B|, σ)) over owned centres / faces; |ΔP/P| = |e^{Δu} − 1|. The two parts
+separately: `measured_change_P`, `measured_change_B`.
 """
-function measured_change(pb::SMHSProblem, w::SMHSWork, snap)
-    par = pb.par; b = par.block; u0, B0 = snap
+measured_change(pb::SMHSProblem, w::SMHSWork, snap) = max(measured_change_P(pb, w, snap), measured_change_B(pb, w, snap))
+
+"""max |ΔP/P| = |e^{Δu} − 1| over owned centres since `snap` (pressure only; M5g, Codex M5f review finding 5)."""
+function measured_change_P(pb::SMHSProblem, w::SMHSWork, snap)
+    par = pb.par; b = par.block; u0 = snap[1]
     pu = parent(w.u); ou = w.u.offsets
     m = 0.0
     for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx
         I = (i - ou[1], j - ou[2], k - ou[3])
         m = max(m, abs(expm1(pu[I...] - u0[I...])))
     end
+    return global_max(par, m)
+end
+
+"""max |ΔB|/max(|B|, σ) over owned faces since `snap` (magnetic only; M5g, Codex M5f review finding 5)."""
+function measured_change_B(pb::SMHSProblem, w::SMHSWork, snap)
+    par = pb.par; b = par.block; B0 = snap[2]
+    m = 0.0
     for c in 1:3
         Bc = w.B[c]; pB = parent(Bc); oB = Bc.offsets; iv = pb.invsf2[c]
         for k in axes(Bc, 3), j in 1:b.ny, i in 1:b.nx
