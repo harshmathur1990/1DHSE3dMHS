@@ -46,7 +46,7 @@ files = sorted(glob.glob(os.path.join(out, "ztau1", "ztau1_*.h5")))
 if files:
     rd = lambda p: (h5py.File(p, "r")["z_tau1_m"][()].T, h5py.File(p, "r")["flag"][()].T)
     z0, f0 = rd(files[0]); z1, f1 = rd(files[-1])
-    n_last = int(os.path.basename(files[-1])[7:12])
+    n_last = int(os.path.basename(files[-1]).split("_")[1].split(".")[0])
     seq = LinearSegmentedColormap.from_list("seq", ["#e8f1fc", "#2a78d6", "#0d2d57"])
     div = LinearSegmentedColormap.from_list("div", [S1, "#e4e3df", S2])
     fig, axs = plt.subplots(1, 3, figsize=(15, 4.6))
