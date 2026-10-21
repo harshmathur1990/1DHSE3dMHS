@@ -40,8 +40,10 @@ function gn_hvp!(Hv::MHSState, pb::SMHSProblem, w::SMHSWork, wl::SMHSWork, v::MH
     end
     exchange_halos!(par, collect(dJ))
     dP = wl.P
-    Threads.@threads :static for k in 1:NZ
-        @inbounds for j in axes(dP, 2), i in axes(dP, 1)
+    jr = axes(dP, 2); nj = length(jr)
+    Threads.@threads :static for jk in 1:(nj*NZ)                 # (j, k) rows, halos included
+        j = jr[(jk-1)%nj+1]; k = (jk - 1) ÷ nj + 1
+        @inbounds for i in axes(dP, 1)
             dP[i, j, k] = w.P[i, j, k] * du[i, j, k]
         end
     end

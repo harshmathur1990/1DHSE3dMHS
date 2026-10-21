@@ -354,8 +354,10 @@ function objective!(pb::SMHSProblem, w::SMHSWork, x::MHSState)
     owned_map!((i, j, k) -> Ar * Atz[i, j, k], w.A[3], par)
     exchange_halos!(par, [w.u, w.A...])
     u = w.u; P = w.P
-    Threads.@threads :static for k in 1:NZ
-        @inbounds for j in axes(u, 2), i in axes(u, 1)
+    jr = axes(u, 2); nj = length(jr)
+    Threads.@threads :static for jk in 1:(nj*NZ)                 # (j, k) rows, halos included
+        j = jr[(jk-1)%nj+1]; k = (jk - 1) ÷ nj + 1
+        @inbounds for i in axes(u, 1)
             P[i, j, k] = exp(u[i, j, k])
         end
     end
@@ -906,8 +908,9 @@ A₀: fit (Ã, b̄) to Bobs with v frozen and λ_F = λ_U = λ_Uz = λ_Q = 0 (da
 (Ã, b̄), so this is conjugate gradients on the normal equations Q y = −∇Φ(0), with the
 Hessian–vector product Q p = ∇Φ(p) − ∇Φ(0) (∇Φ is affine; one gradient per iteration).
 Converges to the minimum-norm solution in the gauge null space of curl when started at 0.
+`progress > 0` prints the residual ratio every `progress` iterations (rank 0).
 """
-function init_A!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_iter::Int = 2000, rtol::Float64 = 1e-10)
+function init_A!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_iter::Int = 2000, rtol::Float64 = 1e-10, progress::Int = 0)
     par = pb.par
     lF, lU, lUz, lQ = pb.lamF, pb.lamU, pb.lamUz, pb.lamQ
     pb.lamF = 0.0; pb.lamU = 0.0; pb.lamUz = 0.0; pb.lamQ = 0.0     # Φ_Q's (B_ref/S)² weights would wreck κ(Q)
@@ -932,6 +935,8 @@ function init_A!(pb::SMHSProblem, w::SMHSWork, x::MHSState; max_iter::Int = 2000
             rn = dotN(par, r, r)
             lincomb!(p, 1.0, r, rn / rr, p, par)
             rr = rn
+            progress > 0 && it % progress == 0 && rank0(par) &&
+                (@printf("init_A!: iteration %d, residual ratio %.3e\n", it, sqrt(rr / max(rr0, 1e-300))); flush(stdout))
         end
         for f in 2:5
             copyto!(parent(x[f]), parent(sol[f]))
@@ -945,6 +950,36 @@ end
 # ---------------------------------------------------------------------------------------
 # Solver policy (M6d)
 # ---------------------------------------------------------------------------------------
+"""
+    data_residual_stats(pb, w) -> (face_max, face_frac3, centre_max, centre_frac3)
+
+Max |c| and the fraction |c| > 3 of the normalized data residuals at the state of the last `objective!`, over every owned
+face (c = (B_f − I·y_f)/σ_f, all three components) and every owned centre (c = (H B − y_c)/σ_c); global over ranks.
+Threaded (M5h: the full-resolution driver's per-iteration diagnostics).
+"""
+function data_residual_stats(pb::SMHSProblem, w::SMHSWork)
+    par = pb.par; b = par.block; NZ = b.nz
+    nt = Threads.maxthreadid()
+    fm = zeros(nt); f3 = zeros(Int, nt); cm = zeros(nt); c3 = zeros(Int, nt)
+    nf = 0
+    for q in 1:3
+        Bq = w.B[q]; Bo = pb.Bobsf[q]; iv = pb.invsf2[q]
+        nf += b.nx * b.ny * length(axes(Bq, 3))
+        forrows(collect(axes(Bq, 3)), par) do i, j, k
+            c = abs((Bq[i, j, k] - Bo[i, j, k]) * sqrt(iv[i, j, k])); t = Threads.threadid()
+            c > fm[t] && (fm[t] = c); c > 3 && (f3[t] += 1)
+        end
+        dq = w.dB[q]; sg = pb.sig[q]
+        forrows(1:NZ, par) do i, j, k
+            c = abs(dq[i, j, k] / sg[i, j, k]); t = Threads.threadid()
+            c > cm[t] && (cm[t] = c); c > 3 && (c3[t] += 1)
+        end
+    end
+    mx = MPI.Allreduce([maximum(fm), maximum(cm)], max, par.comm)
+    ct = MPI.Allreduce([Float64(sum(f3)), Float64(sum(c3)), Float64(nf), 3.0 * b.nx * b.ny * NZ], +, par.comm)
+    return mx[1], ct[1] / ct[3], mx[2], ct[2] / ct[4]
+end
+
 """Copies of the measured quantities (u = ln P at centres, B on faces) at the state of the last `objective!`."""
 measured_snapshot(pb::SMHSProblem, w::SMHSWork) = (copy(parent(w.u)), map(B -> copy(parent(B)), w.B))
 

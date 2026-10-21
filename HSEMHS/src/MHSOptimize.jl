@@ -36,8 +36,11 @@ similar_state(x::MHSState) = Field[(y = similar(f); fill!(parent(y), 0.0); y) fo
 """Apply y[i,j,k] = fun(i,j,k) on owned i, j and the whole z axis of y."""
 function owned_map!(fun::F, y::Field, par::ParCtx) where {F}
     b = par.block
-    Threads.@threads :static for k in collect(axes(y, 3))
-        @inbounds for j in 1:b.ny, i in 1:b.nx
+    kv = collect(axes(y, 3)); nk = length(kv)
+    # threaded over (j, k) rows, not k alone: with NZ ≈ 177 levels on 128 threads a k-only split leaves ~30 % idle (M5h)
+    Threads.@threads :static for jk in 1:(b.ny*nk)
+        j = (jk - 1) % b.ny + 1; k = kv[(jk-1)÷b.ny+1]
+        @inbounds for i in 1:b.nx
             y[i, j, k] = fun(i, j, k)
         end
     end

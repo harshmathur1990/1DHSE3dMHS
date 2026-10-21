@@ -45,7 +45,8 @@ steps accepted, or `max_candidates` candidates tried), measured from the call.
   trial state is re-checked against the bounds (`bound_check_tol`, σ units) before acceptance.
 `callback(acc, row)` runs after every accepted step with the work counters saved and restored; returning `:stop` ends
 the solve (status `stalled`, reason "callback stop": a declared stagnation stop). `cand_sink` (a Ref) receives the live
-candidate vector.
+candidate vector. `cand_callback(record)` runs after every REJECTED candidate (x and w unchanged, so the base state can be
+checkpointed); `:stop` ends the solve likewise.
 The result tuple also carries `μ` and `Δ` (restart state).
 """
 function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; work_budget::Float64 = 3000.0,
@@ -54,7 +55,7 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                          Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
                          magnetic_only::Bool = false, anchor_tangent::Bool = false, diagnostics::Bool = false,
                          face_hard = nothing, bound_tau::Float64 = 0.999, bound_check_tol::Float64 = 1e-9,
-                         callback = nothing, cand_sink = nothing, verbose::Bool = false)
+                         callback = nothing, cand_sink = nothing, cand_callback = nothing, verbose::Bool = false)
     par = pb.par; b = par.block
     if face_hard !== nothing
         0 < bound_tau < 1 || invalid("joint_gn_solve!: bound_tau must lie in (0, 1)")
@@ -256,6 +257,10 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                 cbr === :stop && (status = stalled; reason = "callback stop"; break)
             end
         else
+            if cand_callback !== nothing                  # rejected candidate: x and w are still the accepted base state
+                saved = copy(WORK_COUNTS); cbr = cand_callback(cands[end]); copyto!(WORK_COUNTS, saved)
+                cbr === :stop && (status = stalled; reason = "callback stop"; break)
+            end
             Δ = (αb < 1 ? Δused : nfin) / 4; μ = min(4μ, 1e2)
             if Δ < 1e-14 * Δstart
                 status = stalled; reason = "trust radius collapsed"; break

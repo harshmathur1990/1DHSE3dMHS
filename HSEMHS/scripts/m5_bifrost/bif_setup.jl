@@ -5,7 +5,7 @@ const H = HSEMHS
 H.ensure_mpi()
 const BIF = normpath(joinpath(@__DIR__, "..", "..", "..", "IO", "input-mhs-hse.nc"))
 const TAB = normpath(joinpath(@__DIR__, "..", "..", "cache", "eos_table.h5"))
-function bif_problem(c, sz; init_iter::Int = 3000, kw...)
+function bif_problem(c, sz; init_iter::Int = 3000, init_progress::Int = 0, kw...)
     raw = h5open(BIF) do f
         (x = read(f["x"]), y = read(f["y"]), z = read(f["z"]), T = read(f["temperature"]), Bx = read(f["B_x"]), By = read(f["B_y"]), Bz = read(f["B_z"]),
          Pref = read_attribute(f, "P_ref_Pa"), Lx = read_attribute(f, "period_x_m"), Ly = read_attribute(f, "period_y_m"), g = read_attribute(f, "gravity_m_s2"))
@@ -27,7 +27,7 @@ function bif_problem(c, sz; init_iter::Int = 3000, kw...)
     end
     pb = H.SMHSProblem(par, grid, T, Bo, sig, H.load_table(TAB); P_ref = Float64(raw.Pref), g = Float64(raw.g), kw...)
     x = H.init_state(pb); H.set_scales!(pb, x[1])
-    w = H.SMHSWork(par); it, rr = H.init_A!(pb, w, x; max_iter = init_iter)
+    w = H.SMHSWork(par); it, rr = H.init_A!(pb, w, x; max_iter = init_iter, progress = init_progress)
     @printf("bif_problem: %d × %d × %d (c = %d, sz = %d); init_A! %d CG iterations, residual ratio %.2e\n", NX, NY, NZ, c, sz, it, rr)
     return pb, x, par, b, NZ
 end
