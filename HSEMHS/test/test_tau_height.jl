@@ -2,18 +2,23 @@
 # magnetic-only changes.
 
 @testset "M5h: z(τ = 1) on a known exponential extinction profile" begin
-    # χ = χ1 exp(−(z1 − z)/H) (increasing downward): exact τ(z) = χ(z) H with the exp-tail top closure, so τ = 1 at
-    # z* = z1 − H ln(1/(χ1 H)). The trapezoid adds O(Δz²/H²).
+    # χ = χ1 exp((z1 − z)/H) (increasing downward). The exp-tail closure is exact (τ_top = χ1 H); each trapezoid
+    # overestimates its interval by r = (Δz/2H) coth(Δz/2H), so on this uniform grid τ(z_k) = χ1 H + r (χ(z_k) H − χ1 H)
+    # exactly at the nodes. The crossing follows from χ(z) H = (1 − χ1 H)/r + χ1 H, z = z1 − H ln(χ(z)/χ1)
+    # (≈ 1.085 m above the continuous τ = χH crossing here); between nodes log τ is interpolated linearly.
     Hs = 1.2e5; χ1 = 1e-9; z = collect(range(2.0e6, -5.0e5; length = 2001))
     chi = χ1 .* exp.((z[1] .- z) ./ Hs)
     tau = zeros(length(z))
     m = H.tau_column!(tau, chi, z)
     @test m == H.TAU_EXP_TAIL
-    zstar = z[1] - Hs * log(1 / (χ1 * Hs))
-    @test abs(H.z_tau1(tau, z) - zstar) < 1.0                     # m (Δz = 1.25 km, H = 120 km)
-    # μ = 0.5 doubles τ: the crossing moves up by H ln 2
+    dz = z[1] - z[2]; r = (dz / (2Hs)) * coth(dz / (2Hs))
+    zpred(t1) = z[1] - Hs * log(((t1 - χ1 * Hs) / r + χ1 * Hs) / (χ1 * Hs))      # τ_trap(z) = t1 crossing
+    @test all(isapprox(tau[k], χ1 * Hs + r * (chi[k] * Hs - χ1 * Hs); rtol = 1e-10) for k in (1, 500, 1500, 2001))
+    @test abs(H.z_tau1(tau, z) - zpred(1.0)) < 0.05
+    @test abs(zpred(1.0) - (z[1] - Hs * log(1 / (χ1 * Hs)))) > 1.0           # the discretization shift is resolved
+    # μ = 0.5 doubles τ: crossing where τ_trap = 0.5
     H.tau_column!(tau, chi, z; mu = 0.5)
-    @test abs(H.z_tau1(tau, z) - (zstar + Hs * log(2))) < 1.0
+    @test abs(H.z_tau1(tau, z) - zpred(0.5)) < 0.05
     # no crossing: τ < 1 everywhere
     H.tau_column!(tau, chi .* 1e-6, z)
     @test isnan(H.z_tau1(tau, z))
