@@ -1,0 +1,68 @@
+\documentclass[9pt]{extarticle}
+\usepackage[a4paper,margin=1.3cm]{geometry}
+\usepackage{amsmath,amssymb,bm,enumitem,titlesec,xcolor}
+\titleformat{\section}{\normalsize\bfseries\color{blue!50!black}}{\thesection.}{0.4em}{}
+\titlespacing*{\section}{0pt}{5pt}{2pt}
+\setlist{nosep,leftmargin=1.2em}
+\setlength{\parindent}{0pt}\setlength{\parskip}{2pt}
+\pagestyle{empty}
+\begin{document}
+{\large\bfseries M5h: magnetohydrostatic (MHS) reconstruction of the full Bifrost cube --- what is solved and how}\\
+{\small HSEMHS (Julia), run \texttt{out/m5h/run\_fullz}, 22 Oct 2026; grid $504\times504\times496$ (uncropped), EOS table \texttt{cache/eos\_table\_fullz.h5}}
+
+\section{Physical problem}
+Given the Bifrost temperature $T(x,y,z)$ (held fixed) and the Bifrost field $\mathbf B_{\rm obs}$ with uncertainty $\sigma$, find the gas pressure $P$ and a field $\mathbf B$ that satisfy magnetostatic force balance
+\[
+-\nabla P+\mathbf J\times\mathbf B+\rho\,\mathbf g=0,\qquad \mathbf J=\nabla\times\mathbf B/\mu_0,\qquad \nabla\!\cdot\mathbf B=0,\qquad \rho=\rho_{\rm EOS}(T,P),\qquad \mathbf g=-274\,\hat{\mathbf z}\ \mathrm{m\,s^{-2}},
+\]
+while staying as close to $\mathbf B_{\rm obs}$ as $\sigma$ allows. $\rho$ (and the opacity $\chi_{500}$) come from the Wittmann EOS table ($T$ 2172\,K--1.781\,MK, $\log_{10}P$ $-13$\ldots$15$). Periodic in $x,y$; $\sigma=5\%\,|\mathbf B_{\rm obs}|\oplus5$\,G.
+
+\section{Unknowns and discretisation (staggered, finite volume)}
+State $\mathbf x=(u,\tilde{\mathbf A},\bar b)$: $u=\ln P$ at cell centres; vector potential $\mathbf A=A_{\rm ref}\tilde{\mathbf A}$ on cell edges; one scalar $\bar b$ (mean $B_z$). $\mathbf B=\nabla\times\mathbf A+\bar b\,\hat{\mathbf z}$ on faces, so $\nabla\!\cdot\mathbf B=0$ holds exactly. Pressure gauge: the area-weighted mean of $\ln P$ on the bottom plane is fixed at $\ln P_{\rm ref}$, $P_{\rm ref}=5.222\times10^{6}$\,Pa. About $5\times10^{8}$ unknowns.
+
+\section{Objective (least squares)}
+\[
+\Phi=\underbrace{\frac{\lambda_F}{N_F}\sum_{\rm faces} w_f\frac{R_f^2}{S_f^2}}_{\Phi_F\ \text{force balance}}
++\underbrace{\frac{\lambda_F\lambda_Q}{N_F}\sum_{\rm edges} w_e\Big(\frac{B_{\rm ref}\,\tfrac14\delta^2 J_e}{S_e}\Big)^{2}}_{\Phi_Q\ \text{grid-scale currents}}
++\underbrace{\frac{1}{N_B}\sum_{\rm faces}\frac{(B_f-B_{{\rm obs},f})^2}{\sigma_f^2}}_{\Phi_B\ \text{data}}
++\underbrace{\frac{\lambda_S}{N}\sum w\sum_a\frac{(h_a^2\partial_a^2\,\delta\mathbf B)^2}{\sigma^2}}_{\Phi_S\ \text{smooth misfit}}
+\]
+$R_f$ = face component of $\nabla P+\rho g\hat{\mathbf z}-\mathbf J\times\mathbf B$ (horizontal faces of layers $2\ldots N_z{-}1$, interior $z$-faces); $S=\max(\rho_0 g,\,0.01\,\mathrm{median}_k\rho_0 g)$ from the initial state (fixed); $w$ = cell-volume weights. Weights used: $\lambda_F=10^{-4}$, $\lambda_Q=10^{-3}$, $\lambda_S=10^{-3}$, $\lambda_U=0$. The log prints the terms as $(F,\;N{+}Q,\;B,\;S,\;U)$.
+
+\section{How it is solved}
+\begin{enumerate}
+\item \textbf{Initial pressure:} hydrostatic integration of each column with the fixed $T$ and the EOS, anchored to $P_{\rm ref}$.
+\item \textbf{Initial field} (\texttt{init\_A!}): pressure frozen, $\lambda_F=\lambda_Q=0$, so $\Phi_B+\Phi_S$ is quadratic in $(\tilde{\mathbf A},\bar b)$; solved by CG on the normal equations (capped at 3000 iterations; reached residual ratio $1.2\times10^{-6}$).
+\item \textbf{Joint trust-region Gauss--Newton} on all of $(u,\tilde{\mathbf A},\bar b)$. Each outer iteration:
+  \begin{itemize}
+  \item solve $(H_{\rm GN}+\mu D)\,\delta=-\nabla\Phi$ by Steihaug--Toint preconditioned CG (at most 100 iterations, relative tolerance $10^{-2}$) inside a $D$-norm trust ball. $D$ is the preconditioner diagonal, with the pressure block weighted $\times100$.
+  \item pressure step projected onto the bounds: $|\Delta\ln P|\le5$ per node per step ($\Delta P/P\le e^5-1\approx147$), $\ln P\ge\ln P_{\rm init}-3$, bottom anchor unchanged; projected-Cauchy safeguard.
+  \item accept if $\rho=\dfrac{\text{actual decrease}}{\text{predicted decrease}}>10^{-4}$. If $\rho>0.75$ the radius doubles and $\mu$ is divided by 3; if $\rho<0.25$ the radius shrinks and $\mu$ is multiplied by 4.
+  \end{itemize}
+\item \textbf{Parallel:} MPI, 24 ranks ($6\times4$ in $x,y$; $z$ not split) $\times$ 16 threads on hyades4/5/15/21; checkpoints are written by cooperative HDF5 (the ranks write their blocks in turn).
+\end{enumerate}
+
+\section{What is measured --- convergence criterion (M5h)}
+After every accepted iteration $n$, for every column $(i,j)$:
+\[
+\tau_{500}(z)=\tau_{\rm top}+\int_z^{z_{\rm top}}\chi_{500}\big(T,P^{(n)}\big)\,dz',\qquad \tau_{\rm top}=\chi_1H_\chi\ (H_\chi<5\,\text{Mm}),\qquad z^{(n)}_{\tau1}(i,j):\ \log_{10}\tau_{500}=0 .
+\]
+\[
+dz_{\max}^{(n)}=\max_{i,j}\big|z^{(n)}_{\tau1}-z^{(n-1)}_{\tau1}\big|\ <\ 1\ \text{mm}\quad\text{on 3 consecutive accepted iterations, with all } 254\,016 \text{ columns having a valid crossing.}
+\]
+Also logged every iteration (\texttt{history.csv}):
+\begin{itemize}
+\item $\Phi$ and each of its terms; raw force residual; RMS and 99th percentile of $|R|/S$;
+\item worst normalised data residual $|B-B_{\rm obs}|/\sigma$ on faces and at centres;
+\item $\max\Delta P/P$ and $\max|\Delta\mathbf B|$ of the step; trust ratio $\rho$;
+\item $z_{\tau1}$ min/median/max; counts of missing, non-finite and EOS-failed columns.
+\end{itemize}
+
+\section{Status (17:48, accepted iteration 8)}
+\begin{itemize}
+\item $\Phi$: $1.366\times10^{5}\to1.374\times10^{4}$ (almost entirely $\Phi_F$).
+\item Columns: all 254\,016 valid, no EOS failures.
+\item $dz_{\max}=50$\,km; median $z_{\tau1}$ is moving by $\pm30$--$40$\,km between iterations. Still far from 1\,mm.
+\item Cost: 4--6\,min per accepted iteration; each checkpoint save takes about 18\,min.
+\end{itemize}
+\end{document}

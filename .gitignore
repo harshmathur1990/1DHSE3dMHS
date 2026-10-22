@@ -9,3 +9,6 @@ HSEMHS/deps/witt/libwitt.dylib
 HSEMHS/deps/witt/libwitt.so
 HSEMHS/deps/witt/compiler.txt
 __pycache__/
+
+# IO is a symlink to the cluster data directory (input cubes)
+IO
