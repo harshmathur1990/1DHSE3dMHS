@@ -35,6 +35,15 @@ include(joinpath(@__DIR__, "bif_setup.jl"))
 using Dates
 
 const TAU_TOP = :exp_tail; const TAU_HMAX = 5.0e6; const TAU_MU = 1.0; const DZ_THRESH = 1e-3; const NCONSEC = 3
+# M5i experiment switches (ENV; the defaults reproduce M5h). MHS_SIGMA_REL: σ_B = (MHS_SIGMA_REL |Bobs|) ⊕ 5 G, 0 = uniform
+# 5 G. MHS_TRUST = on | off: joint_gn_solve!(trust_region = …) (off: no trust radius, backtracking line search).
+# MHS_STOP = dz | phi: the convergence variable, dz_max < DZ_THRESH (M5h) or |Φ[n−1] − Φ[n]|/Φ[n] < MHS_PHI_RTOL, on
+# NCONSEC consecutive accepted iterations; z(τ = 1) is computed and logged in both cases.
+const SIGMA_REL = parse(Float64, get(ENV, "MHS_SIGMA_REL", "0.05"))
+const TRUST = get(ENV, "MHS_TRUST", "on") == "on"
+const STOPVAR = get(ENV, "MHS_STOP", "dz")
+STOPVAR in ("dz", "phi") || error("MHS_STOP must be dz or phi")
+const PHI_RTOL = parse(Float64, get(ENV, "MHS_PHI_RTOL", "1e-6"))
 const T0 = time()
 const R0 = MPI.Comm_rank(MPI.COMM_WORLD) == 0
 stamp(s) = string(Dates.format(now(), "HH:MM:SS"), " [", round(Int, time() - T0), " s] ", s)
@@ -109,6 +118,7 @@ function save_atmosphere(path, tag, pb, w, x, ulo, rs, zbuf, fbuf, taud, gitrev,
         a["accepted"] = rs.acc; a["work"] = rs.work; a["Delta"] = rs.Δ; a["mu"] = rs.μ
         a["lambda_F"] = pb.lamF; a["lambda_Q"] = pb.lamQ; a["lambda_S"] = pb.lamS; a["block_scale"] = [100.0, 1.0, 1.0]
         a["P_ref_Pa"] = exp(pb.lnPref); a["anchor"] = "bottom"; a["g"] = pb.g; a["face_bounds"] = "none"
+        a["sigma_rel"] = SIGMA_REL; a["sigma_floor_T"] = 5e-4; a["trust_region"] = TRUST; a["stop_variable"] = STOPVAR; a["phi_rtol"] = PHI_RTOL
         a["tau_top"] = string(TAU_TOP); a["tau_H_max_m"] = TAU_HMAX; a["tau_mu"] = TAU_MU; a["wall_hours"] = wall_h; a["ckpt_hours"] = ckpt_h
         a["units"] = "Pgas Pa, T K, rho kg m-3, B T (Bx on x-faces, By on y-faces, Bz on z-faces 0:NZ top-first; *_centre = H B), z m (top-first), tau500 1"
         a["mpi_ranks"] = par.nranks; a["mpi_px_py"] = [par.px, par.py]; a["solver_arrays"] = "global owned values, no halos"
@@ -129,7 +139,7 @@ function main()
     logf("M5h MHS (git $gitrev), mode $mode, $(MPI.Comm_size(MPI.COMM_WORLD)) ranks × $(Threads.nthreads()) threads, input $BIF, wall $(wall_h) h, checkpoints every $(ckpt_h) h" *
          (isempty(restart) ? "" : ", restart from $restart"))
     c, sz = mode == "run" ? (1, 1) : (12, 2)
-    pb, x, par, b, NZ = bif_problem(c, sz; init_iter = isempty(restart) ? init_iter : 0, init_progress = 100, lambda_F = 1e-4, lambda_Q = 1e-3)
+    pb, x, par, b, NZ = bif_problem(c, sz; init_iter = isempty(restart) ? init_iter : 0, init_progress = 100, lambda_F = 1e-4, lambda_Q = 1e-3, sigma_rel = SIGMA_REL)
     logf("decomposition $(par.px) × $(par.py), rank 0 block $(b.nx) × $(b.ny) × $(b.nz)")
     nzin = h5open(f -> length(read(f["z"])), BIF)
     mode == "run" && ((par.NX, par.NY, NZ) == (504, 504, nzin) || error("expected the full 504 × 504 × $nzin grid of $BIF, got $((par.NX, par.NY, NZ))"))
@@ -148,6 +158,7 @@ function main()
     w = H.SMHSWork(par)
     f0, t0, oob0 = H.objective!(pb, w, x)
     oob0 && error("initial state outside the EOS envelope")
+    phiprev = Ref(f0)
     isempty(restart) && H.owned_map!((i, j, k) -> w.u[i, j, k] - 3.0, ulo, par)   # pressure floor: initial ln P − 3 (as in the M5 runs)
     zprev = fill(NaN, b.nx, b.ny); fprev = zeros(UInt8, b.nx, b.ny); zcur = similar(zprev); fcur = similar(fprev); taud = H.newfield(par)
     td = @elapsed H.tau1_heights!(zprev, fprev, pb, w.u; top = TAU_TOP, H_max = TAU_HMAX, mu = TAU_MU)
@@ -177,8 +188,8 @@ function main()
     if newh
         println(hist, "accepted,work,elapsed_s,diag_s,dz_max_m,dz_median_m,dz_p99_m,worst_i,worst_j,ncomparable,nmissing,nnonfinite,neos,nprev_invalid,all_valid,below_thresh,consec," *
                       "ztau1_min_m,ztau1_median_m,ztau1_max_m,Phi,Phi_F,Phi_NQ,Phi_B,Phi_S,Phi_U,raw_force,rms_max,p99_max,face_max,face_frac3,centre_max,centre_frac3," *
-                      "dPmax,dBmax,rho,pred,Delta_used,Delta,mu,step_over_Delta,cg_exit,cg_rel,cauchy,margin_u,anchor_err")
-        @printf(hist, "%d,%.1f,%.1f,%.2f,NaN,NaN,NaN,0,0,0,%d,%d,%d,0,false,false,0,%.3f,%.3f,%.3f,%.8e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6f,%.6e,%.6f,%.6e,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,,NaN,false,NaN,NaN\n",
+                      "dPmax,dBmax,rho,pred,Delta_used,Delta,mu,step_over_Delta,cg_exit,cg_rel,cauchy,margin_u,anchor_err,dPhi_rel,halvings")
+        @printf(hist, "%d,%.1f,%.1f,%.2f,NaN,NaN,NaN,0,0,0,%d,%d,%d,0,false,false,0,%.3f,%.3f,%.3f,%.8e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6f,%.6e,%.6f,%.6e,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,,NaN,false,NaN,NaN,NaN,0\n",
                 rs.acc, rs.work, time() - T0, td, s0.nmissing, s0.nnonfinite, s0.neos, zs0.min, zs0.median, zs0.max, f0, t0..., t0[1] / pb.lamF, maximum(rms), maximum(p99), fm, f3, cm, c3)
         println(candf, "candidate,accepted_total,accepted,elapsed_s,work,rho,pred,actual,Delta,ynorm,cg_exit,cg_rel,cauchy")
         save_ztau1(rs.acc, zprev, fprev)
@@ -216,27 +227,30 @@ function main()
         log_new_candidates()
         td = @elapsed H.tau1_heights!(zcur, fcur, pb, w.u; top = TAU_TOP, H_max = TAU_HMAX, mu = TAU_MU)
         td += @elapsed (s = H.tau1_change_stats(par, zcur, fcur, zprev, fprev); zs = H.tau1_summary(par, zcur, fcur))
-        below = s.all_valid && s.dz_max < DZ_THRESH
+        dphi = (phiprev[] - row.f) / row.f; phiprev[] = row.f
+        below = STOPVAR == "dz" ? (s.all_valid && s.dz_max < DZ_THRESH) : abs(dphi) < PHI_RTOL
         rs.consec = below ? rs.consec + 1 : 0
         tdd = @elapsed begin
             rms, p99 = H.layer_residual_stats(pb, w); fm, f3, cm, c3 = H.data_residual_stats(pb, w)
             dP = H.measured_change_P(pb, w, snap[]); dB = H.measured_change_B(pb, w, snap[]); snap[] = H.measured_snapshot(pb, w)
         end
         t = row.terms
-        @printf(hist, "%d,%.1f,%.1f,%.2f,%.6e,%.6e,%.6e,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%.3f,%.3f,%.3f,%.8e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6f,%.6e,%.6f,%.6e,%.6e,%.6e,%.6f,%.6e,%.6e,%.6e,%.3e,%.4f,%s,%.3e,%s,%.3e,%.3e\n",
+        @printf(hist, "%d,%.1f,%.1f,%.2f,%.6e,%.6e,%.6e,%d,%d,%d,%d,%d,%d,%d,%s,%s,%d,%.3f,%.3f,%.3f,%.8e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6e,%.6f,%.6e,%.6f,%.6e,%.6e,%.6e,%.6f,%.6e,%.6e,%.6e,%.3e,%.4f,%s,%.3e,%s,%.3e,%.3e,%.6e,%d\n",
                 rs.acc, rs.work, time() - T0, td, s.dz_max, s.dz_median, s.dz_p99, s.worst_i, s.worst_j, s.ncomparable, s.nmissing, s.nnonfinite, s.neos,
                 s.nprev_invalid, s.all_valid, below, rs.consec, zs.min, zs.median, zs.max, row.f, t..., t[1] / pb.lamF, maximum(rms), maximum(p99),
                 fm, f3, cm, c3, dP, dB, row.rho, row.pred, row.Delta_used, row.Delta, row.mu, row.ynorm / row.Delta_used, string(row.cg_exit), row.cg_rel,
-                row.cauchy, row.margin, row.anchor_err)
+                row.cauchy, row.margin, row.anchor_err, dphi, row.halvings)
         flush(hist)
         save_ztau1(rs.acc, zcur, fcur)
-        logf(@sprintf("acc %4d work %8.0f | dz_max %.4e m (median %.3e, p99 %.3e) at (%d,%d), comparable %d, missing %d | Φ %.6e raw force %.4e RMS %.3e p99 %.3e | face %.3fσ centre %.3fσ | ΔP/P %.2e ΔB %.2e | ρ %.2f ‖δ‖/Δ %.2f %s | consec %d | diag τ %.1f s, other %.1f s",
+        logf(@sprintf("acc %4d work %8.0f | dz_max %.4e m (median %.3e, p99 %.3e) at (%d,%d), comparable %d, missing %d | Φ %.6e raw force %.4e RMS %.3e p99 %.3e | face %.3fσ centre %.3fσ | ΔP/P %.2e ΔB %.2e | ΔΦ/Φ %.3e | ρ %.2f ‖δ‖/Δ %.2f %s halvings %d | consec %d | diag τ %.1f s, other %.1f s",
                       rs.acc, rs.work, s.dz_max, s.dz_median, s.dz_p99, s.worst_i, s.worst_j, s.ncomparable, s.nmissing, row.f, t[1] / pb.lamF,
-                      maximum(rms), maximum(p99), fm, cm, dP, dB, row.rho, row.ynorm / row.Delta_used, string(row.cg_exit), rs.consec, td, tdd))
+                      maximum(rms), maximum(p99), fm, cm, dP, dB, dphi, row.rho, row.ynorm / row.Delta_used, string(row.cg_exit), row.halvings, rs.consec, td, tdd))
         zprev .= zcur; fprev .= fcur
         maybe_checkpoint("checkpoint at accepted $(rs.acc)"; force = mode == "smoke" && rs.acc == acc0 + 1)
         if rs.consec >= NCONSEC
-            rs.stopwhy = "user criterion met: dz_max < $(DZ_THRESH) m with all columns valid on $NCONSEC consecutive accepted iterations"; return :stop
+            rs.stopwhy = STOPVAR == "dz" ? "user criterion met: dz_max < $(DZ_THRESH) m with all columns valid on $NCONSEC consecutive accepted iterations" :
+                                           "user criterion met: |ΔΦ|/Φ < $(PHI_RTOL) on $NCONSEC consecutive accepted iterations"
+            return :stop
         end
         mode == "smoke" && rs.acc >= acc0 + 3 && (rs.stopwhy = "smoke: 3 accepted iterations"; return :stop)
         return common_stops()
@@ -247,12 +261,13 @@ function main()
         maybe_checkpoint("checkpoint at accepted $(rs.acc) (after a rejected candidate)")
         return common_stops()
     end
-    logf(@sprintf("run: threshold dz_max < %.0e m on %d consecutive accepted iterations, block_scale (100, 1, 1), no face bounds, Δ0 %s, μ0 %.3g",
-                  DZ_THRESH, NCONSEC, isnan(rs.Δ) ? "default rule" : string(rs.Δ), rs.μ))
+    logf(@sprintf("run: stop on %s on %d consecutive accepted iterations, σ_B = %.3g |B| ⊕ 5 G, trust region %s, block_scale (100, 1, 1), no face bounds, Δ0 %s, μ0 %.3g",
+                  STOPVAR == "dz" ? @sprintf("dz_max < %.0e m", DZ_THRESH) : @sprintf("|ΔΦ|/Φ < %.0e", PHI_RTOL), NCONSEC, SIGMA_REL,
+                  TRUST ? "on" : "off (line search)", isnan(rs.Δ) ? "default rule" : string(rs.Δ), rs.μ))
     H.reset_work!()
     st, why, n, res = try
         H.joint_gn_solve!(pb, w, x, ulo; work_budget = 1e12, block_scale = (100.0, 1.0, 1.0), callback = cb, cand_sink = cands,
-                          cand_callback = ccb, Δ0 = rs.Δ, μ0 = rs.μ, verbose = false)
+                          cand_callback = ccb, Δ0 = rs.Δ, μ0 = rs.μ, verbose = false, trust_region = TRUST)
     catch e
         println(stamp("ERROR on rank $(par.rank) during the solve: " * sprint(showerror, e))); flush(stdout)
         # the emergency save is collective: with several ranks the others may not be in the same place, so abort instead

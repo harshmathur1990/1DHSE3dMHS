@@ -43,6 +43,11 @@ steps accepted, or `max_candidates` candidates tried), measured from the call.
   coordinates that push active faces outward; radial truncation alone guarantees no tangent motion. Inputs are
   validated (0 < `bound_tau` < 1, finite positive bounds, a feasible base — strictly inside with a barrier), and the
   trial state is re-checked against the bounds (`bound_check_tol`, σ units) before acceptance.
+- `trust_region = false` (M5i, user request 22 Oct 2026): no trust radius. Δ = ∞ throughout (PCG stops on its residual
+  tolerance or iteration cap, no ball), μ stays at μ0 (only the gauge-null-space regularization), the Cauchy safeguard
+  uses the exact model minimizer along −D⁻¹g, and a rejected step is halved along the same direction (backtracking line
+  search, at most `max_halvings` times, same acceptance test) instead of shrinking a radius. The pressure box (du_cap,
+  ulo) and the anchor projection still apply. The row's `halvings` counts the halvings of the accepted step.
 `callback(acc, row)` runs after every accepted step with the work counters saved and restored; returning `:stop` ends
 the solve (status `stalled`, reason "callback stop": a declared stagnation stop). `cand_sink` (a Ref) receives the live
 candidate vector. `cand_callback(record)` runs after every REJECTED candidate (x and w unchanged, so the base state can be
@@ -55,7 +60,8 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                          Δ_init::Symbol = :pressure, Δ0::Float64 = NaN, block_scale = (1.0, 1.0, 1.0),
                          magnetic_only::Bool = false, anchor_tangent::Bool = false, diagnostics::Bool = false,
                          face_hard = nothing, bound_tau::Float64 = 0.999, bound_check_tol::Float64 = 1e-9,
-                         callback = nothing, cand_sink = nothing, cand_callback = nothing, verbose::Bool = false)
+                         callback = nothing, cand_sink = nothing, cand_callback = nothing, verbose::Bool = false,
+                         trust_region::Bool = true, max_halvings::Int = 30)
     par = pb.par; b = par.block
     if face_hard !== nothing
         0 < bound_tau < 1 || invalid("joint_gn_solve!: bound_tau must lie in (0, 1)")
@@ -123,7 +129,9 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         end
         return ae
     end
-    Δ = if !isnan(Δ0)
+    Δ = if !trust_region
+        Inf
+    elseif !isnan(Δ0)
         Δ0
     elseif Δ_init == :full                               # 0.5 in every coordinate of the D-norm
         0.5 * sqrt(max(sum(sdot_local(par, D[f], ones_state[f]) for f in 1:4) |> v -> MPI.Allreduce(v, +, par.comm), 1e-300))
@@ -165,6 +173,9 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
             divdiag!(zr, p, Dinv, par); yDp = dotN(par, y, zr)
             τt = pDp > 0 ? max((-yDp + sqrt(max(yDp^2 - pDp * (yDy - Δ^2), 0.0))) / pDp, 0.0) : Inf
             α = pq > 0 ? rz / pq : Inf
+            if !trust_region && pq <= 0                   # no ball to stop on: keep the iterate, record the exit
+                cg_exit = :negcurv; break
+            end
             if α >= τt
                 lincomb!(y, 1.0, y, τt, p, par); cg_exit = pq > 0 ? :boundary : :negcurv
                 # residual of the RETURNED direction: r = −g − (H + μD) y on the free set
@@ -193,6 +204,10 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
         lincomb!(r, -1.0, g, 0.0, g, par); free!(r); prec!(cdir, r, 0.0)   # projected steepest descent −P D⁻¹ g
         cn = sqrt(max(Dnorm2(cdir), 0.0))
         predc = -Inf; αc = 1.0; τc = cn > 0 ? Δ / cn : 0.0
+        if !trust_region && cn > 0                        # exact minimizer of the damped model along cdir
+            Hv!(q, cdir); curv = dotN(par, cdir, q) + μ * cn^2
+            τc = curv > 0 ? -dotN(par, g, cdir) / curv : 1.0
+        end
         for _ in 1:20
             candidate!(xt, cdir, τc, Δ); at = bound_truncate!(xt); pc = predicted(xt)
             if pc > predc
@@ -225,27 +240,44 @@ function joint_gn_solve!(pb::SMHSProblem, w::SMHSWork, x::MHSState, ulo::Field; 
                     pred_u = -(gu + quu), pred_A = -(ga + qaa), pred_cross = -qua)
             copyto!(WORK_COUNTS, saved)
         end
-        # ---- 4. trial in a separate workspace ----
-        lincomb!(xt, 1.0, x, 1.0, δ, par)
-        ft, tt, oob = objective!(pb, wt, xt)
-        margin = -global_max(par, -minimum(wt.u[i, j, k] - ulo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
-        bviol = face_hard === nothing ? -Inf : face_violation(pb, wt, face_hard)[1]
-        ρ = (oob || pred <= 0) ? -Inf : (f - ft) / pred
-        Δused = Δ
-        ok = ρ > 1e-4 && ft < f && margin >= -1e-12 && bviol <= bound_check_tol
-        push!(cands, (candidate = ncand, accepted = ok, rho = ρ, pred = pred, pred_gn = pred_gn, predc = predc, actual = f - ft,
-                      Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, bound_frac = αb,
-                      bound_frac_gn = αg, bound_frac_cauchy = αc, bound_viol = bviol, mu = μ, diag = diag))
+        # ---- 4. trial in a separate workspace (trust_region = false: backtracking along δ on rejection) ----
+        nhalf = 0; lsstop = false
+        local ft, tt, margin, bviol, ρ, Δused, ok
+        while true
+            lincomb!(xt, 1.0, x, 1.0, δ, par)
+            ft, tt, oob = objective!(pb, wt, xt)
+            margin = -global_max(par, -minimum(wt.u[i, j, k] - ulo[i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx))
+            bviol = face_hard === nothing ? -Inf : face_violation(pb, wt, face_hard)[1]
+            ρ = (oob || pred <= 0) ? -Inf : (f - ft) / pred
+            Δused = Δ
+            ok = ρ > 1e-4 && ft < f && margin >= -1e-12 && bviol <= bound_check_tol
+            push!(cands, (candidate = ncand, accepted = ok, rho = ρ, pred = pred, pred_gn = pred_gn, predc = predc, actual = f - ft,
+                          Delta = Δused, ynorm = nfin, cauchy = usedc, cg_exit = cg_exit, cg_rel = cg_rel, bound_frac = αb,
+                          bound_frac_gn = αg, bound_frac_cauchy = αc, bound_viol = bviol, mu = μ, diag = diag))
+            (ok || trust_region) && break
+            if cand_callback !== nothing
+                saved = copy(WORK_COUNTS); cbr = cand_callback(cands[end]); copyto!(WORK_COUNTS, saved)
+                cbr === :stop && (status = stalled; reason = "callback stop"; lsstop = true; break)
+            end
+            if nhalf >= max_halvings
+                status = stalled; reason = "line search failed ($max_halvings halvings)"; lsstop = true; break
+            end
+            nhalf += 1; ncand += 1
+            lincomb!(δ, 0.5, δ, 0.0, δ, par); nfin /= 2; pred = predicted(δ)
+        end
+        lsstop && break
         if ok
             copystate!(x, xt, par)
             rebuild!()
             nacc += 1
-            ρ > 0.75 && nfin >= 0.99Δ && (Δ *= 2)
-            ρ < 0.25 && (Δ = nfin / 4)
-            μ = ρ > 0.75 ? max(μ / 3, 1e-12) : (ρ < 0.25 ? min(4μ, 1e2) : μ)
+            if trust_region
+                ρ > 0.75 && nfin >= 0.99Δ && (Δ *= 2)
+                ρ < 0.25 && (Δ = nfin / 4)
+                μ = ρ > 0.75 ? max(μ / 3, 1e-12) : (ρ < 0.25 ? min(4μ, 1e2) : μ)
+            end
             row = (accepted = nacc, f = f, terms = tt, rho = ρ, pred = pred, predc = predc, cauchy = usedc, ynorm = nfin,
                    Delta_used = Δused, Delta = Δ, mu = μ, cg_exit = cg_exit, cg_rel = cg_rel, margin = margin, anchor_err = aerr,
-                   bound_frac = αb, bound_viol = bviol, work = work_equivalent() - w0)
+                   bound_frac = αb, bound_viol = bviol, work = work_equivalent() - w0, halvings = nhalf)
             push!(hist, row)
             if verbose && rank0(par) && nacc % 10 == 0
                 @printf("  jgn %4d: Φ %.6e  Φ_F %.3e  ρ %.2f  ‖δ‖_D/Δ %.2f  CG %s  Cauchy %d/%d  work %.0f\n", nacc, f, tt[1], ρ, nfin / Δused,
