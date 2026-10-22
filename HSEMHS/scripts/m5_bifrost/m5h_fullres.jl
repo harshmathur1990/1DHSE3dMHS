@@ -166,6 +166,8 @@ function main()
                   f0, string(round.(t0; sigdigits = 5)), zs0.min, zs0.median, zs0.max, zs0.nvalid, s0.nmissing, s0.nnonfinite, s0.neos, fm, cm, maximum(rms), td, tdd))
     isempty(restart) && save_atmosphere(joinpath(outdir, "init.h5"), "initialized state (no iteration)", pb, w, x, ulo, rs, zcur, fcur, taud, gitrev, wall_h, ckpt_h)
     hpath = joinpath(outdir, "history.csv"); cpath = joinpath(outdir, "candidates.csv")
+    save_ztau1(n, z, fl) = coop_write(par, joinpath(outdir, "ztau1", @sprintf("ztau1_%05d.h5", n)),
+                                      Pair{String,Any}["z_tau1_m" => z, "flag" => fl], Pair{String,Any}[], a -> nothing)
     newh = decide(par, !isfile(hpath))
     hist = R0 ? open(hpath, "a") : devnull; candf = R0 ? open(cpath, "a") : devnull
     if newh
@@ -190,8 +192,6 @@ function main()
         end
         rs.ncand_logged = length(cl); flush(candf)
     end
-    save_ztau1(n, z, fl) = coop_write(par, joinpath(outdir, "ztau1", @sprintf("ztau1_%05d.h5", n)),
-                                      Pair{String,Any}["z_tau1_m" => z, "flag" => fl], Pair{String,Any}[], a -> nothing)
     ckname() = joinpath(outdir, rs.ckslot == 0 ? "atmosphere_A.h5" : "atmosphere_B.h5")
     function maybe_checkpoint(tag; force = false)
         if force || decide(par, time() - rs.lastck > 3600ckpt_h)
