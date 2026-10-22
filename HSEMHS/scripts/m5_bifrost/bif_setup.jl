@@ -3,7 +3,8 @@
 using HSEMHS, MPI, HDF5, Printf, Statistics
 const H = HSEMHS
 H.ensure_mpi()
-const BIF = normpath(joinpath(@__DIR__, "..", "..", "..", "IO", "input-mhs-hse.nc"))
+# input file: ENV["MHS_INPUT"] when set (e.g. ../IO/input-mhs-hse-fullz.nc, the uncropped 496-level cube), else the cropped file
+const BIF = abspath(get(ENV, "MHS_INPUT", joinpath(@__DIR__, "..", "..", "..", "IO", "input-mhs-hse.nc")))
 const TAB = normpath(joinpath(@__DIR__, "..", "..", "cache", "eos_table_fullz.h5"))
 function bif_problem(c, sz; init_iter::Int = 3000, init_progress::Int = 0, kw...)
     raw = h5open(BIF) do f

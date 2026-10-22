@@ -23,6 +23,7 @@
 #   - `smoke` mode runs every path on the coarse 42 × 42 × 89 grid in minutes (setup, init save, iterations, a forced
 #     checkpoint, the STOP file, a restart with the z(τ = 1) continuity check).
 #
+# input: bif_setup.BIF (ENV["MHS_INPUT"], default IO/input-mhs-hse.nc); every level of the chosen file is used.
 # usage (from HSEMHS/): julia --project=. -t T scripts/m5_bifrost/m5h_fullres.jl OUTDIR run [wall_hours=24] [ckpt_hours=1] [init_iter=3000] [RESTART.h5]
 #                        julia --project=. -t T scripts/m5_bifrost/m5h_fullres.jl OUTDIR smoke [wall_hours] [ckpt_hours] [init_iter] [RESTART.h5]
 include(joinpath(@__DIR__, "bif_setup.jl"))
@@ -77,7 +78,8 @@ function main()
     c, sz = mode == "run" ? (1, 1) : (12, 2)
     pb, x, par, b, NZ = bif_problem(c, sz; init_iter = isempty(restart) ? init_iter : 0, init_progress = 100, lambda_F = 1e-4, lambda_Q = 1e-3)
     MPI.Comm_size(par.comm) == 1 || error("m5h_fullres.jl writes rank-local arrays: run it on one rank (threads only)")
-    mode == "run" && ((par.NX, par.NY, NZ) == (504, 504, 177) || error("expected the full 504 × 504 × 177 grid, got $((par.NX, par.NY, NZ))"))
+    nzin = h5open(f -> length(read(f["z"])), BIF)
+    mode == "run" && ((par.NX, par.NY, NZ) == (504, 504, nzin) || error("expected the full 504 × 504 × $nzin grid of $BIF, got $((par.NX, par.NY, NZ))"))
     rs = RunState(0, 0.0, NaN, 1e-6, 0, time(), 0, "", 0)
     ulo = H.newfield(par)
     if !isempty(restart)
