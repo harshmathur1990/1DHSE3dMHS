@@ -152,12 +152,16 @@ function main()
     zprev = fill(NaN, b.nx, b.ny); fprev = zeros(UInt8, b.nx, b.ny); zcur = similar(zprev); fcur = similar(fprev); taud = H.newfield(par)
     td = @elapsed H.tau1_heights!(zprev, fprev, pb, w.u; top = TAU_TOP, H_max = TAU_HMAX, mu = TAU_MU)
     if !isempty(restart)
+        # with a different rank count the reductions run in another order, so the recomputed map may differ by rounding:
+        # flags must agree exactly and heights within 1e-6 m (1000 × below the convergence threshold)
         ir, jr = owned_ranges(b)
-        same = h5open(restart) do f
-            isequal(f["atmosphere/z_tau1_m"][ir, jr], zprev) && f["atmosphere/z_tau1_flag"][ir, jr] == fprev
-        end
-        MPI.Allreduce(same ? 0 : 1, +, par.comm) == 0 || error("restart: recomputed z(τ = 1) differs from the saved map")
-        logf("restart: state, ulo, Δ = $(rs.Δ), μ = $(rs.μ), accepted $(rs.acc), work $(rs.work); z(τ = 1) continuity check passed")
+        zs, fs = h5open(f -> (f["atmosphere/z_tau1_m"][ir, jr], f["atmosphere/z_tau1_flag"][ir, jr]), restart)
+        nflag = MPI.Allreduce(count(fs .!= fprev), +, par.comm)
+        ok = fprev .== H.TAU1_OK
+        dz = H.global_max(par, any(ok) ? maximum(abs.(zs[ok] .- zprev[ok])) : 0.0)
+        (nflag == 0 && dz <= 1e-6) || error(@sprintf("restart: recomputed z(τ = 1) differs from the saved map (%d flags, max |Δz| %.3e m)", nflag, dz))
+        logf(@sprintf("restart: state, ulo, Δ = %s, μ = %s, accepted %d, work %s; z(τ = 1) continuity check passed (max |Δz| %.3e m)",
+                      rs.Δ, rs.μ, rs.acc, rs.work, dz))
     end
     s0 = H.tau1_change_stats(par, zprev, fprev, nothing, nothing); zs0 = H.tau1_summary(par, zprev, fprev)
     tdd = @elapsed (dstats = H.data_residual_stats(pb, w); rstats = H.layer_residual_stats(pb, w))
