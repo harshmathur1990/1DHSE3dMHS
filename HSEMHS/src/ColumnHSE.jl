@@ -226,7 +226,7 @@ function column_hse(par::ParCtx, grid::Grid, T::Field, eos, o::HSEOpts)
     end
     nfail = global_count(par, count(f -> f & COL_EOS_FAIL != 0, cst))
     st = nfail > 0 ? eos_failure : converged
-    msgs = nfail > 0 ? ["$nfail columns left the EOS table envelope; rebuild the table with a wider eos.logP_range"] : String[]
+    msgs = nfail > 0 ? ["$nfail columns left the EOS table envelope (T or P); rebuild the table with a wider envelope (gate0 T range, eos.logP_range)"] : String[]
     stats = Dict{String,Any}(
         "columns_eos_failed" => nfail,
         "columns_rk_refined" => global_count(par, count(f -> f & COL_RK_REFINED != 0, cst)),

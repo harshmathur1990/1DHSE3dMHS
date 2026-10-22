@@ -1,0 +1,22 @@
+# The EOS/opacity table in use from 22 Oct 2026 (cache/eos_table_fullz.h5, sha256 4e19ad6a…): T = 0.9 T_min .. 1.1 T_max of
+# the uncropped audit (2172 K .. 1.781 MK), log10 P widened to [-13, 15]; otherwise as config/eos_table_bifrost385.toml
+# (which built the superseded cache/eos_table.h5, T to 1.613 MK, log10 P -10.50 .. 14.51).
+[run]
+mode = "eos_table"
+output = "reports/gate1_table_fullz.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse-fullz.nc"        # not read in this mode
+
+[eos]
+pf_file = "../wittman-eos/pf_Kurucz.input"
+table_file = "cache/eos_table_fullz.h5"
+envelope_from = "reports/gate0_bifrost385_fullz.h5"
+logP_range = [-13.0, 15.0]
+prec = 1e-10
+maxit = 5000
+dlog10T = 0.002
+dlog10P = 0.02
+refine_max_levels = 5
+validate_points = 1000000

@@ -1,4 +1,6 @@
 # Gate 1: build the Wittmann EOS/opacity table for the Bifrost 385 envelope (doc §7).
+# SUPERSEDED 22 Oct 2026 by config/eos_table_bifrost385_fullz.toml (cache/eos_table_fullz.h5): the T_max here (1.613 MK)
+# is below the uncropped atmosphere's 1.619 MK.
 [run]
 mode = "eos_table"
 output = "reports/gate1_table.h5"

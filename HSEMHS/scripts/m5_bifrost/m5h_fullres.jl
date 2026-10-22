@@ -1,7 +1,7 @@
 # M5h: full-input MHS progress test (REVIEW_M5g_2026-10-21.md; user request 21 Oct 2026).
 # The complete IO/input-mhs-hse.nc: 504 × 504 × 177 cells, every column and level (bif_problem(1, 1): no averaging, no
 # subsampling, no crop). Current code, current scientific objective (staggered MHS, D9b defaults, λ_F = 1e-4, λ_Q = 1e-3,
-# σ_B synthetic 5 % ⊕ 5 G, data on faces, bottom anchor P_ref from the file, EOS table cache/eos_table.h5), solver joint
+# σ_B synthetic 5 % ⊕ 5 G, data on faces, bottom anchor P_ref from the file, EOS table bif_setup.TAB, which is cache/eos_table_fullz.h5 from 22 Oct 2026; run 2 used cache/eos_table.h5), solver joint
 # trust-region GN with the ×100 pressure block scaling (the M5e/M5f reference configuration) and the M5g preconditioner.
 # NO face hard bounds or barrier: no native-grid admissible field or support exists, so this is a current-code MHS
 # progress run, not a run shown to satisfy hard data limits.

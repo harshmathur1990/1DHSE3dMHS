@@ -1,0 +1,17 @@
+# Gate 0 audit of the uncropped Bifrost en024048_hion snapshot 385 (all 496 levels, -2.444 .. 14.367 Mm): the T envelope
+# of cache/eos_table_fullz.h5 (22 Oct 2026; the cropped audit config/gate0_bifrost385.toml gave T_max 1.467 MK, too low
+# for the uncropped atmosphere's 1.619 MK).
+[run]
+mode = "gate0"
+output = "reports/gate0_bifrost385_fullz.h5"
+overwrite = true
+
+[input]
+file = "../IO/BIFROST_en024048_hion_0_504_0_504.nc"
+
+[physics]
+g = "from_input"
+
+[gate0]
+crop_z_m = [-1.0e9, 1.0e9]
+stride = 4

@@ -89,7 +89,7 @@ end
 
 @testset "Gate 2: Wittmann table on Bifrost columns" begin
     path = joinpath(@__DIR__, "..", "..", "IO", "input-mhs-hse.nc")
-    tabf = joinpath(@__DIR__, "..", "cache", "eos_table.h5")
+    tabf = joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5")
     if !(isfile(path) && isfile(tabf))
         @info "input or table missing; skipped"
     else
@@ -116,7 +116,7 @@ end
 end
 
 @testset "Gate 2: thread and rank invariance (bitwise)" begin
-    tabf = joinpath(@__DIR__, "..", "cache", "eos_table.h5")
+    tabf = joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5")
     if !isfile(tabf) || get(ENV, "HSEMHS_SKIP_MPI", "0") == "1"
         @info "skipped (no table or HSEMHS_SKIP_MPI=1)"
     else

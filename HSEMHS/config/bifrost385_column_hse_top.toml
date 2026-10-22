@@ -11,7 +11,7 @@ file = "../IO/input-mhs-hse.nc"
 g = "from_input"
 
 [eos]
-table_file = "cache/eos_table.h5"
+table_file = "cache/eos_table_fullz.h5"
 
 [column_hse]
 anchor = "top"

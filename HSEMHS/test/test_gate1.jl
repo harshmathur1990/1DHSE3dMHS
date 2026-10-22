@@ -4,7 +4,7 @@ using DelimitedFiles
 const WITT_DIR = joinpath(@__DIR__, "..", "..", "wittman-eos")
 const PF_FILE = joinpath(WITT_DIR, "pf_Kurucz.input")
 const ORACLE = joinpath(@__DIR__, "..", "oracles", "python", "witt_oracle.py")
-const TABLE_FILE = joinpath(@__DIR__, "..", "cache", "eos_table.h5")
+const TABLE_FILE = joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5")
 
 """Random (T, P) points, log-uniform, fixed seed."""
 function rand_TP(n, T_lo, T_hi, lP_lo, lP_hi; seed = 1)
@@ -94,7 +94,7 @@ end
 
 @testset "Gate 1: table" begin
     if !isfile(TABLE_FILE)
-        @info "cache/eos_table.h5 not found; run scripts/run.jl config/eos_table_bifrost385.toml"
+        @info "cache/eos_table_fullz.h5 not found; run scripts/run.jl config/gate0_bifrost385_fullz.toml, then config/eos_table_bifrost385_fullz.toml"
     else
         tab = H.load_table(TABLE_FILE; pf_file = PF_FILE)
         @test count(f -> f & H.EOS_DIRECT_FAILED != 0, tab.flags) == 0

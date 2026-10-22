@@ -17,7 +17,7 @@ for k in 1:NZ, j in 1:b.ny, i in 1:b.nx
     Tc = 4200 + 2500 * exp(-((zz - 0.0) / 0.25)^2) + 1500 * cos(2π * (gi + 2gj) / NX) * exp(-zz^2)
     T[i, j, k] = zz < 0 ? 6500 - 3000 * zz : Tc + (1.0e5 - Tc) * 0.5 * (1 + tanh((zz - ztr) / 0.05))
 end
-eos = H.load_table(joinpath(@__DIR__, "..", "..", "cache", "eos_table.h5"))
+eos = H.load_table(joinpath(@__DIR__, "..", "..", "cache", "eos_table_fullz.h5"))
 o = H.HSEOpts(anchor = :bottom, P_ref = 1.0e5, g = 274.0)
 res = H.column_hse(par, grid, T, eos, o)
 H.create_output(par, out; overwrite = true)

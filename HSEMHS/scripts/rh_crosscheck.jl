@@ -102,7 +102,7 @@ getcol(ds, gi, gj) = Float64.(vec(f[ds][:, gj, gi]))
 # ---------------------------------------------------------------------------------------
 # RH inputs
 # ---------------------------------------------------------------------------------------
-tabf = joinpath(@__DIR__, "..", "cache", "eos_table.h5")
+tabf = joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5")
 ab = h5open(tabf, "r") do t
     m = t["meta"]
     haskey(attributes(m), "abundances") ? nothing : nothing
@@ -182,7 +182,7 @@ function setup_run(dir, T, ne, m; nH = nothing)
 end
 
 const RLIST = (1, 4, 16, 64)
-const TAB = H.load_table(joinpath(@__DIR__, "..", "cache", "eos_table.h5"))
+const TAB = H.load_table(joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5"))
 
 """
 Our solution on an R-times refined height grid: ln T linear in z inside each original

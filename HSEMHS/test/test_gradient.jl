@@ -95,7 +95,7 @@ end
 rank0(par) = par.rank == 0
 
 gradient_checks(H.IdealGasMu(1.3), "ideal gas")
-let tabf = joinpath(@__DIR__, "..", "cache", "eos_table.h5")
+let tabf = joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5")
     isfile(tabf) ? gradient_checks(H.load_table(tabf), "Wittmann table") : @info "table missing; skipped"
 end
 
