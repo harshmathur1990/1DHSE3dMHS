@@ -29,6 +29,6 @@ function bif_problem(c, sz; init_iter::Int = 3000, init_progress::Int = 0, kw...
     pb = H.SMHSProblem(par, grid, T, Bo, sig, H.load_table(TAB); P_ref = Float64(raw.Pref), g = Float64(raw.g), kw...)
     x = H.init_state(pb); H.set_scales!(pb, x[1])
     w = H.SMHSWork(par); it, rr = H.init_A!(pb, w, x; max_iter = init_iter, progress = init_progress)
-    @printf("bif_problem: %d × %d × %d (c = %d, sz = %d); init_A! %d CG iterations, residual ratio %.2e\n", NX, NY, NZ, c, sz, it, rr)
+    H.rank0(par) && @printf("bif_problem: %d × %d × %d (c = %d, sz = %d); init_A! %d CG iterations, residual ratio %.2e\n", NX, NY, NZ, c, sz, it, rr)
     return pb, x, par, b, NZ
 end
