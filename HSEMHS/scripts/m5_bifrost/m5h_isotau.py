@@ -3,8 +3,8 @@
 levels of each column, as z_tau1). Columns without a bracketing pair (the level lies above the top of the column's tau)
 are NaN (white) and counted.
   FIELD = T   : temperature [K], log colour scale.
-  FIELD = Bz  : vertical field at cell centres (H B) [G], diverging scale symmetric about 0; with --input OBS.nc the
-                observed input B_z, evaluated on the FIRST file's tau, is added as the first column.
+  FIELD = Bx, By, Bz : field component at cell centres (H B) [G], diverging scale symmetric about 0; with --input OBS.nc
+                the observed input component, evaluated on the FIRST file's tau, is added as the first column.
 usage: python3 m5h_isotau.py OUT.png FIELD LOGTAU1[,LOGTAU2,...] FILE.h5 [FILE2.h5 ...] [--input IO/input-mhs-hse.nc]"""
 import sys
 import numpy as np, h5py
@@ -17,7 +17,7 @@ inp = None
 if "--input" in args:
     i = args.index("--input"); inp = args[i + 1]; del args[i:i + 2]
 out, field, levels, files = args[0], args[1], [float(v) for v in args[2].split(",")], args[3:]
-assert field in ("T", "Bz")
+assert field in ("T", "Bx", "By", "Bz")
 
 def on_level(lt, f, L):
     """lt: (nz, ny, nx) log10 tau, top-first (increasing with k); f: field on the same grid -> f at log10 tau = L."""
@@ -38,14 +38,14 @@ first_lt = None
 for fn in files:
     h = h5py.File(fn, "r")
     lt = np.log10(h["atmosphere/tau500"][()])
-    f = h["atmosphere/T"][()] if field == "T" else 1e4 * h["atmosphere/Bz_centre"][()]
+    f = h["atmosphere/T"][()] if field == "T" else 1e4 * h[f"atmosphere/{field}_centre"][()]
     acc = int(h.attrs["accepted"])
     if first_lt is None:
         first_lt = lt
-    cols.append((f"accepted {acc}" if acc > 0 else "initial (fit)" if field == "Bz" else "initial", {L: on_level(lt, f, L) for L in levels}))
-if inp is not None and field == "Bz":
+    cols.append((f"accepted {acc}" if acc > 0 else "initial (fit)" if field != "T" else "initial", {L: on_level(lt, f, L) for L in levels}))
+if inp is not None and field != "T":
     with h5py.File(inp, "r") as g:
-        bz = 1e4 * np.transpose(g["B_z"][()], (2, 1, 0))      # file (x, y, z) -> (z, y, x), T -> G
+        bz = 1e4 * np.transpose(g["B_" + field[1]][()], (2, 1, 0))      # file (x, y, z) -> (z, y, x), T -> G
     cols.insert(0, ("observed input (initial τ)", {L: on_level(first_lt, bz, L) for L in levels}))
 unit = "K" if field == "T" else "G"
 for lab, d in cols:
