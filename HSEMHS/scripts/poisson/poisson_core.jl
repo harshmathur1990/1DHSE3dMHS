@@ -9,7 +9,8 @@
 # scripts/m5_bifrost/force_split.py: cell-centred B, centred periodic x, y differences, R_z on interior z-faces.
 # Gauss–Newton; each step solves the normal equations (a weighted Poisson equation in δu plus local terms) by PCG,
 # preconditioned by the Laplacian part with layer-median coefficients: FFT in x, y and a tridiagonal solve in z per mode.
-# Steps are capped at |δu| ≤ 2 per node and backtracked on Φ. The bottom-plane mean of u is held fixed.
+# Steps are capped at |δu| ≤ 2 per node and backtracked on Φ. The mean of u over the anchor cells (default: the bottom
+# plane) is held fixed.
 # Above z_cut each column is integrated in hydrostatic equilibrium from the solved pressure at z_cut (FIRTEZ likewise
 # drops the magnetic term above the lines' sensitivity). τ₅₀₀ from the EOS table with the exp_tail top closure.
 # Arrays are (z, y, x) with z top first.
@@ -72,7 +73,9 @@ struct Prob
     wc::Vector{Float64}                # centre weights w H̄² (n)
     wf::Vector{Float64}                # face weights h H̄_f² (n − 1)
     ereg::Vector{Float64}              # δu damping for modes centred differences cannot see
-    Aanc::Float64                      # bottom-plane mean anchor weight
+    Aanc::Float64                      # anchor weight: the mean of δu over the anchor cells is held at 0
+    anc::BitArray{3}                   # anchor cells (default: the bottom plane)
+    acnt::Vector{Float64}              # anchor cells per layer (preconditioner)
     lT::Array{Float64,3}; lx::Array{Float64,3}; ly::Array{Float64,3}; lz::Array{Float64,3}
     q::Array{Float64,3}                # ρ/P at the linearisation point
     qd::Array{Float64,3}               # ∂(ρ/P)/∂u = q (∂lnρ/∂lnP − 1)
@@ -158,8 +161,8 @@ function Aop!(pr::Prob, out, v)
     end
     JtW!(pr, out, pr.jx, pr.jy, pr.jz)
     @. out += pr.ereg * v
-    sb = sum(@view v[pr.n, :, :])
-    @views out[pr.n, :, :] .+= pr.Aanc * sb
+    sb = sum(v[pr.anc])
+    @views out[pr.anc] .+= pr.Aanc * sb
     return out
 end
 
@@ -183,7 +186,7 @@ function Minv!(pr::Prob, out, r)
             s2 = pr.sx2[i] + pr.sy2[j]
             for k in 1:n
                 d = pr.cdiag[k] + pr.wc[k] * s2 + pr.ereg[k]
-                (i == 1 && j == 1 && k == n) && (d += pr.Aanc * Ncol)
+                (i == 1 && j == 1) && (d += pr.Aanc * pr.acnt[k]^2 / Ncol)   # diagonal of the rank-1 anchor term
                 if k == 1
                     cp[1] = pr.coff[1] / d; dp[1] = Vh[1, j, i] / d
                 else
@@ -233,11 +236,12 @@ end
     solve_pressure(tab, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4)
 
 Gauss–Newton Poisson step from the start pressure P0 (z, y, x; z top first) with the Lorentz force fixed. Solves z ≤ zcut
-(the bottom-plane mean of ln P stays that of P0) and integrates each column hydrostatically above zcut.
+(the mean of ln P over the anchor cells stays that of P0: `anchor`, a Bool array like P0, or the bottom plane by
+default) and integrates each column hydrostatically above zcut.
 Returns (P, Φ0, Φ, steps, kc, u0, u): the full pressure, the objective before/after, the accepted steps, the first solved
 layer and ln P over the solved layers before/after.
 """
-function solve_pressure(tab, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4)
+function solve_pressure(tab, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing)
     nz, ny, nx = size(P0)
     kc = findfirst(<=(zcut), z)
     R = kc:nz; n = length(R)
@@ -260,12 +264,18 @@ function solve_pressure(tab, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30
     Wtot = (2 * sum(w) + sum(h)) * Ncol
     κ = 2π / (nx * dx)
     ereg = 1e-2 * κ^2 .* wc
-    Aanc = 1e2 * wf[end] / h[end]^2 / Ncol
+    if anchor === nothing
+        anc = falses(n, ny, nx); anc[n, :, :] .= true
+    else
+        anc = BitArray(anchor[R, :, :])
+    end
+    acnt = [Float64(count(@view anc[k, :, :])) for k in 1:n]
+    Aanc = 1e2 * wf[end] / h[end]^2 / sum(acnt)
     nyh = ny ÷ 2 + 1
     sy2 = [sin(2π * (j - 1) / ny)^2 / dy^2 for j in 1:nyh]
     sx2 = [sin(2π * fftfreq(nx)[i])^2 / dx^2 for i in 1:nx]
     Vh = zeros(ComplexF64, n, nyh, nx)
-    pr = Prob(tab, n, ny, nx, dx, dy, h, wc, wf, ereg, Aanc, lT, Lx[R, :, :], Ly[R, :, :], Lz[R, :, :], q, qd, ex,
+    pr = Prob(tab, n, ny, nx, dx, dy, h, wc, wf, ereg, Aanc, anc, acnt, lT, Lx[R, :, :], Ly[R, :, :], Lz[R, :, :], q, qd, ex,
               similar(u), similar(u), similar(u), similar(u), zeros(n - 1, ny, nx), sx2, sy2, zeros(n), zeros(n - 1), Vh,
               plan_rfft(u, (2, 3); flags = FFTW.ESTIMATE | FFTW.UNALIGNED),
               plan_irfft(Vh, ny, (2, 3); flags = FFTW.ESTIMATE | FFTW.UNALIGNED))   # applied to other arrays than planned
@@ -302,6 +312,7 @@ function solve_pressure(tab, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30
         u .= ut; q .= qt; qd .= qdt; ex .= ext; Φ = Φt; steps = outer
         @printf("%s outer %2d: Φ %.6e (Φ/Φ₀ %.3e, ΔΦ/Φ %.2e), RMS |R| H̄ %.4e | CG %d its (rel %.1e), α %.3g, capped %d, max|αδu| %.3f, %.1f s\n",
                 stamp(), outer, Φ, Φ / Φ0, rel_dec, sqrt(Φ / Wtot), its, rel, α, ncap, α * maximum(abs, δ), time() - t0)
+        flush(stdout)
         rel_dec < rtol && break
     end
 
