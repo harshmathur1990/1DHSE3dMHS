@@ -20,5 +20,5 @@ P_ref = "from_input"
 
 [poisson]
 z_cut_m = 1.0e6
-max_steps = 60
+max_steps = 100
 rtol = 1.0e-4

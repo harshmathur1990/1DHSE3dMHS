@@ -253,7 +253,7 @@ z ≤ zcut (the mean of ln P over the anchor cells, a Bool array like P0 or the 
 P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u).
 """
 function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
-                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, logf = s -> nothing)
+                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing)
     nz, ny, nx = size(P0); NX = par.NX
     kc = findfirst(<=(zcut), z)
     kc === nothing && error("z_cut = $zcut m lies below the grid")
@@ -295,7 +295,7 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
     Φ = phi(pr, Rx, Ry, Rz); Φ0 = Φ
     logf(@sprintf("start: Φ %.6e, RMS |R| H̄ %.4e over %d layers (z %.3f … %.3f Mm)", Φ, sqrt(Φ / Wtot), n, zr[1] / 1e6, zr[end] / 1e6))
     δ = similar(u); rhs = similar(u); ut = similar(u); qt = similar(u); qdt = similar(u); ext = similar(u)
-    steps = 0
+    steps = 0; nsmall = 0
     for outer in 1:maxouter
         t0 = time()
         setprec!(pr)
@@ -321,7 +321,8 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
         u .= ut; q .= qt; qd .= qdt; ex .= ext; Φ = Φt; steps = outer
         logf(@sprintf("step %2d: Φ %.6e (Φ/Φ₀ %.3e, ΔΦ/Φ %.2e), RMS |R| H̄ %.4e | CG %d its (rel %.1e), α %.3g, capped %d, max|αδu| %.3f, %.1f s",
                      outer, Φ, Φ / Φ0, rel_dec, sqrt(Φ / Wtot), its, rel, α, ncap, α * gmax(par, maximum(abs, δ)), time() - t0))
-        rel_dec < rtol && break
+        nsmall = rel_dec < rtol ? nsmall + 1 : 0
+        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps", rtol, nsmall)); break)
     end
 
     # ---- full column: solved region below z_cut, hydrostatic integration above it ----

@@ -90,6 +90,7 @@ function run_mhs_poisson_ltau(cfg::Config)
     BLAS.set_num_threads(min(32, Threads.nthreads()))
     u, z, Φ0, Φ, steps, kc = PoissonTau.solve_tau(s.par, s.tab, s.g, s.lt, lT, s.Bx, s.By, s.Bz, lnP, z0, s.dx, s.dy;
                                                   logtau_cut = P.logtau_cut, max_steps = P.max_steps, rtol = P.rtol,
+                                                  n_consec = P.n_consec, dz_tol = P.dz_tol_m,
                                                   cg_maxit = P.cg_maxit, cg_tol = P.cg_tol, dc_cap = P.dc_cap_m,
                                                   lm_mu0 = P.lm_mu0, logf = s.logm)
     BLAS.set_num_threads(1)
@@ -124,7 +125,8 @@ function run_mhs_poisson_z(cfg::Config)
     lnT = log.(T)
     Lx, Ly, Lz = PoissonZ.lorentz(par, Bx, By, Bz, z, dx, dy)
     sol = PoissonZ.solve_pressure(par, eos, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut = P.z_cut_m, maxouter = P.max_steps,
-                                  rtol = P.rtol, anchor_w = P.anchor_w, cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, logf = logm)
+                                  rtol = P.rtol, anchor_w = P.anchor_w, cg_tol = P.cg_tol, cg_maxit = P.cg_maxit,
+                                  n_consec = P.n_consec, logf = logm)
     T_ = cfg.tau
     rho, tau, zt1 = PoissonZ.tau_columns(eos, lnT, sol.P, z; top = Symbol(T_.top), H_max = Float64(T_.H_max_m), mu = Float64(T_.mu))
     zq = gquantiles(par, zt1, [0.01, 0.5, 0.99]) ./ 1e3

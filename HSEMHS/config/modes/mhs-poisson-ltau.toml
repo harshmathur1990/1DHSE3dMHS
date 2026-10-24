@@ -20,6 +20,6 @@ align = "ptot"
 
 [poisson]
 logtau_cut = -4.0
-max_steps = 60
+max_steps = 100
 rtol = 1.0e-4
 dc_cap_m = 3.0e5
