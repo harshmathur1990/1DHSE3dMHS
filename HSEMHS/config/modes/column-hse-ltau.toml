@@ -1,0 +1,20 @@
+# column-hse-ltau: hydrostatic columns on the log10 τ500 grid of an inversion-like input (P(τ), z(τ), ρ(τ)), aligned so
+# that P + B²/2μ₀ is equal at one height, mean z(τ = 1) = 0. Input in SI, h5py (x, y, τ), no coordinates.
+[run]
+mode = "column-hse-ltau"
+output = "out/modes/column-hse-ltau.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-ltau.nc"
+dx_m = 47619.0            # column spacing (24 Mm / 504, as the height-grid input)
+
+[physics]
+g = 274.0
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[tau_grid]
+cap_per_dex = 50.0
+align = "ptot"

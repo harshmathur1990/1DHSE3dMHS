@@ -1,0 +1,24 @@
+# full-mhs-z: the full staggered MHS joint Gauss–Newton solve (P and B) on the height grid, M5i settings: uniform
+# σ_B = 5 G, no trust radius (line search), stop on |ΔΦ|/Φ < 1e-6 over 3 consecutive accepted iterations.
+# run.output is the run directory (logs, history.csv, checkpoints atmosphere_A/B.h5, atmosphere_final.h5).
+# Multi-node (hyades): see config/modes/README.md.
+[run]
+mode = "full-mhs-z"
+output = "out/modes/full-mhs-z"
+
+[input]
+file = "../IO/input-mhs-hse-fullz.nc"
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[full_mhs]
+run = "run"               # smoke: coarse 42 × 42 grid, every code path in minutes
+wall_hours = 24.0
+ckpt_hours = 1.0
+init_iter = 3000
+restart = ""              # a checkpoint (init.h5, atmosphere_A/B.h5) to resume from
+sigma_rel = 0.0
+trust_region = false
+stop = "phi"
+phi_rtol = 1.0e-6

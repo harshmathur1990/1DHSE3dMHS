@@ -1,0 +1,22 @@
+# column-hse-z: hydrostatic columns on the height grid, bottom anchor (the production input, spec §5).
+# [mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/column-hse-z.toml
+[run]
+mode = "column-hse-z"
+output = "out/modes/column-hse-z.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse.nc"
+
+[physics]
+g = "from_input"
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"      # median Bifrost P on the bottom plane (file attribute P_ref_Pa)
+
+[tau]
+top = "exp_tail"

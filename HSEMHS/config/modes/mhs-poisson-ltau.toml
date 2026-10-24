@@ -1,0 +1,26 @@
+# mhs-poisson-ltau: column HSE in τ, then one Gauss–Newton (Levenberg–Marquardt) solve directly on the τ grid for
+# ln P(τ) below log10 τ = logtau_cut and one height per column (heights from z = c + Σ −τ/χ d ln τ).
+[run]
+mode = "mhs-poisson-ltau"
+output = "out/modes/mhs-poisson-ltau.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-ltau.nc"
+dx_m = 47619.0
+
+[physics]
+g = 274.0
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[tau_grid]
+cap_per_dex = 50.0
+align = "ptot"
+
+[poisson]
+logtau_cut = -4.0
+max_steps = 60
+rtol = 1.0e-4
+dc_cap_m = 3.0e5

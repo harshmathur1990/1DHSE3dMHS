@@ -1,0 +1,24 @@
+# mhs-poisson-z: column HSE on the height grid (as column-hse-z), then the Poisson-type pressure step below z_cut
+# (weighted least squares in ln P, T and B fixed; column HSE above z_cut). Ranks own x slabs.
+[run]
+mode = "mhs-poisson-z"
+output = "out/modes/mhs-poisson-z.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse.nc"
+
+[physics]
+g = "from_input"
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"
+
+[poisson]
+z_cut_m = 1.0e6
+max_steps = 60
+rtol = 1.0e-4

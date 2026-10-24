@@ -290,4 +290,6 @@ function main(args = ARGS)
 end
 
 # run directly, or through scripts/run.jl (run.mode = "full-mhs-z"), which calls main with the config's arguments
-abspath(PROGRAM_FILE) == @__FILE__ && main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end
