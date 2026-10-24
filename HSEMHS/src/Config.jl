@@ -22,8 +22,6 @@ const CONFIG_SCHEMA = [
         "crop_z_m" => Float64[],
         "resample" => "none",
         "resample_dz_m" => 0.0,
-        "dx_m" => 0.0,               # τ-grid inputs without coordinates (IO/input-mhs-ltau.nc): column spacing [m]
-        "dy_m" => 0.0,               # 0: = dx_m
     ],
     "physics" => [
         "g" => "from_input",

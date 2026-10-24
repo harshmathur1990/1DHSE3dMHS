@@ -7,7 +7,6 @@ overwrite = true
 
 [input]
 file = "../IO/input-mhs-ltau.nc"
-dx_m = 47619.0            # column spacing (24 Mm / 504, as the height-grid input)
 
 [physics]
 g = 274.0

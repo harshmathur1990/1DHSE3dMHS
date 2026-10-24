@@ -17,7 +17,7 @@ function tau_gravity(cfg, path)
 end
 attrs_dict(f) = Dict(k => read(attributes(f)[k]) for k in keys(attributes(f)))
 
-"""τ-grid input on this rank's slab; dx, dy from the config when the file has no coordinates."""
+"""τ-grid input on this rank's slab (x, y from the file, as for the height-grid input)."""
 function tau_setup(cfg, tag)
     t0 = time()
     path = cfg.input.file
@@ -25,13 +25,9 @@ function tau_setup(cfg, tag)
     NX, NY, nt = PoissonTau.tau_input_size(path)
     par = slab_par(NX, NY, nt)
     logm(s) = rprint(par, @sprintf("[%7.1fs] %s: %s", time() - t0, tag, s))
-    dx = cfg.input.dx_m isa Real ? Float64(cfg.input.dx_m) : 0.0
-    dy = cfg.input.dy_m isa Real && cfg.input.dy_m > 0 ? Float64(cfg.input.dy_m) : dx
-    lt, x, y, T, Bx, By, Bz = PoissonTau.read_tau_input(par, path, dx, dy)
-    if length(x) >= 2 && x[2] != x[1]
-        dx, dy = x[2] - x[1], y[2] - y[1]
-    end
-    dx > 0 || invalid("input.dx_m is required for $path (the file has no x coordinates)")
+    lt, x, y, T, Bx, By, Bz = PoissonTau.read_tau_input(par, path; xname = cfg.input.x, yname = cfg.input.y)
+    dx, dy = x[2] - x[1], y[2] - y[1]
+    (dx > 0 && dy > 0) || invalid("$path: x and y must increase")
     issorted(lt) || invalid("log10 τ500 must increase (top level first) in $path")
     g = tau_gravity(cfg, path)
     tab = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)

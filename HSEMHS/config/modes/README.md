@@ -28,9 +28,9 @@ written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks th
 
 ## τ-grid inputs
 
-`IO/input-mhs-ltau.nc` layout: `log10tau500` (nt, increasing, top level first), `temperature`, `B_x`, `B_y`, `B_z` as
-h5py (x, y, τ) in SI, no coordinates or attributes — set `input.dx_m` (and `input.dy_m` if different) and a numeric
-`physics.g`.
+`IO/input-mhs-ltau.nc` layout: `log10tau500` (nt, increasing, top level first), `x` (NX), `y` (NY), `temperature`,
+`B_x`, `B_y`, `B_z` as h5py (x, y, τ), SI (a `units` attribute on x, y is honoured). Without a `gravity_m_s2` file
+attribute set a numeric `physics.g`.
 
 ## Multi-node on hyades
 

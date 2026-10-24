@@ -130,17 +130,24 @@ function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; cap_per_dex = 50.0, ali
 end
 
 """
-Read a τ-grid input (IO/input-mhs-ltau.nc layout: log10tau500 (nt), temperature, B_x, B_y, B_z as h5py (x, y, τ), SI;
-or the make_tau_input.py layout with logtau500, x_m, y_m and h5py (τ, y, x)); this rank's x slab, Julia (τ, y, x).
+Read a τ-grid input (IO/input-mhs-ltau.nc layout: log10tau500 (nt), x (NX), y (NY), temperature, B_x, B_y, B_z as h5py
+(x, y, τ), SI unless a dataset carries a units attribute; or the make_tau_input.py layout with logtau500, x_m, y_m and
+h5py (τ, y, x)); this rank's x slab, Julia (τ, y, x).
 """
-function read_tau_input(par, path, dx, dy)
+function read_tau_input(par, path; xname = "x", yname = "y")
     ir = owned_x(par)
     h5open(path, "r") do f
         if haskey(f, "log10tau500")
+            for nm in (xname, yname)
+                haskey(f, nm) || H.invalid("$path has no dataset \"$nm\" (τ-grid inputs carry x and y like the height-grid input)")
+            end
+            ax(nm) = (a = attributes(f[nm]); fac = haskey(a, "units") ? H.UNIT_FACTORS[:length][H.attr_string(read(a["units"]))] : 1.0;
+                      Float64.(read(f[nm])) .* fac)
             rd(nm) = Float64.(f[nm][:, :, ir])
             lt = read(f["log10tau500"])
-            NX = size(f["temperature"], 3)
-            x = collect(0:NX-1) .* dx; y = collect(0:size(f["temperature"], 2)-1) .* dy
+            x, y = ax(xname), ax(yname)
+            (length(x), length(y)) == (size(f["temperature"], 3), size(f["temperature"], 2)) ||
+                H.invalid("$path: x, y lengths $((length(x), length(y))) do not match temperature $(size(f["temperature"]))")
             return lt, x, y, rd("temperature"), rd("B_x"), rd("B_y"), rd("B_z")
         else
             rz(nm) = permutedims(Float64.(f[nm][ir, :, :]), (3, 2, 1))
