@@ -326,6 +326,7 @@ Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.
 
 ## Licence and attribution
 
-The repository contains no licence file, so no licence is granted here; the Wittmann EOS code in `wittman-eos/` is
-third-party and its terms are not recorded in the repository. The Poisson approach follows the FIRTEZ-dz inversion code
+HSEMHS is released under the [MIT License](LICENSE). The licence covers the code written for this project; the
+Wittmann EOS code in `wittman-eos/` is third-party, keeps its own terms (not recorded in the repository), and is not
+relicensed by it. The Poisson approach follows the FIRTEZ-dz inversion code
 (Borrero et al.); Bifrost data: simulation en024048_hion.
