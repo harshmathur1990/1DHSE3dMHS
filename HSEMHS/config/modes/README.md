@@ -12,8 +12,9 @@ One entry point for every mode, MPI + threads in all of them:
 | `mhs-poisson-ltau` | log10 τ500 | column HSE in τ, then one Gauss–Newton solve on the τ grid for ln P(τ) and the column heights | x slabs |
 | `full-mhs-z` | height | full staggered MHS joint GN solve of P and B (the M5 driver; defaults = the M5i run) | 2-D (x, y) blocks |
 
-Results do not depend on the rank count beyond the rounding of sums: quantiles and medians are exact global order
-statistics, the Poisson preconditioners use a distributed FFT (rfft in y, all-to-all transpose, FFT in x). Output is
+Quantiles and medians are exact global order statistics and the Poisson preconditioners use a distributed FFT (rfft in
+y, all-to-all transpose, FFT in x). Sums are reduced in a rank-dependent order, so results agree across rank counts only
+to rounding, which the iterative modes can amplify (see the root README and the technical PDFs for measured differences). Output is
 written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks then write their slabs in turn.
 
 ## Outputs
@@ -41,3 +42,6 @@ through `~/.julia/bin/mhs_rank.sh` (libfabric TCP on the `ib*` interface, node-l
     printf "hyades4:2\nhyades5:2\nhyades15:2\nhyades21:2\n" > hosts
     mpiexecjl --project=. -launcher ssh -launcher-exec $HOME/.julia/bin/ssh_bash_launcher -f hosts -n 8 \
         mhs_rank.sh julia --project=. -t 32 scripts/run.jl config/modes/mhs-poisson-ltau.toml
+
+Stopping is on the relative change of Φ only, and exit status 0 does not mean the stopping rule was met: see
+"Stopping, status and what finished means" in the root `README.md`.

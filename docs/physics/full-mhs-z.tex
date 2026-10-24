@@ -28,7 +28,7 @@ P,\ u & gas pressure (unknown); $u=\ln P$ & Pa, -- \\
 S & local weight of the gas, $\approx\rho g$ from the starting state & N\,m$^{-3}$ \\
 \Phi & the quantity minimised (Sect.~7) & -- \\
 \lambda_F,\lambda_S,\lambda_Q & weights of the terms of $\Phi$ & -- \\
-P_{\rm ref} & prescribed mean pressure on the bottom plane & Pa \\
+P_{\rm ref} & gauge of the pressure level: the area-weighted mean of $\ln P$ on the bottom plane is $\ln P_{\rm ref}$ (a geometric-mean pressure) & Pa \\
 \bottomrule
 \end{tabular}
 
@@ -61,8 +61,10 @@ so a static state requires
 \]
 Wherever hot and cool gas lie side by side at the same height (and in the Sun they do everywhere: hot rising granules next
 to cool sinking lanes), the density varies horizontally, and only the magnetic tension can hold that up. A field taken from a
-moving snapshot was never shaped for this, so with $\B=\Bo$ no pressure field can be static (the \code{mhs-poisson} modes
-show how far a pressure change alone gets). Here we let $\B$ change as well, \emph{as little as possible}. That turns the
+moving snapshot was never shaped for this, so in general there is no static pressure field for $\B=\Bo$ (whether a
+particular field admits one has to be checked, not assumed; the \code{mhs-poisson} modes show how far a pressure change
+alone gets). Here we let $\B$ change as well, \emph{as little as possible}. Changing the field removes this obstruction in
+principle; it does not guarantee that an exact equilibrium close to $\Bo$ exists or is found. That turns the
 problem into a compromise between ``balance the forces'' and ``stay close to $\Bo$''.
 
 \section{Making $\nabla\cdot\B=0$ automatic: the vector potential}
@@ -82,7 +84,8 @@ the magnetic flux through the face divided by its area;
 \end{itemize}
 The flux out of a cell is the sum over its six faces. For $\B=\nabla\times\mathbf A$ each face flux is a sum of $\mathbf A$
 around the face's edges (Stokes' theorem), and every edge appears in two faces of the cell with opposite signs, so the total
-is \emph{exactly} zero: $\nabla\cdot\B=0$ holds on the grid itself, not just approximately.
+is zero up to rounding: $\nabla\cdot\B=0$ holds for the discrete field itself, not just approximately in the limit of a fine
+grid.
 \end{minipage}\hfill
 \begin{minipage}[t]{0.39\linewidth}\vspace{0pt}\centering
 \begin{tikzpicture}[scale=0.92,>=stealth]
@@ -120,7 +123,12 @@ Only the two \emph{other} field components enter each one: a field along $x$ exe
 +\underbrace{\lambda_S\Big\langle\Big|\frac{h^2\,\partial^2(\B-\Bo)}{\sigma}\Big|^2\Big\rangle}_{\Phi_S}
 +\underbrace{\lambda_F\lambda_Q\Big\langle\Big|\frac{B_{\rm ref}\,\delta^2\J}{S}\Big|^2\Big\rangle}_{\Phi_Q}
 \]
-$\langle\cdot\rangle$ is a volume-weighted average over the grid. Each term, and why it is there:
+The formula is \textbf{schematic}: $\langle\cdot\rangle$ stands for a normalised sum over the places where each term lives,
+and the normalisations differ: the force term is a cell-volume-weighted sum over the faces where force equations are used,
+divided by their number; the data term is a plain sum over all faces divided by their number (so it is a mean $\chi^2$);
+the smoothness term is volume-weighted over the cell centres, the current term over the cell edges. The residual is
+$\R=\nabla P+\rho g\zh-\J\times\B$, i.e.\ minus the net force (the sign does not matter in a square). Each term, and why it
+is there:
 \begin{itemize}
 \item \textbf{$\Phi_F$, force balance.} The residual is divided by the local weight of the gas $S\approx\rho g$ (from the
 starting state, with a floor so it never becomes tiny), so $|\R|/S=1$ means an unbalanced force as large as gravity. Without
@@ -143,8 +151,10 @@ defaults are recorded with every run.
 \section{Boundary conditions and the pressure level}
 The box is periodic in $x$ and $y$: what leaves one side enters the other. At the top and bottom the horizontal force
 equations are not used on the outermost layers (they lack the vertical derivative of the field there). The force balance
-fixes pressure \emph{differences}; the overall pressure level is set by requiring the mean of $\ln P$ on the bottom plane
-to equal $\ln P_{\rm ref}$, a single number, not a pressure map. Two safeguards keep the pressure physical: in one step $\ln P$
+fixes pressure \emph{differences}; the overall pressure level is set by requiring the area-weighted mean of $\ln P$ on the bottom
+plane to equal $\ln P_{\rm ref}$: a single number (a geometric-mean pressure, not the arithmetic mean of $P$), not a pressure
+map. It is built into the unknowns ($\ln P$ is the unknown minus its bottom-plane mean plus $\ln P_{\rm ref}$), so it holds
+exactly at every step. Two safeguards keep the pressure physical: in one step $\ln P$
 may change by at most 5 anywhere, and $P$ may never fall below $e^{-3}$ times its starting value.
 
 \section{How the minimum is found}
@@ -158,8 +168,9 @@ $\rho$ depends on $P$). Each step replaces it by its linear approximation in the
 $\bar b$ (Gauss--Newton, the least-squares form of Newton's method), solves for the change that minimises the
 approximated $\Phi$, and accepts it only if the true $\Phi$ decreases. If it does not, the step is halved along the same
 direction (a backtracking line search) until it does.
-\item \textbf{Stop} when $\Phi$ has stopped changing: its relative change is below $10^{-6}$ on three accepted steps in a
-row.
+\item \textbf{Stop} when $\Phi$ has stopped changing: $|\Phi_{\rm prev}-\Phi_{\rm new}|/\Phi_{\rm new}<10^{-6}$ on three
+accepted steps in a row. A small change of $\Phi$ means the iteration has stalled; it does not by itself show that the
+forces are small or the field close to $\Bo$, which have to be checked separately.
 \end{enumerate}
 Many different potentials give the same field (adding a gradient to $\mathbf A$ does not change $\nabla\times\mathbf A$).
 Such changes have no effect on $\Phi$; a tiny damping term keeps the linear systems well defined, and all results are judged
@@ -177,5 +188,7 @@ The mode looks for the static atmosphere closest to the snapshot. The temperatur
 exactly through the vector potential on a staggered grid, and the pressure and field are adjusted together to minimise a
 weighted sum of the force imbalance, the change of the field, and penalties against grid-scale noise. Unlike the
 pressure-only modes, it can in principle remove the buoyancy part of the imbalance, because only a changed field can supply
-the magnetic tension that holds up horizontal density differences.
+the magnetic tension that holds up horizontal density differences. Its result is the minimum of a finite weighted
+least-squares problem: how close that is to an exact equilibrium, and how close the field stays to $\Bo$, are read from the
+force and data terms of the run, not guaranteed in advance.
 \end{document}

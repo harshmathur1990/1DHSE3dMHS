@@ -9,7 +9,17 @@
 \code{scripts/run.jl} validates the config, exports the M5 switches as environment variables (\code{MHS\_INPUT},
 \code{MHS\_EOS\_TABLE}, \code{MHS\_SIGMA\_REL}, \code{MHS\_TRUST}, \code{MHS\_STOP}, \code{MHS\_PHI\_RTOL}; they are
 read as constants when the driver is included), includes \code{scripts/m5\_bifrost/m5h\_fullres.jl} and calls
-\code{main([output, run, wall, ckpt, init\_iter, restart])}. The driver can still be run directly with the same arguments.
+\code{main([output, run, wall, ckpt, init\_iter, restart])}. This is why the mode cannot go through \code{run\_config}.
+
+\textbf{Two entry points, two sets of defaults.} Through \code{run.jl} (this mode) the defaults are the M5i choice below.
+Run directly (\code{julia --project=. scripts/m5\_bifrost/m5h\_fullres.jl OUTDIR run \dots}), the driver reads the same
+environment variables with its own defaults: 5\,\% relative $\sigma$, trust region on, height stop (\code{dz}): the M5h
+configuration. The environment constants are read once, at include time.
+
+\textbf{Forwarded keys.} Only \code{input.file}, \code{eos.table\_file}, \code{run.output} (a directory) and
+\code{full\_mhs.*}. Not forwarded: \code{physics.g} (gravity from the file attribute), \code{[column\_hse]}, \code{[mhs]},
+\code{[parallel]} (the process grid is chosen by \code{bif\_problem}), \code{[tau]}, \code{[output]},
+\code{run.overwrite}, the input dataset names. $P_{\rm ref}$ comes from the attribute \code{P\_ref\_Pa}.
 
 \begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
 \toprule
@@ -22,7 +32,7 @@ Key & Default (M5i) & Meaning \\ \midrule
 \code{full\_mhs.restart} & \code{""} & any saved file (\code{init.h5}, \code{atmosphere\_A/B.h5}, final) \\
 \code{full\_mhs.sigma\_rel} & 0 & $\sigma_B=\sigma_{\rm rel}|\Bo|\oplus5$\,G (M5h: 0.05) \\
 \code{full\_mhs.trust\_region} & false & false: line search; true: trust region (M5h) \\
-\code{full\_mhs.stop}, \code{phi\_rtol} & \code{phi}, $10^{-6}$ & $|\Delta\Phi|/\Phi<$ rtol on 3 consecutive accepted steps; \code{dz}: $\max|\Delta z_{\tau1}|<1$\,mm \\
+\code{full\_mhs.stop}, \code{phi\_rtol} & \code{phi}, $10^{-6}$ & $|\Phi_{\rm prev}-\Phi_{\rm new}|/\Phi_{\rm new}<$ rtol on 3 consecutive accepted steps (current policy); \code{dz} ($\max|\Delta z_{\tau1}|<1$\,mm) is a retained historical option \\
 \bottomrule
 \end{tabularx}
 
@@ -78,14 +88,30 @@ After every accepted step (callback): $z(\tau_{500}{=}1)$ in every column from t
 statistics, step data), the stop test, checkpoints every \code{ckpt\_hours} alternating \code{atmosphere\_A/B.h5}
 (written to \code{.tmp}, then renamed), a \code{STOP} file check and the wall cap. Every candidate goes to
 \code{candidates.csv}. Saved solver arrays are global owned values (no halos), so a restart may use another rank count;
-on restart the $z(\tau{=}1)$ map is recomputed and checked against the saved one (flags exact, heights to $10^{-6}$\,m).
-Any error writes \code{atmosphere\_crash.h5} (single rank) or aborts all ranks.
+on restart the grid is checked and the $z(\tau{=}1)$ map is recomputed and compared with the saved one (flags exact,
+heights to $10^{-6}$\,m). That check does \emph{not} establish that input, EOS table, $\sigma$ or solver settings are the
+same as in the saved run; a restart with changed settings is a new experiment. Any error writes
+\code{atmosphere\_crash.h5} (single rank) or aborts all ranks. \code{full\_mhs.run = "run"} requires the $504\times504$
+horizontal grid of the production cube.
+
+\textbf{Output directory.} The driver creates \code{run.output} if needed and writes into it whether or not it exists
+(\code{run.overwrite} is not consulted); existing \code{history.csv}, checkpoints and final files are overwritten. Use a fresh
+directory per run, or a deliberate restart.
+
+\textbf{Termination and status.} The solver returns a status and reason, logged as \code{solver returned: <status>
+(<reason>)}: the $\Phi$ criterion met (\code{callback stop} with the reason ``user criterion met''), wall cap, \code{STOP}
+file, or line-search failure (30 halvings). \code{scripts/run.jl} exits 0 after the driver returns in all of these cases
+(code follow-up: propagate the status); only an exception gives a non-zero exit. A met $\Phi$ criterion does not by itself
+certify small force residuals or an acceptable data fit: read $\Phi_F$, $\Phi_B$ and the residual and data statistics in
+\code{history.csv}.
 
 \section{Parallelisation}
 2-D $(x,y)$ blocks with one halo layer (\code{exchange\_halos!}), \code{THREAD\_FUNNELED}, threads inside each block.
 Global sums use a fixed reduction order (row partials, \code{reduce\_rows}), so gradients and objectives are
 reproducible; tests check thread and rank invariance of the staggered gradient. Output is cooperative (rank 0 creates the
-file, then each rank writes its hyperslab in turn); no parallel HDF5. Multi-node: MPICH via \code{mpiexecjl} with the ssh
+file, then each rank writes its hyperslab in turn); no parallel HDF5. Memory: the setup (\code{bif\_setup.jl}) reads the
+\emph{complete} raw input arrays ($T$ and three field components) on every rank before filling the distributed fields, so
+each rank needs that memory in addition to its share of the solver arrays. Multi-node: MPICH via \code{mpiexecjl} with the ssh
 launcher, each rank wrapped in \code{mhs\_rank.sh} (libfabric TCP on the IPoIB interface, node-local Julia), see
 \code{config/modes/README.md}.
 
@@ -97,7 +123,10 @@ thread and rank invariance, the exact discrete HSE initialiser, Gate C1b (unifor
 bounds).
 \item Through \code{run.jl}: smoke run on 4 ranks ($42\times42\times249$) completed 3 accepted steps, checkpoints and the final
 save; the log confirmed $\sigma_B=5$\,G uniform, no trust region, $\Phi$ stop at $10^{-6}$.
-\item Production M5i (22--23 Oct): 24 ranks $\times$ 16 threads on 4 nodes, $\approx5\times10^8$ unknowns; 112 accepted steps,
-$\Phi=7.88\times10^3$ when stopped on request. M5h (trust region, 5\,\% $\sigma$) ran to its 24\,h wall cap.
+\item Production M5i (22--23 Oct 2026, branch \code{m5i-phi-notrust} commit c96a922, run directory
+\code{out/m5i/run\_fullz} in the cluster worktree \code{MHS\_m5i}): 24 ranks $\times$ 16 threads on 4 nodes,
+$\approx5\times10^8$ unknowns; 112 accepted steps, $\Phi=7.88\times10^3$ when stopped on request. M5h (trust region,
+5\,\% $\sigma$) ran to its 24\,h wall cap. Neither met its stopping rule; these are progress records, not converged
+equilibria.
 \end{itemize}
 \end{document}

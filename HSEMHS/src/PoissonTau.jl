@@ -131,8 +131,8 @@ end
 
 """
 Read a τ-grid input (IO/input-mhs-ltau.nc layout: log10tau500 (nt), x (NX), y (NY), temperature, B_x, B_y, B_z as h5py
-(x, y, τ), SI unless a dataset carries a units attribute; or the make_tau_input.py layout with logtau500, x_m, y_m and
-h5py (τ, y, x)); this rank's x slab, Julia (τ, y, x).
+(x, y, τ); or the make_tau_input.py layout with logtau500, x_m, y_m and h5py (τ, y, x)); this rank's x slab, Julia (τ, y, x).
+Only x and y honour a units attribute; temperature and the field are read as K and T without conversion.
 """
 function read_tau_input(par, path; xname = "x", yname = "y")
     ir = owned_x(par)

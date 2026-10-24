@@ -15,8 +15,7 @@ Driver \code{run\_mhs\_poisson\_ltau} (\code{src/RunModes.jl}); solver \code{Poi
 Key & Default & Meaning \\ \midrule
 \code{poisson.logtau\_cut} & $-4$ & solved levels $\log\tau\ge$ cut (nearest level $k_c$) \\
 \code{poisson.max\_steps} & 100 & Levenberg--Marquardt steps \\
-\code{poisson.rtol}, \code{n\_consec} & $10^{-4}$, 3 & stop on $\Delta\Phi/\Phi<$ rtol for \code{n\_consec} consecutive steps\dots \\
-\code{poisson.dz\_tol\_m} & 100 & \dots or on one such step that moved no column height by more than this \\
+\code{poisson.rtol}, \code{n\_consec} & $10^{-4}$, 3 & stop when $(\Phi_{\rm prev}-\Phi)/\Phi_{\rm prev}<$ rtol on \code{n\_consec} consecutive accepted steps (objective only) \\
 \code{poisson.cg\_tol}, \code{cg\_maxit} & $10^{-3}$, 80 & PCG per trial \\
 \code{poisson.dc\_cap\_m} & $3\times10^5$ & largest height change of a column per step (whole-step scaling) \\
 \code{poisson.lm\_mu0} & 0 & initial damping \\
@@ -81,24 +80,45 @@ transposed FFT layout (\code{SlabFFT}, as in \code{mhs-poisson-z}), BLAS threade
 \section{Steps}
 Levenberg--Marquardt: for $\mu$ (start \code{lm\_mu0}) solve, scale the \emph{whole} step by
 $\min(1,\ 2/\max|\delta u|,\ $\code{dc\_cap}$/\max|\delta c|)$, try up to 4 halvings on the true $\Phi$ (EOS status
-checked); if none decreases $\Phi$, $\mu\leftarrow\max(4\mu,1)$ and re-solve (up to 8 times). After acceptance $\mu/3$ if
-the full scaled step was taken, unchanged if one halving, $\times2$ otherwise; $\mu<10^{-3}\to0$. Element-wise clamping
+checked); if none decreases $\Phi$, $\mu\leftarrow\max(4\mu,1)$ and re-solve (up to 8 times). After acceptance (source rule):
+$\mu\leftarrow\mu/3$ if the accepted step length factor is exactly $\alpha=1$; unchanged if $\alpha\ge s_c/2$ ($s_c$ the
+whole-step scale); $\times2$ otherwise; $\mu<10^{-3}\to0$. When the whole-step scaling is active ($s_c<1$), a full scaled
+step ($\alpha=s_c$) therefore does \emph{not} lower $\mu$; whether that was intended is a code question (follow-up). Element-wise clamping
 of $\delta c$ (the first version) turned the direction into an ascent direction where the step asked for $>1$\,Mm in a few
-columns: $\Phi$ rose linearly with the step length. Stop rule as in the table; it replaced a single-step test that
-stopped one run after 17 steps while strong-field columns still moved 80\,km per step.
+columns: $\Phi$ rose linearly with the step length.
+
+\textbf{Termination.} (a) $(\Phi_{\rm prev}-\Phi)/\Phi_{\rm prev}<$ \code{rtol} on \code{n\_consec} consecutive accepted
+steps (log line \code{converged: \dots}); (b) no damping level gives a decrease (\code{no decrease up to $\mu$ = \dots;
+stopping}); (c) \code{max\_steps} reached (no message). Stopping uses the objective only. Two earlier rules are gone: a
+single small step (it stopped one run after 17 steps while strong-field columns still moved 80\,km per step), and a
+height shortcut (one small step plus $\max|\delta c|<100$\,m), removed on 24 Oct 2026 in line with the $\Phi$-only policy. The
+logged $\max|\delta c|$ is the largest change of a column's \emph{cut-level} height in the step, not the change of its
+$\tau=1$ height (which also depends on the changed layer thicknesses). The driver returns \code{converged}, exit 0, in all
+three cases: read the log (code follow-up: propagate the termination). A met rule does not certify small residuals.
 
 \section{Parallelisation}
 $x$ slabs; halo exchange in $x$ for every $D_x$ (heights, $u$, $\B$, and in the Jacobian); global sums; exact global
 medians for the weights and the preconditioner (bisection on order-preserving integer keys); the distributed FFT
-(rfft in $y$, \code{Alltoallv} transpose, FFT in $x$) and GEMMs on the local $k_y$ slab. Threads in all node loops.
+(rfft in $y$, \code{Alltoallv} transpose, FFT in $x$) and GEMMs on the local $k_y$ slab. Threads in all node loops; BLAS is raised to \code{min(32, nthreads)} for the solve and
+reset to 1 afterwards; FFTW plans are single-threaded, applied from Julia threads.
+
+The field values on the $\tau$ levels are used unchanged at the new heights; no discrete $\nabla\cdot\B=0$ is imposed (the
+staggered construction of \code{full-mhs-z} needs a fixed geometry). Above the cut the levels stay at their column-HSE
+pressures and relative heights and move rigidly with $c$; the global height offset is fixed only by the final gauge.
 
 \section{Verification and performance}
 \begin{itemize}
-\item $96^2$ magnetic crop, ranks $\times$ threads $1\times8$, $1\times32$, $4\times8$: 37 steps each; $z(\tau{=}1)$ differences
-median 1\,m, 99th percentile 12--24\,m, max 150\,m (weakly determined strong-field columns). The port matches the
-script \code{scripts/poisson/poisson\_tau\_direct.jl}.
-\item Full cube ($504\times504\times95$, 54 solved $\ln P$ levels + 1 height per column, $1.4\times10^7$ unknowns): one node,
-96 threads, 17 steps, 14\,min, 11\,GB; 8 ranks on 4 nodes, 8.3\,min, 3.1\,GB per rank, same result. PCG reaches its
+\item $96^2$ magnetic crop (manual checks, no automated test), ranks $\times$ threads $1\times8$, $1\times32$, $4\times8$,
+consecutive-step rule: 37 steps each; $z(\tau{=}1)$ differences median 1\,m, 99th percentile 12--24\,m, max 150\,m
+(weakly determined strong-field columns). Agreement to rounding only; identical trajectories across layouts are not
+promised. After the removal of the height shortcut (commit 813a3af) the $1\times32$ run again took 37 steps.
+\item Against the original script \code{scripts/poisson/poisson\_tau\_direct.jl} (single-step rule) on the same crop:
+$z(\tau{=}1)$ differences median 3.6\,m, 99th percentile 95\,m, max 1\,km, because the two stopped one step apart while
+some columns were still moving.
+\item Full cube ($504\times504\times95$, 54 solved $\ln P$ levels + 1 height per column, $1.4\times10^7$ unknowns), with the
+superseded single-step rule: one node, 96 threads, 17 steps, 14\,min, 11\,GB (commit b96bb4e); 8 ranks on 4 nodes, 8.3\,min,
+3.1\,GB per rank, same summary statistics (commit 13666b7, log \code{out/modes/mhs-poisson-ltau.log} in the cluster
+worktree \code{MHS\_modes}). The current rule has not yet been run on the full cube. PCG reaches its
 80-iteration cap in every step (relative residual $10^{-2}$--$2\times10^{-1}$): the next speed-up is a better preconditioner.
 \end{itemize}
 

@@ -24,11 +24,21 @@ Key & Default & Meaning \\ \midrule
 
 \section{Input layout}
 \code{IO/input-mhs-ltau.nc}: \code{log10tau500} ($n_\tau$, increasing: top level first), \code{x} ($N_x$), \code{y} ($N_y$),
-\code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z} with h5py shape $(x,y,\tau)$, i.e.\ Julia $(\tau,y,x)$; SI
-(a \code{units} attribute on \code{x}, \code{y} is honoured). The reader also accepts the \code{make\_tau\_input.py} test
-layout (\code{logtau500}, \code{x\_m}, \code{y\_m}, \code{T}, \code{Bx}\dots, h5py $(\tau,y,x)$). Each rank reads only
-its $x$ hyperslab \code{f[name][:, :, i0:i1]}. Missing \code{x}/\code{y}, length mismatches, a non-increasing
-$\log\tau$ or a non-positive grid spacing are rejected as \code{invalid\_input}.
+\code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z} with h5py shape $(x,y,\tau)$, i.e.\ Julia $(\tau,y,x)$. Each rank
+reads only its $x$ hyperslab \code{f[name][:, :, i0:i1]}. The reader also accepts the \code{make\_tau\_input.py} test
+layout (\code{logtau500}, \code{x\_m}, \code{y\_m}, \code{T}, \code{Bx}\dots, h5py $(\tau,y,x)$).
+
+What \code{read\_tau\_input} actually does:
+\begin{itemize}
+\item \textbf{Units:} a \code{units} attribute on \code{x}, \code{y} is converted (m, km, cm, Mm); \code{temperature} and the field
+are read \emph{as is}, assumed to be K and T. A field stored in G is not converted.
+\item \textbf{Names:} only the coordinate names are configurable (\code{input.x}, \code{input.y}); \code{temperature},
+\code{B\_x}, \code{B\_y}, \code{B\_z} and \code{log10tau500} are fixed. The other \code{[input]} keys (\code{temperature},
+\code{bx}\dots, \code{z}, \code{crop\_z\_m}, \code{resample}) are not used by this mode.
+\item \textbf{Checks:} missing \code{x}/\code{y} and length mismatches are \code{invalid\_input}; $\log\tau$ must be
+non-decreasing (\code{issorted}, not strictly increasing); $\Delta x,\Delta y$ are taken from the first spacing and must be
+positive. Uniform, strictly increasing coordinates and strictly increasing $\log\tau$ are \emph{assumed}, not verified.
+\end{itemize}
 
 \section{Algorithm}
 \begin{enumerate}
@@ -36,15 +46,20 @@ $\log\tau$ or a non-positive grid spacing are rejected as \code{invalid\_input}.
 from $P=100$\,Pa to $10^{-10}$. Between levels $a=\ln\tau_k$, $b=\ln\tau_{k+1}$: Heun (explicit trapezoid) substeps of
 $(\ln P,z)$ with $f=g\tau\rho/(\chi P)$, $g_z=-\tau/\chi$ and $\ln T$ linear in $\ln\tau$; step $h=\min(b-x,\,0.05/|f|)$.
 Cap: if $\ln P$ would exceed $\ln P_k+$\code{cap\_per\_dex}$(\log\tau_{k+1}-\log\tau_k)$, or the table edge
-(\code{tab.Y[end]} $-1$), or $f$ is not finite, the level gets the capped value and the interval is counted. $z$ is
+(\code{tab.Y[end]} $-1$), or $f$ is not finite, the level gets the capped value, the interval is counted, and the substep
+loop \emph{breaks}: the height is left at the last completed substep, so the remaining geometric thickness of that
+interval is not added and all levels below sit too high by that amount (code follow-up). Only the total count is
+reported (log line and the attribute \code{capped\_intervals}); which columns and levels were capped is not stored. $z$ is
 shifted so that $z(\log\tau=0)=0$ (linear in $\log\tau$, \code{interp\_lt}).
 \item \code{align\_ptot!}: reference $\ln(P+B^2/2\mu_0)$ = global median over the bottom level (exact distributed median);
-per column the height where the total pressure crosses it (linear between levels, or hydrostatic extrapolation
-$z_{\rm bot}-\Delta\ln P_t/(g\rho/P)$ below the bottom), subtracted.
+per column the height where the total pressure crosses it (linear in $\ln P_t$ between levels, or, below the bottom,
+$z_{\rm bot}-\Delta\ln P_t\,/(g\rho/P)_{\rm bot}$: the \emph{gas} pressure scale height applied to the total pressure, an
+approximation), subtracted. The tension of the field is ignored.
 \item \code{gauge!}: subtract the global mean of $z(\log\tau=0)$.
 \item $\rho$ from the EOS at every node; output.
 \end{enumerate}
-Any non-finite $\ln P$ after the integration stops the run (``left the EOS table'').
+Any non-finite $\ln P$ after the integration stops the run (``left the EOS table''). Otherwise the run exits 0. The
+field values are carried unchanged to the new heights; nothing enforces $\nabla\cdot\B=0$ in physical space.
 
 \section{MPI layer (\code{Slab.jl})}
 Shared with the two Poisson modes.
@@ -73,7 +88,9 @@ $(x,y,\tau)$, h5py $(\tau,y,x)$. Attributes: \code{mode}, \code{input}, \code{eo
 \item $96^2$ crop: 1 and 4 ranks give identical pressures; heights agree to $2\times10^{-10}$\,m (the gauge mean).
 \item Full cube against the original script (\code{scripts/poisson/poisson\_tau.jl}, \code{MHS\_TAU\_ITERS=0}, one
 rank): identical pressures, heights within 0.13\,mm.
-\item Full cube ($504\times504\times95$), 8 ranks $\times$ 32 threads on 4 nodes: 95\,s wall (most of it start-up and I/O),
-1.9\,GB per rank; 2585 capped intervals.
+\item Full cube ($504\times504\times95$), 24 Oct 2026, commit 13666b7 (spacing then given by \code{input.dx\_m}, same
+value), 8 ranks $\times$ 32 threads on 4 nodes: 95\,s wall (most of it start-up and I/O), 1.9\,GB per rank; 2585 capped
+intervals. Log \code{out/modes/column-hse-ltau.log} in the cluster worktree \code{MHS\_modes} (not in git).
+\item The slab layer and this mode have no automated tests; the checks above were manual.
 \end{itemize}
 \end{document}

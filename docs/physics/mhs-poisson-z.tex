@@ -61,18 +61,23 @@ very fast in a periodic box (Sect.~9).
 
 \section{What a pressure correction can do, and what it cannot}
 \subsection{Gradient and non-gradient forces}
-Every force field in the box can be split uniquely (the \textbf{Helmholtz decomposition}) into
+A force field in the box can be split (the \textbf{Helmholtz decomposition}) into
 \[
 \F=\underbrace{-\nabla\phi}_{\text{gradient part}}+\underbrace{\mathbf S}_{\text{non-gradient part}},
 \qquad \int\mathbf S\cdot\nabla\psi\,dV=0\ \text{for every function }\psi .
 \]
 The gradient part is the slope of a scalar ``potential'' $\phi$, like a pressure force, and has no curl. The non-gradient
 part is everything else: it carries the whole curl of $\F$, and the orthogonality condition means (after integrating by
-parts in the periodic box) that it has no divergence. The two parts are orthogonal, so their sizes add like the sides of a
-right triangle: $\int|\F|^2dV=\int|\nabla\phi|^2dV+\int|\mathbf S|^2dV$.
+parts) that it has no divergence. The two parts are orthogonal, so their sizes add like the sides of a right triangle:
+$\int|\F|^2dV=\int|\nabla\phi|^2dV+\int|\mathbf S|^2dV$. The split is unique only once boundary conditions are fixed: our
+box is periodic in $x$ and $y$ but has a top and a bottom, so what happens at those boundaries (and an additive constant in
+$\phi$) has to be specified. With a weighting of the volume, as below, ``orthogonal'' is meant in that weighted sense.
 
 A change of pressure $\delta P$ changes the force by $-\nabla\delta P$, a pure gradient. If the density did not change, a
-pressure correction could remove the gradient part exactly (choose $\delta P=-\phi$) and could never touch $\mathbf S$.
+pressure correction could in principle remove the gradient part (choose $\delta P=-\phi$) and could never touch
+$\mathbf S$. This picture explains what the method can achieve; the solver itself does not compute such a projection. It
+minimises a weighted sum of squares of the \emph{relative} residual (Sect.~7), which is a non-linear problem, so it neither
+removes the gradient part exactly nor leaves $\mathbf S$ untouched.
 
 \subsection{Which forces are non-gradient?}
 Take the curl of the force balance. The curl of any gradient is zero, and for gravity
@@ -94,9 +99,9 @@ So static equilibrium requires the \textbf{curl condition}
 \]
 only the tension of the field can hold up horizontal density differences. Without a field this forces
 $\partial_x\rho=\partial_y\rho=0$: a static non-magnetic atmosphere is horizontally uniform. With a given $\B$ the curl
-condition holds only if the field happens to have exactly the right tension everywhere. For a field taken from a moving
-simulation or an inversion it will not, so \emph{no pressure makes the atmosphere exactly static}. The mode finds the best
-compromise.
+condition holds only if the field happens to have exactly the right tension everywhere. There is no reason to expect
+this of a field taken from a moving simulation or an inversion, so in general \emph{no pressure makes the atmosphere exactly
+static}; for a particular field this has to be checked, not assumed. The mode looks for the best compromise.
 
 \subsection{The density loophole}
 The density is not fixed: with $T$ fixed, a pressure change changes it,
@@ -136,7 +141,9 @@ of $H$ in the starting state) makes each term a force in units of the local weig
 are many orders of magnitude larger, do not swamp the upper ones. Force balance hardly fixes the overall level of the pressure: for
 an ideal gas of fixed ionisation, multiplying $P$ everywhere by a constant leaves $\nabla u$ and $1/H$ unchanged, so only the
 Lorentz term $\J\times\B/P$ (and the weak pressure dependence of the ionisation) would notice. The level is therefore fixed
-separately, by keeping the mean of $u$ on the bottom plane at its starting (column-HSE) value.
+separately: each step is penalised for changing the mean of $u$ on the bottom plane, which keeps that mean close to its
+starting (column-HSE) value. It is a penalty, not an exact constraint, and the limit on the size of each step can shift it
+slightly.
 
 \section{The low-$\beta$ problem and the cut at $z_{\rm cut}$}
 The ratio $\beta=2\mu_0P/B^2$ compares gas and magnetic pressure. Deep down $\beta\gg1$: the gas dominates. Higher up
@@ -185,8 +192,9 @@ with the gas above the box approximated by an exponentially decreasing $\chi$ (a
 $\tau_{500}=1$ is the visible surface; since the opacity grows with density, any change of pressure moves it.
 
 \section{Summary}
-The mode removes, as far as a pressure change can, the force imbalance left by independent hydrostatic columns: the
-gradient part completely in principle, and part of the non-gradient part through the density. The rest, the buoyancy of
+The mode reduces, as far as a pressure change can, the force imbalance left by independent hydrostatic columns: mostly the
+gradient part, and through the density part of the non-gradient part. It minimises a residual; it does not guarantee an
+exact equilibrium. The rest, the buoyancy of
 the given temperature structure that the given field cannot hold up, requires the field to change. Above $z_{\rm cut}$ the
 atmosphere is only hydrostatic.
 \end{document}

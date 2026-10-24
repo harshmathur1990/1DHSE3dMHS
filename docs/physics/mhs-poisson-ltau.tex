@@ -107,12 +107,26 @@ one pressure unknown per point and one height per column, no exact solution).
 Consider a column with a strong, nearly vertical field among weak-field neighbours. Its magnetic pressure $B^2/2\mu_0$
 pushes outward on the neighbours, so at the same height it can hold its own against them with less gas pressure. Less gas
 pressure means lower density and lower opacity, so light escapes from deeper: the $\tau$ surfaces of this column lie
-lower. Horizontal balance enforces exactly this through the tilt term of Sect.~6. The depression of strong-field regions,
-seen in sunspots near the limb as the \textbf{Wilson depression}, therefore comes out of the force balance; it is not put
-in by hand. Conversely, hot granules have a high opacity, and their $\tau$ surfaces lie higher.
+lower. Horizontal balance favours exactly this through the tilt term of Sect.~6. The depression of strong-field regions,
+seen in sunspots near the limb as the \textbf{Wilson depression}, is therefore expected to come out of the force balance
+rather than being put in by hand, although for a given column the result also depends on its temperature structure and on
+how well the compromise balances the forces there. Conversely, hot granules have a high opacity, and their $\tau$ surfaces
+tend to lie higher.
 
-One quantity is not determined: all columns can be moved up or down together without changing any force. This global
-offset is fixed at the end by setting the average height of $\tau=1$ to zero.
+\section{What is determined, and what is not}
+\begin{itemize}
+\item \textbf{The global height.} All columns can be moved up or down together without changing any force. This offset is
+fixed at the end by setting the average height of $\tau=1$ to zero, a convention, not a measurement.
+\item \textbf{Above the cut} ($\log\tau<-4$ by default) the levels are not solved: their pressures and their distances to the
+cut level stay those of the hydrostatic columns in $\tau$, and the whole upper part moves rigidly with the cut level.
+\item \textbf{Below the cut} the pressures and the heights are determined only as well as the least-squares compromise
+determines them. A few strong-field columns are weakly constrained: their heights can change noticeably while $\Phi$
+barely changes.
+\item \textbf{The magnetic field is not made consistent with the new geometry.} The field values on the $\tau$ levels are kept,
+while the levels move in space. Nothing enforces $\nabla\cdot\B=0$ for the field at its new positions; the divergence-free
+construction of \code{full-mhs-z} (a field built as the curl of a potential on a fixed grid) does not carry over to a grid
+whose geometry is itself an unknown. The Lorentz force is simply computed from the field as it lies.
+\end{itemize}
 
 \section{How the minimum is found}
 $\Phi$ depends non-linearly on the unknowns (through the equation of state, the opacity in the heights and the field

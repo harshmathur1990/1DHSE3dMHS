@@ -139,11 +139,13 @@ For light leaving the Sun vertically, the optical depth of a point at height $z$
 \[
 \tau_{500}(z)=\tau_{\rm top}+\int_z^{z_{\rm top}}\chi_{500}(z')\,dz' .
 \]
-It is zero at the top of the atmosphere and grows downward. Light emitted at optical depth $\tau$ escapes with probability
-$e^{-\tau}$, so most of the light we see comes from around $\tau\approx1$ (a result known as the Eddington--Barbier
-relation: the emerging intensity is close to the emission at $\tau=1$). The height $z_{\tau1}(x,y)$ where $\tau_{500}=1$ is
-the ``visible surface'' of the Sun. Spectral lines form at fixed optical depth, so the $\tau$ scale is what an
-observation or an inversion actually probes. For a viewing angle with $\mu=\cos\theta$ the path is longer by $1/\mu$, and
+It grows downward. It would be zero at the very top of the atmosphere; at the top of our box it is $\tau_{\rm top}$,
+the optical depth of the gas above the box (see below), which is small but not zero. Light emitted at optical depth $\tau$
+escapes with probability $e^{-\tau}$, so most of the continuum light we see comes from around $\tau\approx1$ (the
+Eddington--Barbier relation: the emerging intensity is close to the emission at $\tau=1$). The height $z_{\tau1}(x,y)$
+where $\tau_{500}=1$ is therefore called the ``visible surface''. Spectral lines are formed over a \emph{range} of optical
+depths, described by their contribution functions, and different lines (and different parts of one line) sample different
+ranges; $\tau_{500}$ is the common reference scale on which inversions report them. For a viewing angle with $\mu=\cos\theta$ the path is longer by $1/\mu$, and
 $\tau_\mu=\tau/\mu$.
 
 \subsection{The gas above the box}

@@ -54,12 +54,16 @@ $\rho$ and $\chi$ depend on $T$ and $P$ through the equation of state (ideal gas
 Wittmann's code, tabulated in $(\ln T,\ln P)$). The equation is therefore integrated numerically, level by level from the
 top down.
 
-\section{Why no reference pressure is needed}
+\section{Why no externally supplied reference pressure is needed}
 On a height grid the pressure needs a prescribed value somewhere (an anchor), because a height coordinate says nothing
 about how much gas there is: the same temperature profile is equally hydrostatic at any pressure level. Optical depth is
-different: $\tau$ measures the mass above a point, and hydrostatic equilibrium says that the pressure \emph{is} the weight of
-that mass. Once $T(\tau)$ and the opacity of the gas are known, the pressure is fixed; there is nothing left to choose.
-The flip side is that the result is only as good as the opacity: if the $\tau$ scale of the input was computed with a
+different: $\tau$ measures the mass above a point, and hydrostatic equilibrium says that the pressure is the weight of
+that mass. Once $T(\tau)$ and the opacity of the gas are known, the pressure follows, and no reference value has to be
+supplied from outside.
+
+This does not mean the result is free of assumptions. Three modelling choices enter instead: the closure at the top of the
+column (next section), the treatment of sharp temperature jumps (Sect.~8) and, for the heights, the alignment of the
+columns (Sect.~9). And the result is only as good as the opacity: if the $\tau$ scale of the input was computed with a
 different opacity, the pressures differ in proportion.
 
 \section{The top of the column}
@@ -89,11 +93,16 @@ The opacity at 500\,nm comes mainly from the negative hydrogen ion H$^-$, which 
 steeply with temperature. So cool gas is far more transparent than hot gas. Suppose a hot layer (8000\,K) lies directly on
 a cool one (4000\,K) within one grid interval. With the linear interpolation, a whole tenth of a decade in $\tau$ is then
 filled with nearly transparent gas. By $dP/d\tau=g/\kappa$, collecting that much optical depth from transparent gas requires a
-huge amount of mass, and the pressure jumps by orders of magnitude within the interval. This is a consequence of
-representing a sharp temperature change by smooth interpolation on a coarse grid, not of the physics. The code therefore
-limits the rise of $\ln P$ to 5 per 0.1\,dex in $\tau$ (\code{cap\_per\_dex} = 50 per dex). This limit is far above the
-rises of normal stratifications, so they are untouched, and below a limited interval the pressure returns to the
-hydrostatic value within a few levels.
+huge amount of mass, and the pressure jumps by orders of magnitude within the interval. We regard this as mainly a
+consequence of representing a sharp temperature change by smooth interpolation on a coarse grid, though the true
+structure between two grid levels is not known. The code therefore limits the rise of $\ln P$ to 5 per 0.1\,dex in $\tau$
+(\code{cap\_per\_dex} = 50 per dex), a limit well above the rises of ordinary stratifications.
+
+Where the limit acts, the column is \emph{not} hydrostatic in that interval: the pressure is set to the limited value,
+and the integration of that interval stops there, so the rest of its geometric thickness is not added to the heights
+below (a known shortcoming of the present code). In the intervals below, the hydrostatic integration continues from the
+limited pressure; whether the pressure then comes back to what an exact integration would give depends on the column. The
+number of limited intervals is reported with every run, and results in those columns should be treated with care.
 
 \section{Where the columns sit: total-pressure alignment}
 \subsection{Magnetic pressure}
@@ -107,17 +116,22 @@ The first term acts like an additional pressure, the \textbf{magnetic pressure} 
 along curved field lines.
 
 \subsection{The alignment rule}
-Deep in the atmosphere neighbouring columns push on each other until the \emph{total} pressure,
-$P+B^2/2\mu_0$, is the same at the same height (if it were not, the higher total pressure would push the neighbour aside).
-The mode uses this as its alignment rule: it takes as reference the median, over all columns, of the total pressure on
-the deepest $\tau$ level, and shifts every column vertically so that its total pressure reaches the reference at one and
-the same height. A column whose deepest level has a total pressure below the reference is continued downward with the
-isothermal hydrostatic law $P\propto e^{-z/H}$ until it reaches it.
+If the field is nearly vertical and only weakly curved, its tension is small and the horizontal force balance between
+neighbouring columns reduces to equal \emph{total} pressure, $P+B^2/2\mu_0$, at the same height (a higher total pressure
+would push the neighbour aside). The mode uses this as an \textbf{approximate} alignment rule, applied at a single height
+and ignoring the tension: it takes as reference the median, over all columns, of the total pressure on the deepest $\tau$
+level, and shifts every column vertically so that its total pressure reaches the reference at one and the same height
+(interpolating $\ln(P+B^2/2\mu_0)$ linearly between levels). A column whose deepest level has a total pressure below the
+reference is extended downward, assuming that $\ln(P+B^2/2\mu_0)$ continues to rise with the \emph{gas} pressure scale height
+of that level, which is a further approximation. With \code{align = "none"} the columns are not aligned at all (each has
+$z=0$ at $\tau=1$).
 
 \subsection{Consequence: the Wilson depression}
-A column with a strong field carries part of the load by magnetic pressure, so it needs less gas pressure at the reference
-height. Less gas means a lower density, a lower opacity and a longer path to reach $\tau=1$: its $\tau=1$ surface lies
-deeper. Sunspots seen near the limb show exactly this, the Wilson depression.
+Under this rule a column with a strong field carries part of the load by magnetic pressure, so it needs less gas pressure
+at the reference height. Less gas means a lower density, a lower opacity and a longer path to reach $\tau=1$: its
+$\tau=1$ surface tends to lie deeper. This is the Wilson depression seen in sunspots near the limb. It is an expected
+tendency, not a guarantee: the outcome for a given column also depends on its temperature structure and on the
+approximations above.
 
 \subsection{The gauge}
 Finally all columns are shifted together so that the average height of $\tau=1$ is zero. This is only a choice of origin,
@@ -125,9 +139,12 @@ with no physical content.
 
 \section{What the result means}
 \begin{itemize}
-\item Every column is in hydrostatic equilibrium along $\tau$: the pressure on each $\tau$ level is the weight of the gas
-above it.
-\item The heights follow from the opacity; the field enters only through the alignment, via its magnetic pressure.
+\item Every column is hydrostatic along $\tau$, apart from the intervals where the pressure rise was limited (Sect.~8):
+there the pressure is not the weight of the gas above, and the heights below miss part of a layer.
+\item The heights follow from the opacity; their absolute value comes from the alignment (an approximation) and the gauge
+(a convention), not from a measurement. The field enters only through the alignment, via its magnetic pressure.
+\item The field values are taken as given on the $\tau$ levels wherever those levels end up in space; nothing makes the field
+divergence-free at its new positions.
 \item The columns are not in horizontal force balance with each other, and the tension of the field is ignored. Adding
 both is the purpose of \code{mhs-poisson-ltau}, which starts from this result.
 \end{itemize}

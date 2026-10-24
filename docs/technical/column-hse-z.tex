@@ -72,22 +72,28 @@ token ring. Groups:
 \begin{itemize}
 \item \code{/input}: copies of \code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z}, \code{x}, \code{y}, \code{z};
 \item \code{/output}: \code{Pgas}, \code{rho}, \code{ne}, \code{Pe}, \code{nH\_total}, \code{mu\_bar}, \code{colmass},
-\code{colmass\_trap}, \code{chi500}, \code{tau500}, \code{logtau500} (all $(x,y,z)$ in Julia, with \code{units});
+\code{colmass\_trap}, \code{chi500}, \code{tau500}, \code{logtau500} (h5py shape $(x,y,z)$ like the input, i.e.\ Julia
+$(z,y,x)$; each with \code{units});
 \item \code{/diagnostics}: \code{R\_x}, \code{R\_y}, \code{R\_z}, \code{eos\_status}, \code{column\_status},
 \code{tau\_top\_method}, \code{rk\_max\_substeps}, \code{z\_tau500\_1}, per-layer tables \code{layer\_pressure} and
 \code{layer\_residual}, \code{z};
 \item \code{/meta}: anchor, integrator, $\tau$ convention, EOS hash, config text and hash, git revision, layout.
 \end{itemize}
-Exit codes: 0 converged, 2 stalled, 3 EOS failure, 4 invalid input.
+Exit status: 0 when every column was integrated, 3 (\code{eos\_failure}) when any column left the EOS envelope (its
+outputs are NaN and its \code{column\_status} bit is set), 4 invalid input. The integration is direct, so there is no
+iterative convergence question; check \code{column\_status} (refinement, tolerance not met) and \code{tau\_top\_method}.
 
 \section{Verification and performance}
 \begin{itemize}
 \item Gate 2 (\code{test/test\_gate2.jl}): isothermal ideal gas to $10^{-12}$; $\ln T$-linear ideal gas against the
 analytic solution, fourth order under substep halving; $\tau$ closure and second order; Wittmann table on Bifrost
 columns; bitwise thread/rank invariance.
-\item Full production cube ($504\times504\times177$), 8 ranks $\times$ 32 threads on 4 nodes: 13\,s to read, integrate
-and diagnose, 4\,min to write the compressed output (11 fields plus diagnostics through the token ring); 2.3\,GB per
-rank. 22\,127 columns used substep refinement, none missed the tolerance.
+\item Full production cube ($504\times504\times177$), 24 Oct 2026, commit 13666b7, 8 ranks $\times$ 32 threads on 4
+nodes: 13\,s to read, integrate and diagnose, 4\,min to write the compressed output (11 fields plus diagnostics through the
+token ring); 2.3\,GB per rank. 22\,127 columns used substep refinement, none missed the tolerance. Log:
+\code{out/modes/column-hse-z.log} in the cluster worktree \code{MHS\_modes} (not in git).
+\item The bitwise invariance holds because no reduction enters the column values; it is a property of this mode, not of
+the iterative modes.
 \end{itemize}
 
 \section{Code map}
