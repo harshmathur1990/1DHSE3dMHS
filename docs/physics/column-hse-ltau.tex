@@ -1,0 +1,81 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{column-hse-ltau: hydrostatic columns on an optical-depth grid}{Physics of \code{run.mode = "column-hse-ltau"} (HSEMHS). 24 Oct 2026.}
+
+\section{What the mode does}
+Stokes inversions return the atmosphere on surfaces of constant optical depth, $\log_{10}\tau_{500}=$ const, not at fixed
+geometric heights. For such an atmosphere, $T(x,y,\tau)$ and $\B(x,y,\tau)$, this mode computes in every column the
+gas pressure $P(\tau)$, the density $\rho(\tau)$ and the \textbf{geometric height} $z(\tau)$ that hydrostatic
+equilibrium implies. As in \code{column-hse-z}, each column is independent; the only coupling between columns is the
+choice of their vertical offsets (Sect.~5). It is the starting state of \code{mhs-poisson-ltau}.
+
+\section{Quantities}
+\begin{tabular}{>{$}l<{$} p{11.2cm} l}
+\toprule
+\text{Symbol} & Meaning & Unit \\ \midrule
+\tau,\ \ln\tau & optical depth at 500\,nm; the grid is uniform in $\log_{10}\tau$ (production: $-8\ldots+1.4$, 0.1\,dex) & -- \\
+T,\ \B & temperature and magnetic field on the $\tau$ levels, from the input, fixed & K, T \\
+P,\ \rho & gas pressure and density, $\rho=\rho(T,P)$ (EOS) & Pa, kg\,m$^{-3}$ \\
+\chi & extinction coefficient at 500\,nm, $\chi=\chi(T,P)$ (EOS table) & m$^{-1}$ \\
+\kappa & extinction per unit mass, $\chi/\rho$ & m$^2$\,kg$^{-1}$ \\
+z(\tau) & geometric height of a $\tau$ level in a column & m \\
+g & gravity, 274 & m\,s$^{-2}$ \\
+\bottomrule
+\end{tabular}
+
+\section{The equations}
+Hydrostatic equilibrium $dP/dz=-\rho g$ and the definition of optical depth $d\tau=-\chi\,dz$ combine into equations
+along $\ln\tau$:
+\[
+\boxed{\;\frac{d\ln P}{d\ln\tau}=\frac{g\,\tau\,\rho}{\chi\,P}=\frac{g\,\tau}{\kappa\,P},\qquad
+\frac{dz}{d\ln\tau}=-\frac{\tau}{\chi}\;}
+\]
+The first is the classical stellar-atmosphere form $dP/d\tau=g/\kappa$: the pressure at a given optical depth is the
+weight of the column above it, $P\approx g\,\tau/\bar\kappa$. The second turns the optical-depth scale into a height
+scale. Both right-hand sides depend on $P$ through the EOS, so they are integrated together, down from the top level.
+
+\textbf{Top boundary.} Above the top level $\kappa$ is taken as constant, so $P_{\rm top}=g\,\tau_{\rm top}/\kappa(T_{\rm top},P_{\rm top})$,
+solved as a fixed point in $P_{\rm top}$. Since the top level is at $\tau=10^{-8}$, an error in this assumption changes
+$P$ only near the top: it decays as $\tau$ grows and the integrated weight dominates.
+
+\textbf{No anchor is needed.} Unlike the height grid, the pressure scale is fixed by $\tau$ itself (the mass above a
+given $\tau$), so no reference pressure is supplied. What $\tau$ does \emph{not} fix is the absolute height of a column:
+$z$ is known only up to a constant per column (Sect.~5).
+
+\section{Between grid levels: hot gas over cool gas}
+Inside each 0.1\,dex interval $\ln T$ is taken linear in $\log_{10}\tau$, and the equations are integrated with adaptive
+second-order (Heun) substeps that change $\ln P$ by at most 0.05. Where a hot layer lies directly on top of a much
+cooler one (for example 8200\,K over 4200\,K within 0.1\,dex), the opacity of the cool gas is orders of magnitude lower.
+The linear interpolation then puts a whole 0.1\,dex of nearly transparent gas below the hot layer, and $dP/d\tau=g/\kappa$
+makes the pressure jump: in about 1\,\% of the columns $\ln P$ would rise by $\sim$20 within one interval
+($P\to6\times10^8$\,Pa) and push $\tau=1$ a megametre down. This is an artefact of representing a sharp temperature jump on a
+coarse $\tau$ grid, not physics. The rise of $\ln P$ is therefore capped at \code{cap\_per\_dex} = 50 per dex (5 per 0.1\,dex),
+which still allows the physical rises (up to 5 per 0.1\,dex in 99\,\% of the columns). Below a capped interval the pressure
+returns to $g\tau/\kappa$ within a few levels. On the production cube 2585 of the $\sim2.4\times10^7$ intervals are capped.
+
+\section{Aligning the columns}
+Each column's height scale has an arbitrary zero. The mode chooses the offsets so that the \textbf{total pressure}
+$P+B^2/2\mu_0$ is equal in all columns at one height: the global median of the total pressure on the bottom $\tau$
+level. The idea is lateral pressure balance at depth: deep down, flux tubes and their surroundings must push equally
+hard on each other, so a strong-field column, whose magnetic pressure carries part of the load, has a lower gas
+pressure at the same height and sits deeper (Wilson depression). Where a column's bottom total pressure is below the
+reference, it is extrapolated hydrostatically below its last level (8192 of 16384 columns in a test crop; by
+construction about half). With \code{align = "none"} every column keeps $z=0$ at $\tau=1$.
+
+Finally all heights are shifted together so that the mean height of $\tau=1$ is zero (a global gauge; it has no
+physical content).
+
+\section{What the result means}
+\begin{itemize}
+\item Every column is hydrostatic in $\tau$. The pressure on each $\tau$ level is essentially the weight of the gas above,
+independent of the neighbours. Horizontal force balance is not imposed.
+\item The heights come from the opacity: where the gas is opaque, a $\Delta\log\tau$ step is geometrically thin, where it
+is transparent the step is thick. Hot granules (high H$^-$ opacity) therefore have their $\tau=1$ surface high, cool
+lanes and strong-field columns (evacuated by magnetic pressure) low.
+\item Production cube (\code{IO/input-mhs-ltau.nc}, $504\times504\times95$ levels): $P(\tau=1)$ median 13.2\,kPa;
+$z(\tau=1)$ percentiles 1/50/99 $=-91$/$-41$/$+293$\,km before the gauge; the $+293$\,km tail is hot granules, strong-field columns
+are depressed. Levels near $\tau=10^{-8}$ lie at tens of Mm in the hot columns, as hydrostatics requires.
+\item The magnetic field enters only through the alignment (magnetic pressure). Its tension and the horizontal force
+balance between columns are the subject of \code{mhs-poisson-ltau}.
+\end{itemize}
+\end{document}

@@ -1,0 +1,96 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{column-hse-z: hydrostatic columns on a height grid}{Physics of \code{run.mode = "column-hse-z"} (HSEMHS). 24 Oct 2026.}
+
+\section{What the mode does}
+Given the temperature $T(x,y,z)$ of a solar atmosphere on a geometric-height grid, the mode computes the gas pressure
+$P$, the density $\rho$, the electron density and the optical depth $\tau_{500}$ that every vertical column would have
+if it were in \textbf{hydrostatic equilibrium on its own}. Each column is independent of its neighbours: no horizontal
+force balance is attempted and the magnetic field plays no role. The result is the non-magnetic product of the code,
+the reference against which the magnetic modes are measured, and the starting state of \code{mhs-poisson-z} and
+\code{full-mhs-z}.
+
+\section{Quantities}
+\begin{tabular}{>{$}l<{$} p{11.2cm} l}
+\toprule
+\text{Symbol} & Meaning & Unit \\ \midrule
+x,\,y,\,z & horizontal coordinates and height; $z$ is given top first (strictly decreasing) & m \\
+T & temperature, from the input, \textbf{never changed} & K \\
+P,\ u & gas pressure; the code integrates $u=\ln(P/1\,{\rm Pa})$ & Pa, -- \\
+\rho & mass density, $\rho=\rho(T,P)$ from the equation of state (EOS) & kg\,m$^{-3}$ \\
+n_e,\ \bar\mu & electron density; mean molecular weight & m$^{-3}$, -- \\
+g & surface gravity (274 for the Sun; from the file attribute \code{gravity\_m\_s2}) & m\,s$^{-2}$ \\
+H & pressure scale height $P/(\rho g)=k_BT/(\bar\mu m_{\rm H}g)$ & m \\
+P_{\rm ref} & pressure fixed at the anchor (bottom plane by default) & Pa \\
+\chi_{500} & extinction coefficient at 500\,nm (absorption plus scattering) & m$^{-1}$ \\
+\tau_{500} & optical depth at 500\,nm, counted downward from the top & -- \\
+m & column mass above a point & kg\,m$^{-2}$ \\
+\bottomrule
+\end{tabular}
+
+\section{The equation}
+In a static, non-magnetic atmosphere the vertical force balance on a gas parcel is
+\[
+\frac{dP}{dz}=-\rho g .
+\]
+With $\rho=\rho(T,P)$ and $T(z)$ given, this is an ordinary differential equation along each column. Written for
+$u=\ln P$,
+\[
+\boxed{\;\frac{du}{dz}=-\frac{g\,\rho\big(T(z),e^{u}\big)}{e^{u}}=-\frac{1}{H(T,P)}\;}
+\]
+For an ideal gas of fixed composition and ionisation, $H$ depends on $T$ only and the solution is the familiar
+exponential atmosphere $P(z)=P_{\rm ref}\exp\!\big(-\int dz/H\big)$. In the Sun $\bar\mu$ changes with ionisation and
+molecule formation, so $H$ depends on $P$ too; that is why the equation is integrated numerically with a full EOS. In
+the photosphere $H\approx100$--150\,km; over the 3.5\,Mm of the production box the pressure falls by about eight orders of
+magnitude (median $10^{5.0}$\,Pa at the bottom, $10^{-3.1}$\,Pa at the top, with a spread of 5.5\,dex between columns
+there), which is why $u=\ln P$ rather than $P$ is integrated.
+
+The column mass is integrated along with $u$: $dm/dz=-\rho$, so that $P(z)-P_{\rm top}=g\,m(z)$ can be checked.
+
+\section{Where the pressure is fixed (the anchor)}
+A first-order equation needs one value per column. The default is a \textbf{bottom anchor}: the same pressure
+$P_{\rm ref}$ at the lowest grid level in every column, and integration upward. For the production input
+(\code{IO/input-mhs-hse.nc}, Bifrost \code{en024048\_hion} snapshot 385 cropped to $-0.49\ldots+2.98$\,Mm)
+$P_{\rm ref}=1.035\times10^5$\,Pa, the median Bifrost pressure on that plane (spread 0.08\,dex). Alternatives are a top
+anchor (default 0.1\,Pa) and an anchor at a chosen height $z_{\rm ref}$ (integrated both ways).
+
+Why the bottom: the deep layers are where the pressure is best known and least sensitive to the details above. A top
+anchor makes the photospheric pressure depend on the full chromospheric and transition-region temperature structure,
+which differs strongly from column to column.
+
+\section{Equation of state and opacity}
+$\rho$, $n_e$ and $\chi_{500}$ come from a table built with Wittmann's LTE equation of state (solar composition,
+H$_2$ included, a Saha branch for H and He above a switch temperature) and the continuum opacity at 5000\,\AA,
+interpolated bicubically in $(\ln T,\ln P)$. The table \code{cache/eos\_table\_fullz.h5} covers 2172\,K--1.78\,MK and
+$10^{-13}$--$10^{15}$\,Pa. One EOS state supplies $\rho$, $n_e$, the electron pressure and $\chi_{500}$, so they are
+consistent with each other.
+
+\section{Optical depth}
+With $P(z)$ and $T(z)$ known, $\chi_{500}$ is known at every level and
+\[
+\tau_{500}(z)=\tau_{\rm top}+\int_{z}^{z_{\rm top}}\chi_{500}\,dz' ,
+\]
+integrated downward with the trapezoid rule. $\tau_{\rm top}$ accounts for the gas above the box. The default closure
+(\code{exp\_tail}) assumes that $\chi$ keeps falling exponentially with the scale height of the top two levels,
+$H_\chi=(z_1-z_2)/\ln(\chi_2/\chi_1)$, giving $\tau_{\rm top}=\chi_1H_\chi$. Where that is not meaningful ($\chi$ not
+falling, or $H_\chi>5000$\,km) half a cell, $\tfrac12\chi_1(z_1-z_2)$, is used and the column is flagged. The height of
+$\tau_{500}=1$, $z_{\tau1}(x,y)$, is the ``visible surface'': spectral lines form at fixed $\tau$, so this is what an
+inversion sees.
+
+\section{What the result means, and what it does not}
+\begin{itemize}
+\item Each column is exactly hydrostatic. \textbf{Horizontally the atmosphere is not in balance}: neighbouring columns
+with different temperatures have different $P(z)$, so there are horizontal pressure gradients that nothing balances.
+The mode reports them as the horizontal force residual $R_x,R_y$ (with $B=0$), and labels the output
+\code{vertical\_hse\_only}.
+\item A non-magnetic atmosphere can be in full 3-D static balance only if it is horizontally uniform (the curl of the
+force balance requires $\partial_x\rho=\partial_y\rho=0$). A structured atmosphere in true 3-D balance needs the
+Lorentz force, which is what the \code{mhs-*} and \code{full-mhs-z} modes add.
+\item The temperature is never altered.
+\end{itemize}
+
+\section{Typical result}
+Production input, full cube ($504\times504\times177$): $z_{\tau1}$ has percentiles 1/50/99 of $-29$ / $64$ / $127$\,km.
+The column-to-column scatter of $z_{\tau1}$ is set entirely by the temperature structure, because every column carries
+the same bottom pressure.
+\end{document}

@@ -1,0 +1,122 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{mhs-poisson-z: pressure-only magnetohydrostatic correction (height grid)}{Physics of \code{run.mode = "mhs-poisson-z"} (HSEMHS). 24 Oct 2026.}
+
+\section{What the mode does and why}
+The full magnetohydrostatic solve (\code{full-mhs-z}) changes both the pressure and the magnetic field and needs a day
+on four nodes for the Bifrost cube. Inside a Stokes inversion, where the atmosphere changes at every iteration, that is
+far too slow. The FIRTEZ-dz inversion code (Borrero et al.) instead keeps $T$ and $\B$ as given and corrects
+\textbf{only the pressure}, by solving a Poisson-type equation. This mode does the same on our grid with our equation of
+state: it starts from \code{column-hse-z}, keeps $T$ and $\B$ fixed, and finds the pressure that balances gravity and
+the given Lorentz force as well as possible. It takes minutes.
+
+\section{Quantities}
+\begin{tabular}{>{$}l<{$} p{11.0cm} l}
+\toprule
+\text{Symbol} & Meaning & Unit \\ \midrule
+T,\ \B & temperature and magnetic field from the input, \textbf{both fixed} & K, T \\
+\J,\ \Lv & current density $\nabla\times\B/\mu_0$; Lorentz force $\Lv=\J\times\B$ (fixed) & A\,m$^{-2}$, N\,m$^{-3}$ \\
+P,\ u & gas pressure, the only unknown; solved as $u=\ln P$ & Pa, -- \\
+\rho & $\rho(T,P)$ from the EOS table & kg\,m$^{-3}$ \\
+H,\ \bar H & scale height $P/(\rho g)$; its layer median in the starting state & m \\
+\beta & plasma beta $2\mu_0P/B^2$ & -- \\
+z_{\rm cut} & top of the solved region (production 1\,Mm) & m \\
+\bottomrule
+\end{tabular}
+
+\section{The equation}
+A static atmosphere has zero net force per unit volume,
+\[
+\F\equiv-\nabla P+\Lv-\rho g\,\zh=0 .
+\]
+With $\B$ fixed, $\Lv$ is a given force field, and $\rho$ depends on $P$ only through the EOS. Taking the divergence,
+\[
+\nabla^2P=\nabla\cdot\Lv-g\,\partial_z\rho ,
+\]
+a Poisson equation for $P$; hence the name. In a horizontally periodic box it separates into Fourier modes, each a
+one-dimensional problem in $z$, which is what makes it fast.
+
+\section{What a pressure correction can and cannot do}
+Any force field splits uniquely into a \textbf{gradient part} $-\nabla\phi$ (curl-free) and a \textbf{non-gradient part}
+$\mathbf S$ (divergence-free, orthogonal to every gradient), with $\int|\F|^2=\int|\nabla\phi|^2+\int|\mathbf S|^2$.
+A pressure change adds a pure gradient, $-\nabla\delta P$. If $\rho$ were fixed, it could remove the gradient part
+exactly and never touch $\mathbf S$.
+
+Which forces are non-gradient? The curl of the force balance is
+\[
+\nabla\times\F=\nabla\times\Lv-g\,(\partial_y\rho,\,-\partial_x\rho,\,0),
+\]
+so static balance needs the \textbf{curl condition} $\nabla\times(\J\times\B)=g(\partial_y\rho,-\partial_x\rho,0)$: the
+magnetic tension must hold up every horizontal density contrast. Gravity is a gradient only if $\rho$ is horizontally
+uniform; buoyancy of hot granules next to cool lanes is non-gradient. Without a field the only static atmosphere is
+horizontally uniform. With Bifrost's $T$ and fixed $\B$ the curl condition does not hold, so \emph{no pressure can make
+the atmosphere exactly static}.
+
+\textbf{The density loophole.} $\rho$ is not fixed: with $T$ fixed, $\delta\rho=\rho\,(\partial\ln\rho/\partial\ln P)_T\,\delta P/P$,
+and $\delta(\nabla\times\F)=-g\nabla\times(\delta\rho\,\zh)$. By changing the pressure, and hence the density, the
+correction can shrink horizontal density contrasts and part of $\mathbf S$, but not the part due to the temperature
+contrast at fixed pressure or to the tension of $\B$. Measured on the production cube (original script, 23 Oct): column
+HSE is 80--90\,\% gradient error in the photosphere; the Poisson correction cut the gradient part 3.5--5 times and,
+through the density, the non-gradient part by 1.4--3.2 between 0 and 0.75\,Mm.
+
+\section{The quantity minimised}
+The force is divided by $P$ and the unknown is $u=\ln P$:
+\[
+\R\equiv\frac{\F}{P}=-\nabla u-\frac{\zh}{H(T,P)}+\frac{\Lv}{P},\qquad
+\Phi(u)=\sum_{\text{centres}}w\,\bar H^2\big(R_x^2+R_y^2\big)+\sum_{z\text{-faces}}h\,\bar H^2R_z^2 .
+\]
+\begin{itemize}
+\item $P=e^u$ stays positive across the many decades in the box.
+\item $\R$ is a \emph{relative} imbalance: minimising $|\F|^2$ itself rewards lowering $P$ (the first version drove $P$
+toward zero in 637\,000 cells).
+\item $\R\bar H\approx\F/(\rho g)$: the imbalance is measured in units of the weight of the gas, layer by layer, so the
+dense deep layers do not swamp the upper ones. $w,h$ are the cell heights.
+\item Without $\Lv$, $R_z=0$ is $du/dz=-1/H$, i.e.\ column HSE.
+\end{itemize}
+The mean of $\ln P$ on the bottom plane is held at its column-HSE value: the overall pressure level is set by the input,
+not by the correction.
+
+\section{The low-$\beta$ problem and $z_{\rm cut}$}
+Where $\beta\ll1$ the term $\Lv/P$ dominates. Static balance there requires a force-free field, which a snapshot of a
+moving simulation is not; with $\B$ fixed, the only way to balance a large Lorentz force is a large pressure gradient.
+Because $\partial P/\partial z$ couples the layers, this inflates the pressure in the photosphere too: solved up to
+3\,Mm the median $\ln P$ rose by 3.2 (a factor 25); with the Lorentz force switched off nothing happened. The force
+balance is therefore solved only below $z_{\rm cut}=1$\,Mm (median $\beta\approx8$); above it each column is integrated
+hydrostatically from the solved pressure at $z_{\rm cut}$. FIRTEZ makes the same choice in a softer way
+(\code{LIMIT\_MAGTERM}). Above $z_{\rm cut}$ the atmosphere is hydrostatic, \textbf{not} magnetohydrostatic.
+
+\section{Optical depth}
+As in \code{column-hse-z}: $\tau_{500}$ is integrated down from the top of the box with the \code{exp\_tail} closure,
+and $z(\tau_{500}=1)$ is reported per column.
+
+\section{Results on the production cube}
+Mode run of 24 Oct (8 ranks on 4 nodes, 4.7\,min, column HSE included): $\ln(P/P_{\rm colHSE})$ below $z_{\rm cut}$ has
+percentiles 1/50/99 $=-0.54/+0.06/+0.99$; $z(\tau_{500}=1)$ percentiles 1/50/99 $=-5/69/125$\,km against $-29/64/127$\,km
+in column HSE. The objective fell to 8\,\% of its starting value; the run used the then step limit (60) while still
+improving by $2\times10^{-4}$ per step. Force imbalance per layer from the original script (23 Oct, same physics), RMS
+of $|\F|$ over the layer median of $\rho g$:
+\begin{center}
+\begin{tabular}{rcccc}
+\toprule
+$z$ [Mm] & column HSE & Poisson correction & Bifrost snapshot & \code{full-mhs-z} (M5h, iteration 132) \\ \midrule
+$-0.5$ & 0.11 & \textbf{0.06} & 0.11 & 0.09 \\
+$0.0$  & 0.33 & \textbf{0.13} & 0.29 & 0.27 \\
+$0.25$ & 0.23 & \textbf{0.07} & 0.12 & 0.19 \\
+$0.5$  & 0.22 & \textbf{0.06} & 0.12 & 0.18 \\
+$0.75$ & 0.28 & \textbf{0.09} & 0.21 & 0.22 \\
+$1.0$  & 0.66 & \textbf{0.34} & 0.49 & 0.51 \\
+\bottomrule
+\end{tabular}
+\end{center}
+This diagnostic uses the same discretisation the Poisson step minimises, which favours it; \code{full-mhs-z} balances
+forces on its own staggered grid.
+
+\section{What it means}
+\begin{itemize}
+\item Where photospheric lines form ($z\lesssim0.5$\,Mm) the correction removes most of the force imbalance of column
+HSE, below that of the Bifrost snapshot itself, and barely moves the $\tau$ scale.
+\item The remaining imbalance is the buoyancy of the fixed temperature structure that the fixed field cannot hold up.
+Removing it needs $\B$ (or $T$) to change: \code{full-mhs-z}.
+\item $z_{\rm cut}$ is a physical choice: where the fixed field stops being trusted to be in equilibrium.
+\end{itemize}
+\end{document}

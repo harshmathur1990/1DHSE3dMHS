@@ -1,0 +1,103 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{full-mhs-z: implementation}{Technical notes on \code{run.mode = "full-mhs-z"} (the M5 joint Gauss--Newton driver, M5i defaults). HSEMHS, 24 Oct 2026.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/full-mhs-z.toml
+\end{verbatim}}
+\code{scripts/run.jl} validates the config, exports the M5 switches as environment variables (\code{MHS\_INPUT},
+\code{MHS\_EOS\_TABLE}, \code{MHS\_SIGMA\_REL}, \code{MHS\_TRUST}, \code{MHS\_STOP}, \code{MHS\_PHI\_RTOL}; they are
+read as constants when the driver is included), includes \code{scripts/m5\_bifrost/m5h\_fullres.jl} and calls
+\code{main([output, run, wall, ckpt, init\_iter, restart])}. The driver can still be run directly with the same arguments.
+
+\begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
+\toprule
+Key & Default (M5i) & Meaning \\ \midrule
+\code{input.file} & required & height-grid cube (production \code{IO/input-mhs-hse-fullz.nc}, $504\times504\times496$) \\
+\code{run.output} & required & run directory \\
+\code{full\_mhs.run} & \code{run} & \code{run}: native grid; \code{smoke}: $42\times42$, every second level, every code path in minutes \\
+\code{full\_mhs.wall\_hours}, \code{ckpt\_hours} & 24, 1 & wall cap; checkpoint interval \\
+\code{full\_mhs.init\_iter} & 3000 & CG iterations of the field initialisation \\
+\code{full\_mhs.restart} & \code{""} & any saved file (\code{init.h5}, \code{atmosphere\_A/B.h5}, final) \\
+\code{full\_mhs.sigma\_rel} & 0 & $\sigma_B=\sigma_{\rm rel}|\Bo|\oplus5$\,G (M5h: 0.05) \\
+\code{full\_mhs.trust\_region} & false & false: line search; true: trust region (M5h) \\
+\code{full\_mhs.stop}, \code{phi\_rtol} & \code{phi}, $10^{-6}$ & $|\Delta\Phi|/\Phi<$ rtol on 3 consecutive accepted steps; \code{dz}: $\max|\Delta z_{\tau1}|<1$\,mm \\
+\bottomrule
+\end{tabularx}
+
+\section{Problem setup (\code{bif\_setup.jl}, \code{bif\_problem})}
+Reads $T$, $\Bo$, coordinates and the attributes \code{P\_ref\_Pa}, \code{period\_x\_m}, \code{period\_y\_m},
+\code{gravity\_m\_s2}; \code{init\_parallel} (2-D blocks); periodic \code{Grid}; $\sigma$ per component from
+\code{sigma\_synth}; \code{SMHSProblem} with $\lambda_F=10^{-4}$, $\lambda_Q=10^{-3}$, $\lambda_S=10^{-3}$, $\lambda_U=0$, data on
+faces. State $x=(v,\tilde A_x,\tilde A_y,\tilde A_z,\bar b)$:
+$u=v-\langle v\rangle_{\rm bottom}+\ln P_{\rm ref}$ at centres (the gauge as a parameterisation), $\mathbf A=A_{\rm ref}\tilde{\mathbf A}$
+on edges ($A_{\rm ref}$ = median $\sigma$ $\times$ mean spacing), $\B=\nabla\times\mathbf A+\bar b\zh$ on faces, $\bar b$ a
+scalar stored on rank 0.
+\begin{itemize}
+\item \code{init\_state}: \code{staggered\_hse!}, the exact discrete vertical balance
+$(P_k-P_{k+1})/\Delta z_{k+1/2}+g\sqrt{\rho_k\rho_{k+1}}=0$ upward from $P_{\rm ref}$ (Brent per level); $\bar b=\langle B_{z,\rm obs}\rangle$.
+\item \code{set\_scales!}: $S=\max(\rho_0g,\,0.01\,\mathrm{median}_k\rho_0g)$ at centres, $S_f^2=S_aS_b$ on faces; $\Phi_Q$ layer
+weights $(B_{\rm ref}/S)^2$ from layer medians. Fixed for the solve.
+\item \code{init\_A!}: $(\tilde{\mathbf A},\bar b)$ fitted to $\Bo$ with $v$ frozen ($\Phi_B+\Phi_S$ only, quadratic): CG on the
+normal equations with $Qp=\nabla\Phi(p)-\nabla\Phi(0)$; converges to the minimum-norm solution in the curl gauge null space.
+\item Pressure floor \code{ulo} $=u_0-3$.
+\end{itemize}
+
+\section{Objective (\code{MHSStaggered.jl}, \code{objective!}, \code{gradient!})}
+$\Phi=\Phi_F+\Phi_B+\Phi_S+\Phi_Q$ (+ optional $\Phi_U$, $\Phi_N$, off):
+$\Phi_F=(\lambda_F/N_F)\sum_fw_f|R_f|^2/S_f^2$ on $x$- and $y$-faces of layers $2\ldots N_z-1$ and the interior $z$-faces;
+$\Phi_B=(1/N_B)\sum((B_f-B_{{\rm obs},f})/\sigma_f)^2$ on faces ($\Bo$ and $1/\sigma^2$ interpolated to faces);
+$\Phi_S=(\lambda_S/N)\sum w\sum_a(h_a^2\partial^2_a\delta B)^2/\sigma^2$ at centres;
+$\Phi_Q=(\lambda_F\lambda_Q/N_F)\sum_ew_e\sum_a(B_{\rm ref}\tfrac14\delta_a^2J_e/S_e)^2$ on edges. On an $x$-face the
+force uses $\partial_xP$ from the two centres, $J_y,J_z$ averaged from the nearest edges, $B_y,B_z$ from the four nearest
+faces; on $z$-faces $\rho=\sqrt{\rho_k\rho_{k+1}}$. The gradient is a hand-written adjoint of every stencil, including the
+EOS term $\partial\ln\rho/\partial\ln P|_T$ from the table.
+
+\section{Solver (\code{MHSJointGN.jl}, \code{joint\_gn\_solve!})}
+One quadratic model per iteration at the accepted base state:
+\begin{enumerate}
+\item PCG (Steihaug--Toint) on $(H_{\rm GN}+\mu D)\,y=-g$, $H_{\rm GN}$ products by \code{gn\_hvp!} (linearised forward
+plus adjoint), $D$ the preconditioner diagonal (\code{gn\_diagonal!}: exact GN diagonal for $v$, per-layer Hutchinson
+estimates for $\tilde{\mathbf A}$), multiplied by \code{block\_scale} $=(100,1,1)$ for $(v,\tilde{\mathbf A},\bar b)$;
+pressure nodes at the floor with an outward gradient fixed; at most 100 iterations, relative residual $10^{-2}$.
+\item Candidate: the pressure part re-centred on the anchor and projected onto the box $\max(u_{\rm lo}-u,-5)\le\delta u\le5$;
+the field part unconstrained.
+\item Projected-Cauchy safeguard along $-D^{-1}g$ (exact model minimiser without a trust region); used if the GN step
+achieves less than 0.1 of the Cauchy model decrease.
+\item Trial in a separate workspace. M5i (\code{trust\_region = false}): accept if $\Phi$ decreases (actual/predicted
+$>10^{-4}$, floor respected), otherwise halve along the same direction (up to 30 times); $\mu$ fixed at $10^{-6}$ (gauge
+null space only). M5h: trust radius in the $D$-norm, $\mu$ and $\Delta$ adapted from the ratio.
+\end{enumerate}
+The curl-free (gauge) directions of $\tilde{\mathbf A}$ carry no curvature; $\mu D$ keeps the system definite and gauge
+components change neither $\B$ nor $\Phi$.
+
+\section{Driver (\code{m5h\_fullres.jl})}
+After every accepted step (callback): $z(\tau_{500}{=}1)$ in every column from the current $P$
+(\code{tau1\_heights!}, \code{exp\_tail}), a row in \code{history.csv} ($\Phi$ and its terms, $dz_{\max}$, force and data
+statistics, step data), the stop test, checkpoints every \code{ckpt\_hours} alternating \code{atmosphere\_A/B.h5}
+(written to \code{.tmp}, then renamed), a \code{STOP} file check and the wall cap. Every candidate goes to
+\code{candidates.csv}. Saved solver arrays are global owned values (no halos), so a restart may use another rank count;
+on restart the $z(\tau{=}1)$ map is recomputed and checked against the saved one (flags exact, heights to $10^{-6}$\,m).
+Any error writes \code{atmosphere\_crash.h5} (single rank) or aborts all ranks.
+
+\section{Parallelisation}
+2-D $(x,y)$ blocks with one halo layer (\code{exchange\_halos!}), \code{THREAD\_FUNNELED}, threads inside each block.
+Global sums use a fixed reduction order (row partials, \code{reduce\_rows}), so gradients and objectives are
+reproducible; tests check thread and rank invariance of the staggered gradient. Output is cooperative (rank 0 creates the
+file, then each rank writes its hyperslab in turn); no parallel HDF5. Multi-node: MPICH via \code{mpiexecjl} with the ssh
+launcher, each rank wrapped in \code{mhs\_rank.sh} (libfabric TCP on the IPoIB interface, node-local Julia), see
+\code{config/modes/README.md}.
+
+\section{Verification and performance}
+\begin{itemize}
+\item Test suite: staggered gradient against finite differences (ideal gas, Wittmann table), forward/adjoint allocations,
+thread and rank invariance, the exact discrete HSE initialiser, Gate C1b (uniform $\B$), C2 (potential field), C3
+(checkerboard modes), and the M5--M5g solver tests (projection, block termination, trust ball, barrier and face
+bounds).
+\item Through \code{run.jl}: smoke run on 4 ranks ($42\times42\times249$) completed 3 accepted steps, checkpoints and the final
+save; the log confirmed $\sigma_B=5$\,G uniform, no trust region, $\Phi$ stop at $10^{-6}$.
+\item Production M5i (22--23 Oct): 24 ranks $\times$ 16 threads on 4 nodes, $\approx5\times10^8$ unknowns; 112 accepted steps,
+$\Phi=7.88\times10^3$ when stopped on request. M5h (trust region, 5\,\% $\sigma$) ran to its 24\,h wall cap.
+\end{itemize}
+\end{document}

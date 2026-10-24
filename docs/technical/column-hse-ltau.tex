@@ -1,0 +1,79 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{column-hse-ltau: implementation}{Technical notes on \code{run.mode = "column-hse-ltau"}. HSEMHS, 24 Oct 2026.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/column-hse-ltau.toml
+\end{verbatim}}
+Driver \code{run\_column\_hse\_ltau} (\code{src/RunModes.jl}); physics in \code{src/PoissonTau.jl}; MPI layer in
+\code{src/Slab.jl}.
+
+\begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
+\toprule
+Key & Default & Meaning \\ \midrule
+\code{input.file} & required & $\tau$-grid cube (layout below) \\
+\code{input.x}, \code{input.y} & \code{x}, \code{y} & names of the coordinate datasets \\
+\code{physics.g} & \code{"from\_input"} & number, or the file attribute \code{gravity\_m\_s2} (error if absent) \\
+\code{eos.table\_file} & \code{cache/}\allowbreak\code{eos\_table\_fullz.h5} & EOS and opacity table \\
+\code{tau\_grid.cap\_per\_dex} & 50 & largest rise of $\ln P$ per dex in $\tau$ \\
+\code{tau\_grid.align} & \code{ptot} & \code{ptot}: equal $P+B^2/2\mu_0$ at one height; \code{none}: $z(\tau{=}1)=0$ per column \\
+\code{run.output}, \code{run.overwrite} & required, false & output file \\
+\bottomrule
+\end{tabularx}
+
+\section{Input layout}
+\code{IO/input-mhs-ltau.nc}: \code{log10tau500} ($n_\tau$, increasing: top level first), \code{x} ($N_x$), \code{y} ($N_y$),
+\code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z} with h5py shape $(x,y,\tau)$, i.e.\ Julia $(\tau,y,x)$; SI
+(a \code{units} attribute on \code{x}, \code{y} is honoured). The reader also accepts the \code{make\_tau\_input.py} test
+layout (\code{logtau500}, \code{x\_m}, \code{y\_m}, \code{T}, \code{Bx}\dots, h5py $(\tau,y,x)$). Each rank reads only
+its $x$ hyperslab \code{f[name][:, :, i0:i1]}. Missing \code{x}/\code{y}, length mismatches, a non-increasing
+$\log\tau$ or a non-positive grid spacing are rejected as \code{invalid\_input}.
+
+\section{Algorithm}
+\begin{enumerate}
+\item \code{hse\_tau!} per column, top down. Top: fixed point $\ln P\leftarrow\frac12\ln P+\frac12\ln(g\tau_1\rho/\chi)$
+from $P=100$\,Pa to $10^{-10}$. Between levels $a=\ln\tau_k$, $b=\ln\tau_{k+1}$: Heun (explicit trapezoid) substeps of
+$(\ln P,z)$ with $f=g\tau\rho/(\chi P)$, $g_z=-\tau/\chi$ and $\ln T$ linear in $\ln\tau$; step $h=\min(b-x,\,0.05/|f|)$.
+Cap: if $\ln P$ would exceed $\ln P_k+$\code{cap\_per\_dex}$(\log\tau_{k+1}-\log\tau_k)$, or the table edge
+(\code{tab.Y[end]} $-1$), or $f$ is not finite, the level gets the capped value and the interval is counted. $z$ is
+shifted so that $z(\log\tau=0)=0$ (linear in $\log\tau$, \code{interp\_lt}).
+\item \code{align\_ptot!}: reference $\ln(P+B^2/2\mu_0)$ = global median over the bottom level (exact distributed median);
+per column the height where the total pressure crosses it (linear between levels, or hydrostatic extrapolation
+$z_{\rm bot}-\Delta\ln P_t/(g\rho/P)$ below the bottom), subtracted.
+\item \code{gauge!}: subtract the global mean of $z(\log\tau=0)$.
+\item $\rho$ from the EOS at every node; output.
+\end{enumerate}
+Any non-finite $\ln P$ after the integration stops the run (``left the EOS table'').
+
+\section{MPI layer (\code{Slab.jl})}
+Shared with the two Poisson modes.
+\begin{itemize}
+\item \code{slab\_par}: \code{init\_parallel}$(N_x,N_y,n;\ p_x=R,\ p_y=1)$: each rank owns a contiguous range of $x$
+columns and all of $y$ (at least two columns per rank). Arrays are $(k,j,i)$ = (vertical, $y$, $x$), columns contiguous.
+\item Reductions: \code{gsum}, \code{gdot}, \code{gnorm}, \code{gmax}, \code{gcount} (Allreduce).
+\item \code{gquantiles}/\code{gmedians}: \emph{exact} global order statistics without gathering. Each Float64 is mapped
+to an order-preserving Int64 key (sign bit set: flip the magnitude bits); per set the $k$-th smallest key is found by
+bisection on the key range, one Allreduce of the per-set counts per round (at most 64 rounds), all sets at once. Type-7
+quantiles as \code{Statistics.quantile}. Non-finite values are skipped.
+\item \code{coop\_write}: rank 0 creates every dataset at its global size (Julia $(x,\dots)$, h5py $(\dots,x)$) and the
+attributes, then the ranks write their $x$ hyperslabs in turn between barriers (no parallel HDF5).
+\item The column integration has no communication: column results are bitwise identical for any rank count; the
+alignment and gauge use global reductions (median exact; mean to rounding).
+\end{itemize}
+Threads: owned columns in a threaded loop over $x$.
+
+\section{Output}
+\code{/tau\_grid/\{logtau500, z\_m, Pgas, rho, T, Bx, By, Bz, z\_tau1\_m\}} and \code{/coords/\{x\_m, y\_m\}}; arrays Julia
+$(x,y,\tau)$, h5py $(\tau,y,x)$. Attributes: \code{mode}, \code{input}, \code{eos\_table}, \code{g}, \code{align},
+\code{cap\_per\_dex}, \code{capped\_intervals}, \code{mpi\_ranks}, \code{threads}, \code{units}.
+
+\section{Verification and performance}
+\begin{itemize}
+\item $96^2$ crop: 1 and 4 ranks give identical pressures; heights agree to $2\times10^{-10}$\,m (the gauge mean).
+\item Full cube against the original script (\code{scripts/poisson/poisson\_tau.jl}, \code{MHS\_TAU\_ITERS=0}, one
+rank): identical pressures, heights within 0.13\,mm.
+\item Full cube ($504\times504\times95$), 8 ranks $\times$ 32 threads on 4 nodes: 95\,s wall (most of it start-up and I/O),
+1.9\,GB per rank; 2585 capped intervals.
+\end{itemize}
+\end{document}

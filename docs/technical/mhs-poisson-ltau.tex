@@ -1,0 +1,115 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{mhs-poisson-ltau: implementation}{Technical notes on \code{run.mode = "mhs-poisson-ltau"}. HSEMHS, 24 Oct 2026.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/mhs-poisson-ltau.toml
+\end{verbatim}}
+Driver \code{run\_mhs\_poisson\_ltau} (\code{src/RunModes.jl}); solver \code{PoissonTau.solve\_tau}
+(\code{src/PoissonTau.jl}); MPI layer \code{src/Slab.jl}; PCG and threaded vector updates from \code{PoissonZ}. Input and
+\code{[tau\_grid]} keys as \code{column-hse-ltau}; in addition:
+
+\begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
+\toprule
+Key & Default & Meaning \\ \midrule
+\code{poisson.logtau\_cut} & $-4$ & solved levels $\log\tau\ge$ cut (nearest level $k_c$) \\
+\code{poisson.max\_steps} & 100 & Levenberg--Marquardt steps \\
+\code{poisson.rtol}, \code{n\_consec} & $10^{-4}$, 3 & stop on $\Delta\Phi/\Phi<$ rtol for \code{n\_consec} consecutive steps\dots \\
+\code{poisson.dz\_tol\_m} & 100 & \dots or on one such step that moved no column height by more than this \\
+\code{poisson.cg\_tol}, \code{cg\_maxit} & $10^{-3}$, 80 & PCG per trial \\
+\code{poisson.dc\_cap\_m} & $3\times10^5$ & largest height change of a column per step (whole-step scaling) \\
+\code{poisson.lm\_mu0} & 0 & initial damping \\
+\bottomrule
+\end{tabularx}
+
+\section{Flow}
+\code{column\_hse\_tau} (aligned, gauged) gives $u=\ln P$ and $z_0$ on all levels; \code{solve\_tau} solves for $u$ on
+levels $k>k_c$ and $c=z_{k_c}$ per column, with $u_{k\le k_c}$ and $z_k-z_{k_c}$ ($k<k_c$) fixed; the heights are gauged
+(mean $z(\tau{=}1)=0$); output in the \code{column-hse-ltau} layout.
+
+\section{State, heights and residuals (\code{evaluate!})}
+Nodes $m=1\ldots n_1$ are levels $k=k_c\ldots n_\tau$. The unknown vector per column has $n_1$ slots: slot 1 $=c$, slots
+$2\ldots n_1=u$ at $k>k_c$ (one array $(n_1,N_y,n_x)$, so FFTs and halos treat it uniformly). At each node the EOS gives
+$\ln\rho$, $\partial\ln\rho/\partial\ln P$ and $\ln\chi$; $\partial\ln\chi/\partial\ln P$ by a central difference
+($\varepsilon=10^{-4}$, the table returns no opacity derivative). With $a=\tau/\chi$, $q=\rho/P$:
+\[
+z_{k+1}=z_k-\tfrac12\Delta\ln\tau_k\,(a_k+a_{k+1}),\qquad z_{k_c}=c .
+\]
+Lorentz force at all levels (\code{lorentz\_tau!}): for each component $f$ of $\B$,
+$\partial_zf=(f_{k-1}-f_{k+1})/(z_{k-1}-z_{k+1})$ (one-sided at the ends), $\partial_xf|_z=D_xf-D_xz\,\partial_zf$, likewise
+$y$; $\J=\nabla\times\B/\mu_0$; $\Lv=\J\times\B$. Residuals with $W=gq-L_ze^{-u}$, $w=Wa$:
+\[
+R_x=-D_xu-W\,D_xz+L_xe^{-u},\qquad R_{z,f}=u_{f+1}-u_f-\tfrac12\Delta\ln\tau_f\,(w_f+w_{f+1}) .
+\]
+Weights from the start state (fixed): $\bar H_m$ global median of $1/(gq)$, $\overline{\Delta z}_f$ global median of the level
+thickness, $w_c=\overline{\Delta z}_{\rm node}\bar H^2$, $w_f=\bar H_f\bar H_{f+1}/\overline{\Delta z}_f$;
+$\Phi=\sum w_c(R_x^2+R_y^2)+\sum w_fR_z^2$.
+
+\section{Jacobian}
+Exact, including $\Lv$'s dependence on the heights (\code{Jop!}, adjoint \code{JTop!}):
+\begin{itemize}
+\item \textbf{Triangular operator.} $\delta z_m=\delta c+\sum_{f<m}\tfrac12\Delta\ln\tau_f\,(a\chi_u)_f\delta u_f+(a\chi_u)_{f+1}\delta u_{f+1}$ with
+$\chi_u=\partial\ln\chi/\partial\ln P$: a cumulative sum down each column. Its adjoint is a reverse cumulative sum.
+\item Vertical: $\delta R_{z,f}=\delta u_{f+1}-\delta u_f-\tfrac12\Delta\ln\tau_f(w'_f\delta u_f+w'_{f+1}\delta u_{f+1})$,
+$w'=\partial w/\partial u=W'a-Wa\chi_u$, $W'=gq(\rho_u-1)+L_ze^{-u}$.
+\item Horizontal: $\delta R_x=-D_x\delta u-W\,D_x\delta z+\ell_x\delta u$, $\ell_x=-D_xz\,W'-L_xe^{-u}$.
+\item \textbf{Lorentz through the heights.} With $\zeta_m=(\delta z_{m-1}-\delta z_{m+1})/(z_{m-1}-z_{m+1})$ (the relative change of
+the vertical spacing; $\delta z$ above the cut $=\delta c$): $\delta(\partial_zf)=-\partial_zf\,\zeta$,
+$\delta(\partial_xf|_z)=-\partial_zf\,D_x\delta z+D_xz\,\partial_zf\,\zeta$. Hence
+$\delta\J=\J_\zeta\zeta+\J_XD_x\delta z+\J_YD_y\delta z$ with
+$\J_\zeta=(z_yB_{z,z}+B_{y,z},\,-B_{x,z}-z_xB_{z,z},\,z_xB_{y,z}-z_yB_{x,z})/\mu_0$, $\J_X=(0,B_{z,z},-B_{y,z})/\mu_0$,
+$\J_Y=(-B_{z,z},0,B_{x,z})/\mu_0$, and $\delta\Lv=\delta\J\times\B$. It enters $\delta R_x$ through $e^{-u}(\delta L_x+z_x\delta L_z)$
+and $\delta R_z$ through $e^{-u}a\,\delta L_z$: nine node-local coefficient arrays.
+\item Checks (\code{MHS\_CHECK} in the script version): adjoint $\langle Jv,r\rangle=\langle v,J^\top r\rangle$ to $4\times10^{-16}$;
+$Jv$ against central differences of $\R$ to $10^{-9}$ (with $\B$), $10^{-10}$ (without). With $\Lv$ held fixed the
+directional error was 100\,\% in magnetic regions and the solve stalled after one step.
+\end{itemize}
+
+\section{Linear solve and preconditioner}
+Normal equations $(J^\top WJ+E+\mu D)\,\delta=-J^\top W\R$ by PCG with global inner products; $E=10^{-2}\kappa^2D$,
+$D=(\sum w_c\bar W^2,\ w_{c,2},\dots)$ (the damping shape; slot 1 for $c$, which no vertical equation sees).
+
+\textbf{Preconditioner} (\code{setprec!}, \code{Minv!}): the operator with layer-median coefficients
+($\overline{a\chi_u}$, $\overline{w'}$, $\bar W$) is, per horizontal mode, $M(s^2)=A+s^2B$ with $s^2$ as in
+\code{mhs-poisson-z}; $A=G_z^\top W_fG_z+E+\mu D$ (vertical rows), $B=G_h^\top W_cG_h$, $G_h=-(I+\bar W\,S)$ the
+horizontal symbol divided by $ik$ including the triangular matrix $S$. Both are dense $n_1\times n_1$ ($n_1=55$). Once per
+step: Cholesky $A=LL^\top$, eigen-decomposition $L^{-1}BL^{-\top}=V\Lambda V^\top$, $Q=V^\top L^{-1}$; then
+$M(s^2)^{-1}=Q^\top\,{\rm diag}(1/(1+s^2\lambda))\,Q$ for every mode: two complex GEMMs over all local modes of the
+transposed FFT layout (\code{SlabFFT}, as in \code{mhs-poisson-z}), BLAS threaded during the solve.
+
+\section{Steps}
+Levenberg--Marquardt: for $\mu$ (start \code{lm\_mu0}) solve, scale the \emph{whole} step by
+$\min(1,\ 2/\max|\delta u|,\ $\code{dc\_cap}$/\max|\delta c|)$, try up to 4 halvings on the true $\Phi$ (EOS status
+checked); if none decreases $\Phi$, $\mu\leftarrow\max(4\mu,1)$ and re-solve (up to 8 times). After acceptance $\mu/3$ if
+the full scaled step was taken, unchanged if one halving, $\times2$ otherwise; $\mu<10^{-3}\to0$. Element-wise clamping
+of $\delta c$ (the first version) turned the direction into an ascent direction where the step asked for $>1$\,Mm in a few
+columns: $\Phi$ rose linearly with the step length. Stop rule as in the table; it replaced a single-step test that
+stopped one run after 17 steps while strong-field columns still moved 80\,km per step.
+
+\section{Parallelisation}
+$x$ slabs; halo exchange in $x$ for every $D_x$ (heights, $u$, $\B$, and in the Jacobian); global sums; exact global
+medians for the weights and the preconditioner (bisection on order-preserving integer keys); the distributed FFT
+(rfft in $y$, \code{Alltoallv} transpose, FFT in $x$) and GEMMs on the local $k_y$ slab. Threads in all node loops.
+
+\section{Verification and performance}
+\begin{itemize}
+\item $96^2$ magnetic crop, ranks $\times$ threads $1\times8$, $1\times32$, $4\times8$: 37 steps each; $z(\tau{=}1)$ differences
+median 1\,m, 99th percentile 12--24\,m, max 150\,m (weakly determined strong-field columns). The port matches the
+script \code{scripts/poisson/poisson\_tau\_direct.jl}.
+\item Full cube ($504\times504\times95$, 54 solved $\ln P$ levels + 1 height per column, $1.4\times10^7$ unknowns): one node,
+96 threads, 17 steps, 14\,min, 11\,GB; 8 ranks on 4 nodes, 8.3\,min, 3.1\,GB per rank, same result. PCG reaches its
+80-iteration cap in every step (relative residual $10^{-2}$--$2\times10^{-1}$): the next speed-up is a better preconditioner.
+\end{itemize}
+
+\section{Design history}
+\begin{enumerate}
+\item Fixed point (\code{scripts/poisson/poisson\_tau.jl}): map to a height grid, Poisson solve there, re-integrate the
+$\tau$ columns, repeat. Each pass is a full Poisson solve (1\,h on the full cube), and it diverged where $\Lv$ carries the
+gas: the heights were integrated with a pressure that was then replaced. A corrected variant (heights integrated with the Poisson
+pressure) settled but lifted the strong-field columns instead of depressing them (median $+400$\,km above the cube mean for
+1500--3000\,G).
+\item Direct solve with $\Lv$ fixed in the Jacobian: exact without $\B$, stalled in magnetic regions.
+\item Exact Jacobian + LM with whole-step scaling + the consecutive-step stop rule: the present mode.
+\end{enumerate}
+\end{document}

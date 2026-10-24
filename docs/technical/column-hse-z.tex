@@ -1,0 +1,97 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{column-hse-z: implementation}{Technical notes on \code{run.mode = "column-hse-z"} (alias \code{column\_hse}). HSEMHS, 24 Oct 2026.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/column-hse-z.toml
+\end{verbatim}}
+\code{scripts/run.jl} parses the TOML (\code{Config.jl}: every key is declared with its default; unknown keys are
+rejected) and \code{run\_config} dispatches to \code{run\_column\_hse} (\code{src/RunColumnHSE.jl}).
+
+\begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
+\toprule
+Key & Default & Meaning \\ \midrule
+\code{input.file} & required & NetCDF4/HDF5 cube: \code{x}, \code{y}, \code{z}, \code{temperature} (+ \code{B\_x} etc.\ copied) \\
+\code{input.crop\_z\_m} & none & keep levels inside $[z_{\rm top}, z_{\rm bottom}]$ \\
+\code{physics.g} & \code{"from\_input"} & number or the file attribute \code{gravity\_m\_s2} \\
+\code{eos.table\_file} & \code{cache/}\allowbreak\code{eos\_table\_fullz.h5} & Wittmann EOS + 500\,nm opacity table \\
+\code{column\_hse.anchor} & \code{bottom} & \code{bottom} | \code{top} | \code{height} \\
+\code{column\_hse.P\_ref} & required & Pa, or \code{"from\_input"} (attribute \code{P\_ref\_Pa}) \\
+\code{column\_hse.z\_ref\_m} & 0 & anchor height for \code{height} \\
+\code{column\_hse.n\_sub}, \code{adapt}, \code{rk\_tol}, \code{n\_sub\_max} & 4, true, $10^{-6}$, 64 & RK4 substeps and doubling \\
+\code{tau.top}, \code{H\_max\_m}, \code{mu} & \code{exp\_tail}, $5\times10^6$, 1 & $\tau$ top closure and viewing angle \\
+\code{parallel.px}, \code{py} & 0, 0 & process grid (0: \code{MPI.Dims\_create}) \\
+\code{output.compression} & 4 & deflate level of the output datasets \\
+\bottomrule
+\end{tabularx}
+
+\section{Input}
+\code{open\_input} (\code{IOInput.jl}) validates the axes (\code{z} strictly decreasing, \code{x}, \code{y} increasing,
+periodicity from the global attributes \code{periodic\_x/\_y}, \code{period\_x\_m/\_y\_m} or the FITS header cards
+\code{PERIOD\_X/Y}) and identifies dimensions from each dataset's
+\code{DIMENSION\_LIST}; units come from the \code{units} attribute (\code{m/km/cm/Mm}, \code{K}, \code{T/G}), never
+guessed. \code{read\_field} reads only the rank's $(x,y)$ hyperslab into a haloed \code{Field}
+(\code{OffsetArray}, indices $0{:}n_x{+}1$, $0{:}n_y{+}1$, $1{:}n_z$, Julia order $(x,y,z)$, $z$ top first) and checks
+$T>0$, finite.
+
+\section{Algorithm}
+Per column (\code{ColumnHSE.jl}):
+\begin{itemize}
+\item \code{hse\_column!}: from the anchor node ($k=N_z$ for \code{bottom}) the ODE $du/dz=-g\,e^{\ln\rho(X,u)-u}$,
+$dm/dz=-e^{\ln\rho}$ is integrated interval by interval; $X=\ln T$ linear in $z$ inside an interval (\code{xlin}, exact at
+the nodes).
+\item \code{rk4\_seg}: classical RK4 with $n$ equal substeps, the EOS called at every stage (\code{lnrho}: bicubic Hermite
+table, status-returning).
+\item \code{rk4\_adaptive}: the interval is run with $n$ and $2n$ substeps; while $|u_{2n}-u_n|>$ \code{rk\_tol} the
+count is doubled up to \code{n\_sub\_max}. Column flags record refinement (\code{COL\_RK\_REFINED}), tolerance not met,
+and EOS envelope exits (outputs NaN for that column).
+\item At the nodes, \code{state} gives $\ln\rho$, $\ln n_e$, $\ln\chi_{500}$; $P_e=n_ek_BT$, $n_{\rm H}=\rho/m_{\rm H,mix}$,
+$\bar\mu$, column mass (RK4 co-integrated and trapezoid).
+\item \code{tau\_column!} (\code{Tau.jl}): top-first trapezoid of $\chi$; \code{exp\_tail} closure
+$\tau_{\rm top}=\chi_1H_\chi$ if $\chi_2>\chi_1$ and $0<H_\chi<H_{\max}$, else half cell; method per column.
+\code{z\_tau1}: crossing of $\log\tau=0$, linear in $\log\tau$.
+\item \code{column\_residual}: diagnostic $R_x=\partial_xP$, $R_y=\partial_yP$, $R_z=\partial_zP+\rho g$ with the
+collocated second-order operators of \code{Operators.jl} (halo exchange of $P$ first).
+\end{itemize}
+
+\section{Parallelisation}
+\begin{itemize}
+\item MPI: 2-D Cartesian decomposition in $(x,y)$, full columns on every rank (\code{Parallel.jl}, \code{THREAD\_FUNNELED},
+all MPI calls on the main task). Columns are independent, so no communication enters the values; only the residual
+diagnostic needs one halo exchange.
+\item Threads: owned columns are spread over \code{8 nthreads} chunks with a static schedule.
+\item The result is \textbf{bitwise} independent of the thread and rank counts (Gate 2 test ``thread and rank invariance
+(bitwise)''). Measured: 1 vs 4 ranks identical on a $96^2$ crop.
+\item Layer quantiles for the diagnostics tables gather each layer to rank 0 (\code{gather\_layer}).
+\end{itemize}
+
+\section{Output}
+HDF5 without parallel HDF5: \code{create\_output} on rank 0, then \code{write\_fields} writes the ranks' hyperslabs in a
+token ring. Groups:
+\begin{itemize}
+\item \code{/input}: copies of \code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z}, \code{x}, \code{y}, \code{z};
+\item \code{/output}: \code{Pgas}, \code{rho}, \code{ne}, \code{Pe}, \code{nH\_total}, \code{mu\_bar}, \code{colmass},
+\code{colmass\_trap}, \code{chi500}, \code{tau500}, \code{logtau500} (all $(x,y,z)$ in Julia, with \code{units});
+\item \code{/diagnostics}: \code{R\_x}, \code{R\_y}, \code{R\_z}, \code{eos\_status}, \code{column\_status},
+\code{tau\_top\_method}, \code{rk\_max\_substeps}, \code{z\_tau500\_1}, per-layer tables \code{layer\_pressure} and
+\code{layer\_residual}, \code{z};
+\item \code{/meta}: anchor, integrator, $\tau$ convention, EOS hash, config text and hash, git revision, layout.
+\end{itemize}
+Exit codes: 0 converged, 2 stalled, 3 EOS failure, 4 invalid input.
+
+\section{Verification and performance}
+\begin{itemize}
+\item Gate 2 (\code{test/test\_gate2.jl}): isothermal ideal gas to $10^{-12}$; $\ln T$-linear ideal gas against the
+analytic solution, fourth order under substep halving; $\tau$ closure and second order; Wittmann table on Bifrost
+columns; bitwise thread/rank invariance.
+\item Full production cube ($504\times504\times177$), 8 ranks $\times$ 32 threads on 4 nodes: 13\,s to read, integrate
+and diagnose, 4\,min to write the compressed output (11 fields plus diagnostics through the token ring); 2.3\,GB per
+rank. 22\,127 columns used substep refinement, none missed the tolerance.
+\end{itemize}
+
+\section{Code map}
+\code{src/RunColumnHSE.jl} (driver, diagnostics tables, metadata), \code{src/ColumnHSE.jl} (integrator, residual),
+\code{src/Tau.jl}, \code{src/IOInput.jl}, \code{src/IOOutput.jl}, \code{src/Parallel.jl}, \code{src/Fields.jl},
+\code{src/eos/Table.jl} (table interpolation), \code{config/modes/column-hse-z.toml}.
+\end{document}

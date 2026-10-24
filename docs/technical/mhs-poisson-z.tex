@@ -1,0 +1,101 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{mhs-poisson-z: implementation}{Technical notes on \code{run.mode = "mhs-poisson-z"}. HSEMHS, 24 Oct 2026.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/mhs-poisson-z.toml
+\end{verbatim}}
+Driver \code{run\_mhs\_poisson\_z} (\code{src/RunModes.jl}), solver \code{module PoissonZ} (\code{src/PoissonZ.jl}),
+MPI layer \code{src/Slab.jl}. The input and the \code{[column\_hse]}, \code{[tau]} keys are those of
+\code{column-hse-z}; in addition:
+
+\begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
+\toprule
+Key & Default & Meaning \\ \midrule
+\code{poisson.z\_cut\_m} & $10^6$ & solved region $z\le z_{\rm cut}$; column HSE above \\
+\code{poisson.max\_steps} & 100 & Gauss--Newton steps \\
+\code{poisson.rtol}, \code{n\_consec} & $10^{-4}$, 3 & stop when $\Delta\Phi/\Phi<$ rtol on \code{n\_consec} consecutive steps \\
+\code{poisson.cg\_tol}, \code{cg\_maxit} & $10^{-3}$, 80 & PCG relative residual and iteration cap per step \\
+\code{poisson.anchor\_w} & 1 & weight of the mean-$\ln P$ anchor (bottom plane) \\
+\bottomrule
+\end{tabularx}
+
+\section{Flow}
+\begin{enumerate}
+\item \code{open\_input}, \code{slab\_par} ($x$ slabs), \code{read\_field} of $T$; \code{column\_hse} (the
+\code{column-hse-z} integrator) on the same decomposition gives $P_0$.
+\item $\B$ read; all fields converted to $(z,y,x)$ slab arrays; \code{PoissonZ.lorentz}: $\J=\nabla\times\B/\mu_0$ with
+centred periodic $x,y$ differences (halo exchange in $x$) and \code{np.gradient}-type $z$ differences, $\Lv=\J\times\B$
+at cell centres, fixed.
+\item \code{solve\_pressure}: Gauss--Newton on the layers $z\le z_{\rm cut}$ (below).
+\item Above $z_{\rm cut}$: per column, trapezoidal hydrostatic step upward, $u_k-u_{k+1}+\tfrac{\Delta z\,g}{2}(q_k+q_{k+1})=0$
+($q=\rho/P$), solved by Newton with $\partial q/\partial u=q(\partial\ln\rho/\partial\ln P-1)$.
+\item \code{tau\_columns}: $\rho$, $\chi_{500}$, $\tau_{500}$ (\code{exp\_tail}), $z(\tau{=}1)$; cooperative output.
+\end{enumerate}
+
+\section{Discretisation and objective}
+Unknown $u=\ln P$ on the $n$ solved layers. With $e=e^{-u}$, $q=\rho/P$ from the EOS:
+\begin{gather*}
+R_x=-D_xu+L_xe,\qquad R_y=-D_yu+L_ye\qquad(\text{centres}),\\
+R_{z,f}=-\frac{u_f-u_{f+1}}{h_f}-g\frac{q_f+q_{f+1}}2+\frac{L_{z,f}e_f+L_{z,f+1}e_{f+1}}2\qquad(\text{interior faces}),
+\end{gather*}
+$D_x,D_y$ centred periodic. $\Phi=\sum w_k\bar H_k^2(R_x^2+R_y^2)+\sum h_f\bar H_f^2R_{z,f}^2$, $w$ cell heights,
+$\bar H_k$ the global layer median of $1/(gq)$ in the start state, $\bar H_f=\sqrt{\bar H_k\bar H_{k+1}}$ (weights fixed).
+
+\section{Gauss--Newton step}
+Linearisation: $\delta R_x=-D_x\delta u-L_xe\,\delta u$ (same for $y$),
+$\delta R_{z,f}=-(a_f\delta u_f+b_f\delta u_{f+1})$ with
+$a_f=1/h_f+\tfrac12(g\,q'_f+L_{z,f}e_f)$, $b_f=-1/h_f+\tfrac12(g\,q'_{f+1}+L_{z,f+1}e_{f+1})$, $q'=\partial q/\partial u$.
+Normal equations $(J^\top WJ+E+A)\,\delta u=-J^\top W\R$, matrix free (\code{Aop!}, \code{JtW!}):
+\begin{itemize}
+\item $E=10^{-2}\kappa^2w\bar H^2$ damps the modes centred differences cannot see (checkerboard), $\kappa=2\pi/L_x$;
+\item anchor $A=A_{\rm anc}\,\mathbf c\mathbf c^\top$, $\mathbf c$ the indicator of the bottom plane, holds the mean of $\delta u$
+there at zero, $A_{\rm anc}=$ \code{anchor\_w}$\cdot w_{f,n-1}/h_{n-1}^2/\sum c$.
+\end{itemize}
+Step: PCG to \code{cg\_tol} or \code{cg\_maxit}; $|\delta u|\le2$ per node (clamp); backtracking on $\Phi$ (halving, up to
+12 times, with the EOS status checked); stop rule as in the table.
+
+\section{Preconditioner}
+The Laplacian part with layer-median coefficients: in horizontal Fourier space, mode $(k_x,k_y)$ with
+$s^2=\sin^2(k_x\Delta x)/\Delta x^2+\sin^2(k_y\Delta y)/\Delta y^2$, the vertical tridiagonal system
+$\mathrm{diag}(c_k+w_k\bar H_k^2s^2+E_k)$ with off-diagonals from the medians of $a_f,b_f$ (\code{setprec!}, exact global
+medians by \code{gmedians}), solved by the Thomas algorithm (\code{thomas!}). The rank-1 anchor acts only on the mean mode
+$(0,0)$ and is added there exactly by Sherman--Morrison. Without it, CG stalled at its cap after the anchor was changed
+from the bottom plane to an irregular cell set; with it, 9--80 iterations.
+
+\textbf{Distributed FFT} (\code{SlabFFT}): (1) per local $x$ plane a real FFT along $y$ (\code{plan\_rfft} on contiguous
+$(n,N_y)$ slices, threaded over $x$); (2) \code{MPI.Alltoallv} transpose from $x$ slabs to slabs of $k_y$ (each rank
+sends $(n,\,k_y\in\text{dest},\,x\in\text{own})$ blocks); (3) complex FFT along $x$; the vertical solve then runs on contiguous
+columns $T[:,k_x,j_\ell]$, threaded over local $k_y$; the inverse retraces the steps. FFTW's own threading is not used (it
+segfaults under Julia 1.13). With one rank the transpose is a local permutation.
+
+\section{Parallelisation and reproducibility}
+\begin{itemize}
+\item $x$ slabs (\code{slab\_par}); $y$ and $z$ complete on every rank. Halo planes in $x$ for every $D_x$
+(\code{sddx!}, \code{MPI.Sendrecv!}); all reductions global (\code{gsum}, \code{gdot}, \code{gnorm}, \code{gmax});
+medians exact (\code{gquantiles}, bisection on order-preserving integer keys).
+\item Threads in every loop over $x$ (stencils, EOS calls, Thomas solves, CG vector updates via \code{tbcast!}; plain
+broadcasts and masked indexing were serial bottlenecks: the anchor's \code{v[anc]} allocated 280\,MB per operator call).
+\item Rank invariance to rounding: $96^2$ crop, 1 vs 4 ranks, $|\Delta\ln P|\le1.5\times10^{-6}$ (the solver is iterative,
+so rounding differences grow slightly along the path).
+\end{itemize}
+
+\section{Output}
+MHS checkpoint layout (read by \code{force\_split.py}, \code{m5h\_isotau*.py}):
+\code{/atmosphere/\{Pgas, rho, T, tau500, Bx\_centre, By\_centre, Bz\_centre, Pgas\_column\_hse, z\_tau1\_m\}},
+\code{/coords/\{x\_m, y\_m, z\_m\}}; Julia $(x,y,z)$; attributes \code{kind = poisson\_step}, \code{z\_cut\_m},
+\code{phi\_start}, \code{phi\_end}, \code{steps}, \code{P\_ref\_Pa}, \code{eos\_table}, layout.
+
+\section{Verification and performance}
+\begin{itemize}
+\item Against the original script (\code{scripts/poisson/poisson\_step.jl} on the same column-HSE file, $96^2$ crop):
+$|\Delta\ln P|\le5.8\times10^{-6}$.
+\item Full cube ($504\times504\times177$, $z_{\rm cut}=1$\,Mm, 77 solved layers from $-0.49$ to 0.98\,Mm), 8 ranks $\times$ 32 threads on 4
+nodes: 4.7\,min including column HSE, 4.1\,GB per rank. Step 1 reduced $\Phi$ by 88\,\% (80 CG iterations, 18\,s), step 2 by
+another 28\,\% (49 iterations); the run then used the then step limit (60), at $\Phi/\Phi_0=0.081$ and
+$\Delta\Phi/\Phi=1.8\times10^{-4}$ per step with 9--11 CG iterations each.
+\item On a magnetic $96^2$ crop $\Phi$ creeps ($\Delta\Phi/\Phi\approx1.5\times10^{-3}$ per step for 100 steps): the
+low-$\beta$ pressure inflation described in the physics document.
+\end{itemize}
+\end{document}
