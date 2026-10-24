@@ -37,6 +37,7 @@
 #   ENV MHS_POISSON_OUTER = 30  : maximum Gauss–Newton steps per Poisson step
 #   ENV MHS_ALIGN = ptot | tau1 : initial vertical alignment of the columns
 #   ENV MHS_TAU_FROMREF = 1     : test: start from the input's ref_z_m, ref_Pgas instead of hydrostatic columns
+#   ENV MHS_POISSON_RTOL (1e-3) : Gauss–Newton stop on ΔΦ/Φ per Poisson solve
 #   ENV MHS_TAU_DEBUG = 1       : log ln P_in − ln P_Poisson by height band and τ level
 #   ENV MHS_TAU_CAP_PER_DEX = 50 : cap on the ln P rise per dex in τ in the column integration (see hse_tau!)
 include(joinpath(@__DIR__, "poisson_core.jl"))
@@ -190,54 +191,65 @@ end
     return (1 - t) * v[g] + t * v[g+1]
 end
 
+"""ln P_Poisson at height zz of a column (lPc, slope dlc on the top-first grid zg); below the grid bottom continued with
+the bottom slope (hydrostatic-like), above the grid top clamped."""
+@inline function lp_at(lPc, dlc, zg, zz)
+    zz >= zg[end] && return zinterp(lPc, zg, zz)
+    return lPc[end] + dlc[end] * (zz - zg[end])
+end
+
 """
-New z(τ), ln P(τ) from the Poisson pressure P on the height grid: a = 1 + H d ln P/dz (zero above z_cut and outside the
-column's τ range) at each level's current height, the column re-integrated in τ from its top with fac = 1 − a, and then
-shifted vertically so that its ln P matches ln P_Poisson(z) over the levels below z_cut (least squares, Gauss–Newton
-with the Poisson slope d ln P/dz).
-Below z_cut the levels then take ln P_Poisson at their new height: the re-integrated pressure agrees with it to 1–3 %,
-but that much column-to-column jitter alone costs ~0.07 ρg of horizontal force.
-Returns (clamped a values, capped level intervals).
+New z(τ), ln P(τ) from the Poisson pressure P on the height grid.
+Above z_cut the column is τ-hydrostatic: integrated down from its top in τ (fac = 1) and shifted vertically so that it
+reaches the Poisson pressure at z_cut, ln P(τ_j) = ln P_Poisson(z_cut). Below the junction z(τ) follows from
+dz/d ln τ = −τ/χ(T(τ), P_Poisson(x, y, z)) — the same pressure the levels then carry, so that the layer thicknesses and the
+pressure are consistent (re-integrating ln P in τ with the Poisson factor 1 − a and then replacing it by the Poisson
+pressure made χ too small where the Lorentz force carries the gas, a → 1, and stretched those columns without bound).
+Returns (columns whose junction fell outside the column, capped level intervals).
 """
 function retau!(znew, lPnew, z, lT, lt, zg, P, rho, inside, zcut, tab)
-    nt, ny, nx = size(z); ng = length(zg)
+    nt, ny, nx = size(z)
     lP = log.(P); dl = similar(lP); ddz!(dl, lP, zg)
-    ag = similar(lP)
-    @. ag = ifelse(inside & (zg <= zcut), 1 + dl * P / (rho * G0), 0.0)
-    ncl = Threads.Atomic{Int}(0); ncap = Threads.Atomic{Int}(0)
+    dzmax = 0.5 * abs(zg[1] - zg[2])                               # substep: at most half a height-grid cell
+    nout = Threads.Atomic{Int}(0); ncap = Threads.Atomic{Int}(0)
+    lτ = LN10 .* lt
     Threads.@threads for i in 1:nx
-        fac = zeros(nt)
         @inbounds for j in 1:ny
-            agc = @view ag[:, j, i]; lPc = @view lP[:, j, i]
-            for k in 1:nt
-                a = zinterp(agc, zg, z[k, j, i])
-                (a < -5 || a > 0.95) && Threads.atomic_add!(ncl, 1)
-                fac[k] = 1 - clamp(a, -5.0, 0.95)
-            end
+            lPc = @view lP[:, j, i]; dlc = @view dl[:, j, i]; lTc = @view lT[:, j, i]
             zc = @view znew[:, j, i]; pc = @view lPnew[:, j, i]
-            Threads.atomic_add!(ncap, hse_tau!(pc, zc, @view(lT[:, j, i]), lt, tab, fac))
-            # vertical shift s: least squares ln P_Poisson(z_k + s) = ln P_k over the levels below z_cut, Gauss–Newton with
-            # the Poisson field's own slope (where the Lorentz force carries the gas, d ln P/dz → 0 and an H-based step
-            # overshoots), at most 50 km per pass
-            dlc = @view dl[:, j, i]
-            s = interp_lt(@view(z[:, j, i]), lt, 0.0)                    # start from the old height of τ = 1
-            for _ in 1:4
-                num = 0.0; den = 0.0
-                for k in 1:nt
-                    zz = zc[k] + s
-                    (zz > zcut || zz > zg[1] || zz < zg[end]) && continue
-                    gk = zinterp(dlc, zg, zz)
-                    num += gk * (pc[k] - zinterp(lPc, zg, zz)); den += gk^2
-                end
-                den > 0 && (s += clamp(num / den, -50e3, 50e3))
+            Threads.atomic_add!(ncap, hse_tau!(pc, zc, lTc, lt, tab))
+            # junction: the τ where the hydrostatic column reaches ln P_Poisson(z_cut)
+            Lj = lp_at(lPc, dlc, zg, zcut)
+            kj = findlast(<=(Lj), pc)
+            if kj === nothing || kj == nt                           # column entirely below / above that pressure
+                Threads.atomic_add!(nout, 1)
+                kj = kj === nothing ? 1 : nt - 1
+                t = 0.0
+            else
+                t = (Lj - pc[kj]) / (pc[kj+1] - pc[kj])
             end
-            zc .+= s
-            for k in 1:nt                                          # below z_cut the pressure is the Poisson pressure itself
-                (zc[k] <= zcut && zg[end] <= zc[k] <= zg[1]) && (pc[k] = zinterp(lPc, zg, zc[k]))
+            zj = zc[kj] + t * (zc[kj+1] - zc[kj])
+            s = zcut - zj
+            for k in 1:kj
+                zc[k] += s
+            end
+            # below: dz/d ln τ = −τ/χ(T, P_Poisson(z)), Heun substeps of at most dzmax, ln T linear in log10 τ
+            x = lτ[kj] + t * (lτ[kj+1] - lτ[kj]); zz = zcut
+            g(xx, zh, k) = (sx = (xx - lτ[k]) / (lτ[k+1] - lτ[k]);
+                            -exp(xx) / q_chi(tab, lTc[k] + (lTc[k+1] - lTc[k]) * sx, lp_at(lPc, dlc, zg, zh))[2])
+            for k in kj:nt-1
+                bnd = lτ[k+1]
+                while x < bnd
+                    g1 = g(x, zz, k)
+                    h = min(bnd - x, dzmax / max(abs(g1), 1e-30))
+                    g2 = g(x + h, zz + h * g1, k)
+                    zz += h / 2 * (g1 + g2); x += h
+                end
+                zc[k+1] = zz; pc[k+1] = lp_at(lPc, dlc, zg, zz)
             end
         end
     end
-    return ncl[], ncap[]
+    return nout[], ncap[]
 end
 
 """ρ on the height grid from the EOS, and τ₅₀₀ there from the columns' own z(τ) (linear in log10 τ, extrapolated beyond
@@ -297,23 +309,25 @@ function main()
     tol = parse(Float64, get(ENV, "MHS_TAU_TOL_KM", "1")) * 1e3
     ω = parse(Float64, get(ENV, "MHS_TAU_RELAX", "1"))
     maxouter = parse(Int, get(ENV, "MHS_POISSON_OUTER", "30"))
+    prtol = parse(Float64, get(ENV, "MHS_POISSON_RTOL", "1e-3"))   # GN stop ΔΦ/Φ: the next fixed-point pass restarts from it
     align = get(ENV, "MHS_ALIGN", "ptot")
     FFTW.set_num_threads(1)              # FFTW's threaded execution segfaults under Julia 1.13 (spawn_apply)
 
     # ---- input on the τ grid: Julia arrays (nt, ny, nx), level 1 = top ----
     zyx(A) = permutedims(A, (3, 2, 1))
     lt, x, y, T, Bx, By, Bz, zref, Pref = h5open(infile, "r") do f
-        c = crop > 0 ? (1:crop) : Colon()
+        oy, ox = parse.(Int, split(get(ENV, "MHS_CROP_OFF", "0,0"), ","))   # crop start (y, x), 0-based
+        cy = crop > 0 ? (oy+1:oy+crop) : Colon(); cx = crop > 0 ? (ox+1:ox+crop) : Colon()
         if haskey(f, "log10tau500")          # IO/input-mhs-ltau.nc layout: h5py (x, y, τ), SI, Julia sees (τ, y, x)
-            rn(nm) = Float64.(read(f[nm]))[:, c, c]
+            rn(nm) = Float64.(read(f[nm]))[:, cy, cx]
             d = parse(Float64, get(ENV, "MHS_DX_M", "47619.0"))
             n = size(f["temperature"], 3)    # Julia dims (τ, y, x): x is the last
             xs = collect(0:n-1) .* d
-            read(f["log10tau500"]), xs[c], xs[c], rn("temperature"), rn("B_x"), rn("B_y"), rn("B_z"), nothing, nothing
+            read(f["log10tau500"]), xs[cx], xs[cy], rn("temperature"), rn("B_x"), rn("B_y"), rn("B_z"), nothing, nothing
         else                                 # make_tau_input.py layout: h5py (τ, y, x)
-            rd(nm) = zyx(Float64.(read(f[nm])))[:, c, c]
+            rd(nm) = zyx(Float64.(read(f[nm])))[:, cy, cx]
             opt(nm) = haskey(f, nm) ? rd(nm) : nothing
-            read(f["logtau500"]), read(f["x_m"])[c], read(f["y_m"])[c], rd("T"), rd("Bx"), rd("By"), rd("Bz"),
+            read(f["logtau500"]), read(f["x_m"])[cx], read(f["y_m"])[cy], rd("T"), rd("Bx"), rd("By"), rd("Bz"),
                 opt("ref_z_m"), opt("ref_Pgas")
         end
     end
@@ -365,7 +379,7 @@ function main()
                 stamp(), it, ng, zg[1] / 1e6, zg[end] / 1e6, 100 * count(inside) / length(inside))
         # anchor: the mean ln P over the cells inside the columns' τ range (below z_cut) — not the bottom plane, which lies
         # in the padding of most columns and would feed a spurious pressure level (and a sinking atmosphere) back each time
-        sol = solve_pressure(tab, gT, Lx, Ly, Lz, exp.(gP), zg, dx, dy; zcut = zcut, maxouter = maxouter,
+        sol = solve_pressure(tab, gT, Lx, Ly, Lz, exp.(gP), zg, dx, dy; zcut = zcut, maxouter = maxouter, rtol = prtol,
                              anchor = inside .& (zg .<= zcut))
         P = sol.P
         msk = inside .& (zg .<= zcut)
@@ -391,7 +405,7 @@ function main()
             end
         end
         rho, tau, zt1 = tau_on_height(tab, gT, P, zg, z, lt)
-        ncl, ncap = retau!(znew, lPnew, z, lT, lt, zg, P, rho, inside, zcut, tab)
+        ncl, ncap = retau!(znew, lPnew, z, lT, lt, zg, P, rho, inside, zcut, tab)   # ncl: junction outside the column
         @. znew = z + ω * (znew - z); @. lPnew = lnP + ω * (lPnew - lnP)   # no gauge here: the Poisson field does not move
         dz = abs.(znew .- z); dlp = abs.(lPnew .- lnP)
         # convergence on the levels the Poisson step solves (below z_cut); above it the columns are τ-hydrostatic and
@@ -399,7 +413,7 @@ function main()
         dzin = dz[z .<= zcut]
         z .= znew; lnP .= lPnew
         push!(hist, pct(dzin, 0.99))
-        @printf("%s iteration %d: |Δz| below z_cut p50/p99 %.3f / %.3f km, all levels p50/p99/max %.3f / %.3f / %.3f km, |Δ ln P(τ)| p99 %.2e, z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | RMS |F|/ρg inside: handed to Poisson %.4f, after %.4f | Poisson Φ_end/Φ_start %.3f in %d steps, a clamped %d, ln P capped %d | %.1f s\n",
+        @printf("%s iteration %d: |Δz| below z_cut p50/p99 %.3f / %.3f km, all levels p50/p99/max %.3f / %.3f / %.3f km, |Δ ln P(τ)| p99 %.2e, z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | RMS |F|/ρg inside: handed to Poisson %.4f, after %.4f | Poisson Φ_end/Φ_start %.3f in %d steps, junction outside %d, ln P capped %d | %.1f s\n",
                 stamp(), it, pct(dzin, 0.5) / 1e3, pct(dzin, 0.99) / 1e3, pct(dz, 0.5) / 1e3, pct(dz, 0.99) / 1e3, maximum(dz) / 1e3, pct(dlp, 0.99),
                 pct(z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3..., fin, fout, sol.Φ / sol.Φ0, sol.steps, ncl, ncap, time() - t0)
         flush(stdout)

@@ -137,10 +137,16 @@ end
 """out = Jᵀ W (Rx, Ry, Rz)."""
 function JtW!(pr::Prob, out, Rx, Ry, Rz)
     wc = pr.wc; wf = pr.wf
-    @. pr.tx = wc * Rx; @. pr.ty = wc * Ry
-    ddx!(out, pr.tx, pr.dx); ddy!(pr.jx, pr.ty, pr.dy); out .+= pr.jx            # (−D)ᵀ = D
-    @. out -= pr.lx * pr.ex * pr.tx + pr.ly * pr.ex * pr.ty
     Threads.@threads for i in 1:pr.nx
+        @inbounds for j in 1:pr.ny, k in 1:pr.n
+            pr.tx[k, j, i] = wc[k] * Rx[k, j, i]; pr.ty[k, j, i] = wc[k] * Ry[k, j, i]
+        end
+    end
+    ddx!(out, pr.tx, pr.dx); ddy!(pr.jx, pr.ty, pr.dy)                         # (−D)ᵀ = D
+    Threads.@threads for i in 1:pr.nx
+        @inbounds for j in 1:pr.ny, k in 1:pr.n
+            out[k, j, i] += pr.jx[k, j, i] - pr.ex[k, j, i] * (pr.lx[k, j, i] * pr.tx[k, j, i] + pr.ly[k, j, i] * pr.ty[k, j, i])
+        end
         @inbounds for j in 1:pr.ny, f in 1:pr.n-1
             r = wf[f] * Rz[f, j, i]
             out[f, j, i] -= coef_a(pr, f, j, i) * r
@@ -153,16 +159,29 @@ end
 """out = (Jᵀ W J + damping + anchor) v."""
 function Aop!(pr::Prob, out, v)
     ddx!(pr.jx, v, pr.dx); ddy!(pr.jy, v, pr.dy)
-    @. pr.jx = -pr.jx - pr.lx * pr.ex * v; @. pr.jy = -pr.jy - pr.ly * pr.ex * v
+    part = zeros(pr.nx)                                   # anchor: Σ v over the anchor cells, per x slice
     Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, f in 1:pr.n-1
-            pr.jz[f, j, i] = -(coef_a(pr, f, j, i) * v[f, j, i] + coef_b(pr, f, j, i) * v[f+1, j, i])
+        sa = 0.0
+        @inbounds for j in 1:pr.ny
+            for k in 1:pr.n
+                e = pr.ex[k, j, i] * v[k, j, i]
+                pr.jx[k, j, i] = -pr.jx[k, j, i] - pr.lx[k, j, i] * e
+                pr.jy[k, j, i] = -pr.jy[k, j, i] - pr.ly[k, j, i] * e
+                pr.anc[k, j, i] && (sa += v[k, j, i])
+            end
+            for f in 1:pr.n-1
+                pr.jz[f, j, i] = -(coef_a(pr, f, j, i) * v[f, j, i] + coef_b(pr, f, j, i) * v[f+1, j, i])
+            end
         end
+        part[i] = sa
     end
     JtW!(pr, out, pr.jx, pr.jy, pr.jz)
-    @. out += pr.ereg * v
-    sb = sum(v[pr.anc])
-    @views out[pr.anc] .+= pr.Aanc * sb
+    as = pr.Aanc * sum(part)
+    Threads.@threads for i in 1:pr.nx                    # damping and anchor (threaded: masked indexing allocates)
+        @inbounds for j in 1:pr.ny, k in 1:pr.n
+            out[k, j, i] += pr.ereg[k] * v[k, j, i] + (pr.anc[k, j, i] ? as : 0.0)
+        end
+    end
     return out
 end
 
@@ -197,9 +216,25 @@ end
     return x
 end
 
+"""2-D FFT (plan p for one contiguous layer) of every layer of src into dst, layers spread over Julia threads (FFTW's own
+threading segfaults under Julia 1.13); contiguous per-chunk buffers, since FFTW plans need the planned strides."""
+function fft_layers!(dst, p, src, ny)
+    n = size(src, 1)
+    chunks = collect(Iterators.partition(1:n, cld(n, Threads.nthreads())))
+    Threads.@threads for ch in chunks
+        a = zeros(eltype(src), size(src, 2), size(src, 3)); b = zeros(eltype(dst), size(dst, 2), size(dst, 3))
+        for k in ch
+            a .= @view src[k, :, :]
+            mul!(b, p, a)
+            @views dst[k, :, :] .= b
+        end
+    end
+    return dst
+end
+
 function Minv!(pr::Prob, out, r)
     n = pr.n; Vh = pr.Vh; nyh = size(Vh, 2); Ncol = pr.ny * pr.nx
-    mul!(Vh, pr.pf, r)
+    fft_layers!(Vh, pr.pf, r, pr.ny)
     Threads.@threads for i in 1:pr.nx
         cp = zeros(n); dp = zeros(ComplexF64, n)
         for j in 1:nyh
@@ -214,8 +249,21 @@ function Minv!(pr::Prob, out, r)
             end
         end
     end
-    mul!(out, pr.pb, Vh)
+    fft_layers!(out, pr.pb, Vh, pr.ny)
     return out
+end
+
+"""Threaded element-wise update: outs[m][I] = f(outs..., ins...)[m] (CG vector updates; plain broadcasts run serially)."""
+function tbcast!(f, outs, ins...)
+    N = length(outs[1])
+    Threads.@threads for c in collect(Iterators.partition(1:N, cld(N, 4 * Threads.nthreads())))
+        @inbounds for I in c
+            y = f(map(o -> o[I], outs)..., map(a -> a[I], ins)...)
+            for m in eachindex(outs)
+                outs[m][I] = y[m]
+            end
+        end
+    end
 end
 
 function pcg!(pr::Prob, xs, b; tol = 1e-3, maxit = 80)
@@ -225,11 +273,11 @@ function pcg!(pr::Prob, xs, b; tol = 1e-3, maxit = 80)
     for outer it in 1:maxit
         Aop!(pr, Ap, p)
         αc = rz / dot(p, Ap)
-        @. xs += αc * p; @. r -= αc * Ap
+        let a = αc; tbcast!((x, rr, pp, ap) -> (x + a * pp, rr - a * ap), (xs, r), p, Ap); end
         rel = norm(r) / nb
         rel < tol && break
         Minv!(pr, zv, r); rz2 = dot(r, zv); βc = rz2 / rz; rz = rz2
-        @. p = zv + βc * p
+        let b = βc; tbcast!((pp, z) -> (z + b * pp,), (p,), zv); end
     end
     return it, rel
 end
@@ -283,15 +331,15 @@ function solve_pressure(tab, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30
         anc = BitArray(anchor[R, :, :])
     end
     acnt = [Float64(count(@view anc[k, :, :])) for k in 1:n]
-    Aanc = 1e2 * wf[end] / h[end]^2 / sum(acnt)
+    Aanc = parse(Float64, get(ENV, "MHS_ANCHOR_W", "1")) * wf[end] / h[end]^2 / sum(acnt)
     nyh = ny ÷ 2 + 1
     sy2 = [sin(2π * (j - 1) / ny)^2 / dy^2 for j in 1:nyh]
     sx2 = [sin(2π * fftfreq(nx)[i])^2 / dx^2 for i in 1:nx]
     Vh = zeros(ComplexF64, n, nyh, nx)
     pr = Prob(tab, n, ny, nx, dx, dy, h, wc, wf, ereg, Aanc, anc, acnt, lT, Lx[R, :, :], Ly[R, :, :], Lz[R, :, :], q, qd, ex,
               similar(u), similar(u), similar(u), similar(u), zeros(n - 1, ny, nx), sx2, sy2, zeros(n), zeros(n - 1), Vh,
-              plan_rfft(u, (2, 3); flags = FFTW.ESTIMATE | FFTW.UNALIGNED),
-              plan_irfft(Vh, ny, (2, 3); flags = FFTW.ESTIMATE | FFTW.UNALIGNED))   # applied to other arrays than planned
+              plan_rfft(zeros(ny, nx); flags = FFTW.ESTIMATE | FFTW.UNALIGNED),
+              plan_irfft(zeros(ComplexF64, nyh, nx), ny; flags = FFTW.ESTIMATE | FFTW.UNALIGNED))   # one layer; fft_layers!
 
     Rx, Ry, Rz = similar(u), similar(u), zeros(n - 1, ny, nx)
     eos!(pr, q, qd, ex, u); resid!(pr, Rx, Ry, Rz, u, q, ex)
