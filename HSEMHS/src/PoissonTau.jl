@@ -469,16 +469,17 @@ function bands(pr::TP, lt, Hb, dzb)
 end
 
 """
-    solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut, max_steps, rtol, n_consec, dz_tol, cg_maxit,
+    solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut, max_steps, rtol, n_consec, cg_maxit,
               dc_cap, lm_mu0, logf)
 
-Direct Poisson solve from the column HSE in τ (u = ln P, z0 aligned and gauged). Stops when ΔΦ/Φ < rtol on n_consec
-consecutive steps, or on one such step that moved no column height by more than dz_tol: Φ is nearly flat along the
-heights of a few strong-field columns, so a single small ΔΦ/Φ can come while they still move by tens of km.
+Direct Poisson solve from the column HSE in τ (u = ln P, z0 aligned and gauged). Stops on the objective only: when the
+relative decrease (Φ_prev − Φ)/Φ_prev of accepted steps is below rtol on n_consec consecutive steps (a single small
+step is not enough: Φ is nearly flat along the heights of a few strong-field columns). Height changes are logged, not
+used for stopping.
 Returns (u, z, Φ0, Φ, steps, kc).
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
-                   n_consec = 3, dz_tol = 100.0, cg_maxit = 80,
+                   n_consec = 3, cg_maxit = 80,
                    cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing)
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
@@ -551,7 +552,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         nsmall = dec < rtol ? nsmall + 1 : 0
         logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e), RMS %.4e | CG %d its (rel %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
                       s, Φ / Φ0, dec, sqrt(Φ / Wtot), its, rel, α, μ, dzmax / 1e3, zq()..., time() - t0))
-        (nsmall >= n_consec || (nsmall >= 1 && dzmax < dz_tol)) && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps, last max|δc| %.1f m", rtol, nsmall, dzmax)); break)
+        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps (last max|δc| %.1f m)", rtol, nsmall, dzmax)); break)
     end
     pr.ereg = ereg0
     logf("end: " * bands(pr, lt, Hb, dzf))

@@ -90,7 +90,7 @@ function run_mhs_poisson_ltau(cfg::Config)
     BLAS.set_num_threads(min(32, Threads.nthreads()))
     u, z, Φ0, Φ, steps, kc = PoissonTau.solve_tau(s.par, s.tab, s.g, s.lt, lT, s.Bx, s.By, s.Bz, lnP, z0, s.dx, s.dy;
                                                   logtau_cut = P.logtau_cut, max_steps = P.max_steps, rtol = P.rtol,
-                                                  n_consec = P.n_consec, dz_tol = P.dz_tol_m,
+                                                  n_consec = P.n_consec,
                                                   cg_maxit = P.cg_maxit, cg_tol = P.cg_tol, dc_cap = P.dc_cap_m,
                                                   lm_mu0 = P.lm_mu0, logf = s.logm)
     BLAS.set_num_threads(1)

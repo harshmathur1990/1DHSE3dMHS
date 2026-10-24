@@ -96,7 +96,6 @@ const CONFIG_SCHEMA = [
         "max_steps" => 100,            # Gauss–Newton steps
         "rtol" => 1.0e-4,              # stop when ΔΦ/Φ < rtol on n_consec consecutive steps
         "n_consec" => 3,
-        "dz_tol_m" => 100.0,           # ltau: or on one such step that moved no column height by more than dz_tol_m
         "cg_tol" => 1.0e-3,
         "cg_maxit" => 80,
         "anchor_w" => 1.0,             # z: weight of the mean-ln P anchor on the bottom plane
