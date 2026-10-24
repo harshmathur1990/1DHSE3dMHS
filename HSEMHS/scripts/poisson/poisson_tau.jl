@@ -193,7 +193,8 @@ end
 """
 New z(τ), ln P(τ) from the Poisson pressure P on the height grid: a = 1 + H d ln P/dz (zero above z_cut and outside the
 column's τ range) at each level's current height, the column re-integrated in τ from its top with fac = 1 − a, and then
-shifted vertically so that its ln P matches ln P_Poisson(z) in the mean over the levels below z_cut (H-weighted Newton).
+shifted vertically so that its ln P matches ln P_Poisson(z) over the levels below z_cut (least squares, Gauss–Newton
+with the Poisson slope d ln P/dz).
 Below z_cut the levels then take ln P_Poisson at their new height: the re-integrated pressure agrees with it to 1–3 %,
 but that much column-to-column jitter alone costs ~0.07 ρg of horizontal force.
 Returns (clamped a values, capped level intervals).
@@ -215,16 +216,20 @@ function retau!(znew, lPnew, z, lT, lt, zg, P, rho, inside, zcut, tab)
             end
             zc = @view znew[:, j, i]; pc = @view lPnew[:, j, i]
             Threads.atomic_add!(ncap, hse_tau!(pc, zc, @view(lT[:, j, i]), lt, tab, fac))
+            # vertical shift s: least squares ln P_Poisson(z_k + s) = ln P_k over the levels below z_cut, Gauss–Newton with
+            # the Poisson field's own slope (where the Lorentz force carries the gas, d ln P/dz → 0 and an H-based step
+            # overshoots), at most 50 km per pass
+            dlc = @view dl[:, j, i]
             s = interp_lt(@view(z[:, j, i]), lt, 0.0)                    # start from the old height of τ = 1
-            for _ in 1:3
-                num = 0.0; cnt = 0
+            for _ in 1:4
+                num = 0.0; den = 0.0
                 for k in 1:nt
                     zz = zc[k] + s
                     (zz > zcut || zz > zg[1] || zz < zg[end]) && continue
-                    q, _ = q_chi(tab, lT[k, j, i], pc[k])
-                    num += (zinterp(lPc, zg, zz) - pc[k]) / (G0 * q); cnt += 1
+                    gk = zinterp(dlc, zg, zz)
+                    num += gk * (pc[k] - zinterp(lPc, zg, zz)); den += gk^2
                 end
-                cnt > 0 && (s += num / cnt)
+                den > 0 && (s += clamp(num / den, -50e3, 50e3))
             end
             zc .+= s
             for k in 1:nt                                          # below z_cut the pressure is the Poisson pressure itself
@@ -389,13 +394,16 @@ function main()
         ncl, ncap = retau!(znew, lPnew, z, lT, lt, zg, P, rho, inside, zcut, tab)
         @. znew = z + ω * (znew - z); @. lPnew = lnP + ω * (lPnew - lnP)   # no gauge here: the Poisson field does not move
         dz = abs.(znew .- z); dlp = abs.(lPnew .- lnP)
+        # convergence on the levels the Poisson step solves (below z_cut); above it the columns are τ-hydrostatic and
+        # tens of Mm high, so a tiny change of their base pressure moves them by many km without any force imbalance
+        dzin = dz[z .<= zcut]
         z .= znew; lnP .= lPnew
-        push!(hist, pct(dz, 0.99))
-        @printf("%s iteration %d: |Δz| p50/p99/max %.3f / %.3f / %.3f km, |Δ ln P(τ)| p99 %.2e, z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | RMS |F|/ρg inside: handed to Poisson %.4f, after %.4f | Poisson Φ_end/Φ_start %.3f in %d steps, a clamped %d, ln P capped %d | %.1f s\n",
-                stamp(), it, pct(dz, 0.5) / 1e3, pct(dz, 0.99) / 1e3, maximum(dz) / 1e3, pct(dlp, 0.99),
+        push!(hist, pct(dzin, 0.99))
+        @printf("%s iteration %d: |Δz| below z_cut p50/p99 %.3f / %.3f km, all levels p50/p99/max %.3f / %.3f / %.3f km, |Δ ln P(τ)| p99 %.2e, z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | RMS |F|/ρg inside: handed to Poisson %.4f, after %.4f | Poisson Φ_end/Φ_start %.3f in %d steps, a clamped %d, ln P capped %d | %.1f s\n",
+                stamp(), it, pct(dzin, 0.5) / 1e3, pct(dzin, 0.99) / 1e3, pct(dz, 0.5) / 1e3, pct(dz, 0.99) / 1e3, maximum(dz) / 1e3, pct(dlp, 0.99),
                 pct(z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3..., fin, fout, sol.Φ / sol.Φ0, sol.steps, ncl, ncap, time() - t0)
         flush(stdout)
-        hist[end] < tol && (println(stamp(), " converged (p99 |Δz| < $(tol/1e3) km)"); break)
+        hist[end] < tol && (println(stamp(), " converged (p99 |Δz| below z_cut <$(tol/1e3) km)"); break)
     end
 
     # ---- gauge once at the end: mean z(τ = 1) = 0 (heights only; the height grid moves with the columns) ----

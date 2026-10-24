@@ -177,27 +177,40 @@ function setprec!(pr::Prob)
     end
 end
 
+"""Thomas solve, in place on x (rhs in, solution out), of the vertical system of the mode with horizontal |k|² = s2."""
+@inline function thomas!(x, cp, dp, pr::Prob, s2)
+    n = pr.n
+    @inbounds for k in 1:n
+        d = pr.cdiag[k] + pr.wc[k] * s2 + pr.ereg[k]
+        if k == 1
+            cp[1] = pr.coff[1] / d; dp[1] = x[1] / d
+        else
+            den = d - pr.coff[k-1] * cp[k-1]
+            cp[k] = k < n ? pr.coff[k] / den : 0.0
+            dp[k] = (x[k] - pr.coff[k-1] * dp[k-1]) / den
+        end
+    end
+    @inbounds x[n] = dp[n]
+    @inbounds for k in n-1:-1:1
+        x[k] = dp[k] - cp[k] * x[k+1]
+    end
+    return x
+end
+
 function Minv!(pr::Prob, out, r)
     n = pr.n; Vh = pr.Vh; nyh = size(Vh, 2); Ncol = pr.ny * pr.nx
     mul!(Vh, pr.pf, r)
     Threads.@threads for i in 1:pr.nx
         cp = zeros(n); dp = zeros(ComplexF64, n)
-        @inbounds for j in 1:nyh
-            s2 = pr.sx2[i] + pr.sy2[j]
-            for k in 1:n
-                d = pr.cdiag[k] + pr.wc[k] * s2 + pr.ereg[k]
-                (i == 1 && j == 1) && (d += pr.Aanc * pr.acnt[k]^2 / Ncol)   # diagonal of the rank-1 anchor term
-                if k == 1
-                    cp[1] = pr.coff[1] / d; dp[1] = Vh[1, j, i] / d
-                else
-                    den = d - pr.coff[k-1] * cp[k-1]
-                    cp[k] = k < n ? pr.coff[k] / den : 0.0
-                    dp[k] = (Vh[k, j, i] - pr.coff[k-1] * dp[k-1]) / den
-                end
-            end
-            Vh[n, j, i] = dp[n]
-            for k in n-1:-1:1
-                Vh[k, j, i] = dp[k] - cp[k] * Vh[k+1, j, i]
+        for j in 1:nyh
+            x = @view Vh[:, j, i]
+            thomas!(x, cp, dp, pr, pr.sx2[i] + pr.sy2[j])
+            if i == 1 && j == 1
+                # mean mode: the anchor adds (Aanc/Ncol) c cᵀ with c_k = anchor cells in layer k (rank 1, coupling the
+                # layers); Sherman–Morrison on top of the tridiagonal solve
+                w = ComplexF64.(pr.acnt); thomas!(w, cp, dp, pr, 0.0)
+                α = pr.Aanc / Ncol
+                x .-= (α * sum(pr.acnt .* x) / (1 + α * sum(pr.acnt .* w))) .* w
             end
         end
     end
