@@ -30,6 +30,7 @@ mutable struct ParCtx
     nthreads::Int
     debug::Bool
     bufcache::Dict{Tuple{Symbol,Int},Vector{Float64}}
+    owned_comms::Vector{MPI.Comm}    # communicators created here (duplicate of the parent, Cartesian); freed by free_parallel!
 end
 
 """Owned range of process coordinate `c` (0-based) when `N` points are split over `p`."""
@@ -49,33 +50,55 @@ function ensure_mpi()
 end
 
 """
-    init_parallel(NX, NY, NZ; px=0, py=0, debug=false) -> ParCtx
+    init_parallel(comm, NX, NY, NZ; px=0, py=0, debug=false) -> ParCtx
 
-Create the periodic 2D Cartesian communicator and this rank's block. `px = py = 0` lets
-`MPI.Dims_create` choose. Rejects (collectively) any owned size below 2.
+Create the periodic 2D Cartesian communicator and this rank's block from the parent communicator `comm` (never
+`COMM_WORLD` behind the caller's back). The parent is duplicated first, so HSEMHS messages cannot match the caller's;
+both created communicators are owned by the returned context and released by `free_parallel!` (MPI itself is never
+initialised or finalised here). `px = py = 0` lets `MPI.Dims_create` choose. Rejects (collectively) any owned size
+below 2.
 """
-function init_parallel(NX::Int, NY::Int, NZ::Int; px::Int = 0, py::Int = 0, debug::Bool = false)
-    ensure_mpi()
-    world = MPI.COMM_WORLD
-    nr = MPI.Comm_size(world)
+function init_parallel(comm::MPI.Comm, NX::Int, NY::Int, NZ::Int; px::Int = 0, py::Int = 0, debug::Bool = false)
+    nr = MPI.Comm_size(comm)
     dims = Int.(MPI.Dims_create(nr, [px, py]))
     prod(dims) == nr || invalid("process grid $(dims) does not match $nr ranks")
-    comm = MPI.Cart_create(world, dims; periodic = [true, true], reorder = false)
-    rank = MPI.Comm_rank(comm)
-    coords = MPI.Cart_coords(comm)
+    NZ >= 3 || invalid("NZ = $NZ; at least 3 vertical levels are required")
+    # every check depends only on arguments that are identical on all ranks, so all ranks agree before any
+    # communicator is created (the owned sizes of every rank are computed locally, so no reduction is needed)
+    ok = 1
+    for c in 0:dims[1]-1, d in 0:dims[2]-1
+        (block_range(NX, dims[1], c)[2] >= 2 && block_range(NY, dims[2], d)[2] >= 2) || (ok = 0)
+    end
+    ok == 1 || invalid("process grid $(dims[1])×$(dims[2]) leaves fewer than 2 owned columns per axis on some rank for a $(NX)×$(NY) grid")
+    dup = MPI.Comm_dup(comm)
+    cart = MPI.Cart_create(dup, dims; periodic = [true, true], reorder = false)
+    rank = MPI.Comm_rank(cart)
+    coords = MPI.Cart_coords(cart)
     cx, cy = Int(coords[1]), Int(coords[2])
-    xm, xp = MPI.Cart_shift(comm, 0, 1)
-    ym, yp = MPI.Cart_shift(comm, 1, 1)
+    xm, xp = MPI.Cart_shift(cart, 0, 1)
+    ym, yp = MPI.Cart_shift(cart, 1, 1)
     i0, nx = block_range(NX, dims[1], cx)
     j0, ny = block_range(NY, dims[2], cy)
-    ok = (nx >= 2 && ny >= 2) ? 1 : 0
-    if MPI.Allreduce(ok, min, comm) == 0
-        invalid("process grid $(dims[1])×$(dims[2]) leaves fewer than 2 owned columns per axis on some rank for a $(NX)×$(NY) grid")
-    end
-    NZ >= 3 || invalid("NZ = $NZ; at least 3 vertical levels are required")
-    return ParCtx(comm, rank, nr, dims[1], dims[2], cx, cy, xm, xp, ym, yp,
+    return ParCtx(cart, rank, nr, dims[1], dims[2], cx, cy, xm, xp, ym, yp,
                   Block(nx, ny, NZ, i0, j0), NX, NY, NZ, Threads.nthreads(), debug,
-                  Dict{Tuple{Symbol,Int},Vector{Float64}}())
+                  Dict{Tuple{Symbol,Int},Vector{Float64}}(), MPI.Comm[cart, dup])
+end
+
+"""Standalone entry: initialise MPI if needed and decompose `COMM_WORLD` (file drivers and tests only)."""
+function init_parallel(NX::Int, NY::Int, NZ::Int; px::Int = 0, py::Int = 0, debug::Bool = false)
+    ensure_mpi()
+    return init_parallel(MPI.COMM_WORLD, NX, NY, NZ; px = px, py = py, debug = debug)
+end
+
+"""Free the communicators created by `init_parallel` (collective over the context's ranks). Idempotent."""
+function free_parallel!(par::ParCtx)
+    MPI.Finalized() && (empty!(par.owned_comms); return nothing)
+    for c in par.owned_comms
+        MPI.free(c)
+    end
+    empty!(par.owned_comms)
+    empty!(par.bufcache)
+    return nothing
 end
 
 assert_main(par::ParCtx) = (par.debug && !MPI.Is_thread_main()) && error("MPI call off the main thread")

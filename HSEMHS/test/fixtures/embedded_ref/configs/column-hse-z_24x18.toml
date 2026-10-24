@@ -1,0 +1,17 @@
+[run]
+mode = "column-hse-z"
+output = "test/fixtures/embedded_ref/column-hse-z_24x18.h5"
+overwrite = true
+[input]
+file = "test/fixtures/embedded/z_24x18.nc"
+[physics]
+g = "from_input"
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"
+[tau]
+top = "exp_tail"
+[output]
+compression = 0

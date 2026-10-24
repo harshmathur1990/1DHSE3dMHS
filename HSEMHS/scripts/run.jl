@@ -6,6 +6,8 @@
 # output directory.
 using HSEMHS
 using MPI
+using LinearAlgebra
+BLAS.set_num_threads(1)      # standalone default (formerly set in HSEMHS.__init__); the τ driver raises it around its solve
 
 length(ARGS) == 1 || (println(stderr, "usage: julia --project=. scripts/run.jl config.toml"); exit(4))
 HSEMHS.ensure_mpi()

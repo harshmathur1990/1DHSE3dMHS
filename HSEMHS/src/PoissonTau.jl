@@ -112,7 +112,11 @@ function gauge!(par, z, lt)
     return s
 end
 
-"""Column HSE in τ for every owned column, aligned and gauged. Returns (lnP, z, ncap, Pref_total, nbelow)."""
+"""
+Column HSE in τ for every owned column, aligned and gauged. Returns (lnP, z, ncap, Pref_total, nbelow, nbad): nbad is
+the global number of non-finite ln P (columns that left the EOS table); when nbad > 0 the alignment and gauge are
+skipped (they would spread the NaNs) and every rank returns the same nbad, so callers decide collectively.
+"""
 function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; cap_per_dex = 50.0, align = "ptot")
     nt, ny, nx = size(lT)
     lnP = zeros(nt, ny, nx); z = zeros(nt, ny, nx)
@@ -123,10 +127,10 @@ function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; cap_per_dex = 50.0, ali
         end
     end
     nbad = gcount(par, count(!isfinite, lnP))
-    nbad > 0 && error("column HSE in τ left the EOS table in $nbad points")
+    nbad > 0 && return lnP, z, gcount(par, ncap[]), NaN, 0, nbad
     Pt, nb = align == "ptot" ? align_ptot!(par, z, lnP, lT, Bx, By, Bz, tab, g) : (NaN, 0)
     gauge!(par, z, lt)
-    return lnP, z, gcount(par, ncap[]), Pt, nb
+    return lnP, z, gcount(par, ncap[]), Pt, nb, 0
 end
 
 """
@@ -476,17 +480,24 @@ Direct Poisson solve from the column HSE in τ (u = ln P, z0 aligned and gauged)
 relative decrease (Φ_prev − Φ)/Φ_prev of accepted steps is below rtol on n_consec consecutive steps (a single small
 step is not enough: Φ is nearly flat along the heights of a few strong-field columns). Height changes are logged, not
 used for stopping.
-Returns (u, z, Φ0, Φ, steps, kc).
+Returns (u, z, Φ0, Φ, steps, kc, info). `info` (a NamedTuple) carries the stopping `reason` (:converged, :no_descent,
+:max_steps, :eos_out_of_envelope for a start state outside the table, in which case u and z are the inputs), the
+Gauss–Newton decrement `gn_decrement` (the relative decrease of Φ a further undamped Gauss–Newton step would predict:
+a scale-free stationarity measure), the gradient norm `grad_norm` = ‖Jᵀ W R‖, the last linear solve (`cg_its`,
+`cg_rel`), the final damping `lm_mu`, `rms0`/`rms` = √(Φ/W) and `phi0_zero`. `S` reuses a cached SlabFFT for these
+grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
-                   cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing)
+                   cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
+                   rms_atol = 0.0, stationarity = true)
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
     zrel = z0[1:kc, :, :] .- z0[kc:kc, :, :]
     c = z0[kc, :, :]
     nyh = ny ÷ 2 + 1
-    S = SlabFFT(par, n1, ny)
+    S === nothing && (S = SlabFFT(par, n1, ny))
+    (S.nk, S.ny, S.nxl) == (n1, ny, nx) || error("solve_tau: cached SlabFFT has sizes $((S.nk, S.ny, S.nxl)), expected $((n1, ny, nx))")
     sy2 = [sin(2π * (j - 1) / ny)^2 / dy^2 for j in 1:nyh]
     sx2 = [sin(2π * fftfreq(NX)[i])^2 / dx^2 for i in 1:NX]
     jr = S.jr[par.rank+1]
@@ -497,7 +508,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx))
     _, bad = evaluate!(pr, u, c)
-    bad > 0 && error("start state outside the EOS table")
+    if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
+        info = (reason = :eos_out_of_envelope, gn_decrement = NaN, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
+                lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false)
+        return u, copy(z0), NaN, NaN, 0, kc, info
+    end
     # weights from the start (fixed during the solve): H̄² per volume
     Hb = gmedians(par, 1 ./ (g .* pr.q))
     dzf = gmedians(par, pr.z[kc:nt-1, :, :] .- pr.z[kc+1:nt, :, :])
@@ -513,6 +528,13 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     Φ, _ = evaluate!(pr, u, c); Φ0 = Φ
     logf(@sprintf("start: cut at log10 τ = %.2f (level %d, %d ln P levels + 1 height per column), Φ %.6e, RMS %.4e | %s | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km",
                   lt[kc], kc, n1 - 1, Φ, sqrt(Φ / Wtot), bands(pr, lt, Hb, dzf), zq()...))
+    reason = :max_steps
+    if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0
+        info = (reason = :converged, gn_decrement = 0.0, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
+                rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0)
+        logf("start state already within rms_atol: no steps")
+        return u, copy(pr.z), Φ0, Φ0, 0, kc, info
+    end
     # Levenberg–Marquardt: damping μ D (D the regularisation's diagonal shape), raised ×4 when a step fails, lowered ×3
     # after a full step; steps over the caps are scaled as a whole (an element-wise clamp can make an ascent direction)
     δ = Z(); rhs = Z(); ut = copy(u); ct = copy(c)
@@ -542,6 +564,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         if !accepted
             evaluate!(pr, u, c)
             logf(@sprintf("step %2d: no decrease up to μ = %.3g; stopping", s, μ))
+            reason = :no_descent
             break
         end
         μ = α == 1.0 ? μ / 3 : (α >= sc / 2 ? μ : 2μ)
@@ -552,11 +575,25 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         nsmall = dec < rtol ? nsmall + 1 : 0
         logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e), RMS %.4e | CG %d its (rel %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
                       s, Φ / Φ0, dec, sqrt(Φ / Wtot), its, rel, α, μ, dzmax / 1e3, zq()..., time() - t0))
-        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps (last max|δc| %.1f m)", rtol, nsmall, dzmax)); break)
+        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps (last max|δc| %.1f m)", rtol, nsmall, dzmax));
+                               reason = :converged; break)
     end
     pr.ereg = ereg0
     logf("end: " * bands(pr, lt, Hb, dzf))
-    return u, copy(pr.z), Φ0, Φ, steps, kc
+    # stationarity at the returned state (pr holds its evaluation): undamped Gauss–Newton step δ from (JᵀWJ + ereg) δ =
+    # −JᵀWR and the predicted relative decrease δ·(−JᵀWR)/Φ. Diagnostics only: u and z are not changed.
+    gnd = NaN; gn = NaN; its = 0; rel = NaN
+    if stationarity
+        JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
+        gn = gnorm(par, rhs)
+        setprec!(pr)
+        its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit)
+        gnd = gdot(par, δ, rhs) / Φ
+        logf(@sprintf("stationarity: Gauss–Newton decrement %.3e, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd, gn, its, rel))
+    end
+    info = (reason = reason, gn_decrement = gnd, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
+            rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false)
+    return u, copy(pr.z), Φ0, Φ, steps, kc, info
 end
 
 end # module PoissonTau

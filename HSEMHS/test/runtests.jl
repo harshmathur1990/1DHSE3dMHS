@@ -5,6 +5,9 @@ using HDF5
 using OffsetArrays
 using Random
 using Statistics
+using LinearAlgebra
+
+BLAS.set_num_threads(1)     # HSEMHS no longer sets this on load (the caller owns threading)
 
 const H = HSEMHS
 const FIX = joinpath(@__DIR__, "fixtures")
@@ -33,6 +36,7 @@ include("test_stag_gradient.jl")
 include("test_gateC_staggered.jl")
 include("test_face_bounds.jl")
 include("test_tau_height.jl")
+include("test_embedded.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks
 @testset "MPI ranks" begin
@@ -44,6 +48,14 @@ include("test_tau_height.jl")
         for n in (2, 4, 6)
             ok = MPI.mpiexec() do exe
                 success(pipeline(`$exe -n $n $(Base.julia_cmd()) --project=$proj -t 2 $script`;
+                                 stdout = stdout, stderr = stderr))
+            end
+            @test ok
+        end
+        escript = joinpath(@__DIR__, "mpi", "mpi_embedded.jl")
+        for n in (2, 3, 4)
+            ok = MPI.mpiexec() do exe
+                success(pipeline(`$exe -n $n $(Base.julia_cmd()) --project=$proj -t 2 $escript`;
                                  stdout = stdout, stderr = stderr))
             end
             @test ok

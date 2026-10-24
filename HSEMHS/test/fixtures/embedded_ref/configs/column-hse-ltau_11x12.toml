@@ -1,0 +1,13 @@
+[run]
+mode = "column-hse-ltau"
+output = "test/fixtures/embedded_ref/column-hse-ltau_11x12.h5"
+overwrite = true
+[input]
+file = "test/fixtures/embedded/ltau_11x12.h5"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+cap_per_dex = 50.0
+align = "ptot"
