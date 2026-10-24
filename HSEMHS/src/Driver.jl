@@ -17,12 +17,20 @@ function run_config(path::AbstractString)
             gate0_audit(cfg)
         elseif mode == "eos_table"
             build_eos_table(cfg)
-        elseif mode == "column_hse"
+        elseif mode in ("column_hse", "column-hse-z")
             status = run_column_hse(cfg)
+        elseif mode == "column-hse-ltau"
+            status = run_column_hse_ltau(cfg)
+        elseif mode == "mhs-poisson-z"
+            status = run_mhs_poisson_z(cfg)
+        elseif mode == "mhs-poisson-ltau"
+            status = run_mhs_poisson_ltau(cfg)
+        elseif mode == "full-mhs-z"
+            invalid("run.mode = \"full-mhs-z\" runs through scripts/run.jl (the M5 driver), not run_config")
         elseif mode == "screening"
             status = run_screening(cfg)
         else
-            invalid("run.mode = \"$mode\" is not implemented yet (available: gate0, eos_table, column_hse, screening)")
+            invalid("run.mode = \"$mode\" is not implemented (available: $(join(MODES[1:5], ", ")), gate0, eos_table, screening)")
         end
     catch e
         e isa InvalidInput || rethrow()

@@ -8,7 +8,7 @@ const REQUIRED = :REQUIRED
 
 const CONFIG_SCHEMA = [
     "run" => [
-        "mode" => REQUIRED,          # column_hse | mhs | gate0 | eos_table | screening
+        "mode" => REQUIRED,          # column-hse-z | column-hse-ltau | mhs-poisson-z | mhs-poisson-ltau | full-mhs-z (+ gate0, eos_table, screening; column_hse = column-hse-z)
         "output" => REQUIRED,
         "overwrite" => false,
         "debug" => false,
@@ -22,6 +22,8 @@ const CONFIG_SCHEMA = [
         "crop_z_m" => Float64[],
         "resample" => "none",
         "resample_dz_m" => 0.0,
+        "dx_m" => 0.0,               # τ-grid inputs without coordinates (IO/input-mhs-ltau.nc): column spacing [m]
+        "dy_m" => 0.0,               # 0: = dx_m
     ],
     "physics" => [
         "g" => "from_input",
@@ -90,6 +92,32 @@ const CONFIG_SCHEMA = [
         "checkpoint_every" => 200,
         "restart_from" => "",
     ],
+    "poisson" => [                   # mhs-poisson-z and mhs-poisson-ltau
+        "z_cut_m" => 1.0e6,            # z: solved region z ≤ z_cut, column HSE above
+        "logtau_cut" => -4.0,          # ltau: solved levels log10 τ ≥ logtau_cut, τ-hydrostatic above
+        "max_steps" => 60,             # Gauss–Newton steps
+        "rtol" => 1.0e-4,              # stop when ΔΦ/Φ < rtol
+        "cg_tol" => 1.0e-3,
+        "cg_maxit" => 80,
+        "anchor_w" => 1.0,             # z: weight of the mean-ln P anchor on the bottom plane
+        "dc_cap_m" => 3.0e5,           # ltau: largest change of a column's height per step (whole-step scaling)
+        "lm_mu0" => 0.0,               # ltau: initial Levenberg–Marquardt damping
+    ],
+    "tau_grid" => [                  # column-hse-ltau and mhs-poisson-ltau
+        "cap_per_dex" => 50.0,         # largest rise of ln P per dex in τ (hot-over-cool runaway tail)
+        "align" => "ptot",             # ptot: P + B²/2μ₀ equal at one height; none: z = 0 at log10 τ = 0 per column
+    ],
+    "full_mhs" => [                  # full-mhs-z (the M5 joint GN driver, scripts/m5_bifrost/m5h_fullres.jl); M5i defaults
+        "run" => "run",                # run | smoke
+        "wall_hours" => 24.0,
+        "ckpt_hours" => 1.0,
+        "init_iter" => 3000,
+        "restart" => "",
+        "sigma_rel" => 0.0,            # σ_B = sigma_rel |B| ⊕ 5 G (M5i: 0, uniform 5 G)
+        "trust_region" => false,       # M5i: GN + backtracking line search
+        "stop" => "phi",               # phi (|ΔΦ|/Φ < phi_rtol on 3 consecutive accepted) | dz (z(τ=1) change)
+        "phi_rtol" => 1.0e-6,
+    ],
     "screening" => [
         "colhse_file" => "",          # column_hse output providing Pgas and rho
         "ell_factor" => 2.0,
@@ -117,7 +145,8 @@ const CONFIG_SCHEMA = [
     ],
 ]
 
-const MODES = ("column_hse", "mhs", "gate0", "eos_table", "screening")
+const MODES = ("column-hse-z", "column-hse-ltau", "mhs-poisson-z", "mhs-poisson-ltau", "full-mhs-z",
+               "column_hse", "mhs", "gate0", "eos_table", "screening")
 
 """Parsed, validated configuration. Sections are NamedTuples: `cfg.parallel.px`."""
 struct Config
@@ -131,7 +160,7 @@ Base.getproperty(c::Config, s::Symbol) =
 
 function required_keys(mode::String)
     req = Set(["run.mode", "run.output", "input.file"])
-    mode == "column_hse" && push!(req, "column_hse.P_ref")
+    mode in ("column_hse", "column-hse-z", "mhs-poisson-z") && push!(req, "column_hse.P_ref")
     mode == "mhs" && push!(req, "mhs.P_ref")
     return req
 end

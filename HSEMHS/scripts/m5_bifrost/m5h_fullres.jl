@@ -128,14 +128,14 @@ function save_atmosphere(path, tag, pb, w, x, ulo, rs, zbuf, fbuf, taud, gitrev,
     logf(@sprintf("saved %s (%s) in %.0f s", path, tag, time() - tsave))
 end
 
-function main()
-    outdir, mode = ARGS[1], ARGS[2]
+function main(args = ARGS)
+    outdir, mode = args[1], args[2]
     mode in ("run", "smoke") || error("mode must be run or smoke")
     R0 && (mkpath(outdir); mkpath(joinpath(outdir, "ztau1")))
     MPI.Barrier(MPI.COMM_WORLD)
     gitrev = try strip(read(`git -C $(@__DIR__) rev-parse --short HEAD`, String)) catch; "unknown" end
-    wall_h = parse(Float64, get(ARGS, 3, "24")); ckpt_h = parse(Float64, get(ARGS, 4, "1"))
-    init_iter = parse(Int, get(ARGS, 5, "3000")); restart = get(ARGS, 6, "")
+    wall_h = parse(Float64, get(args, 3, "24")); ckpt_h = parse(Float64, get(args, 4, "1"))
+    init_iter = parse(Int, get(args, 5, "3000")); restart = get(args, 6, "")
     logf("M5h MHS (git $gitrev), mode $mode, $(MPI.Comm_size(MPI.COMM_WORLD)) ranks × $(Threads.nthreads()) threads, input $BIF, wall $(wall_h) h, checkpoints every $(ckpt_h) h" *
          (isempty(restart) ? "" : ", restart from $restart"))
     c, sz = mode == "run" ? (1, 1) : (12, 2)
@@ -289,4 +289,5 @@ function main()
     logf("done")
 end
 
-main()
+# run directly, or through scripts/run.jl (run.mode = "full-mhs-z"), which calls main with the config's arguments
+abspath(PROGRAM_FILE) == @__FILE__ && main()

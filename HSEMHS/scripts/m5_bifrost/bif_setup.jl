@@ -5,7 +5,7 @@ const H = HSEMHS
 H.ensure_mpi()
 # input file: ENV["MHS_INPUT"] when set (e.g. ../IO/input-mhs-hse-fullz.nc, the uncropped 496-level cube), else the cropped file
 const BIF = abspath(get(ENV, "MHS_INPUT", joinpath(@__DIR__, "..", "..", "..", "IO", "input-mhs-hse.nc")))
-const TAB = normpath(joinpath(@__DIR__, "..", "..", "cache", "eos_table_fullz.h5"))
+const TAB = abspath(get(ENV, "MHS_EOS_TABLE", normpath(joinpath(@__DIR__, "..", "..", "cache", "eos_table_fullz.h5"))))
 # sigma_rel: σ_B = sqrt((sigma_rel |Bobs|)² + (5 G)²) per component; sigma_rel = 0 gives a uniform 5 G (M5i: an absolute penalty
 # on the change of B, no relative tolerance).
 function bif_problem(c, sz; init_iter::Int = 3000, init_progress::Int = 0, sigma_rel::Float64 = 0.05, kw...)
