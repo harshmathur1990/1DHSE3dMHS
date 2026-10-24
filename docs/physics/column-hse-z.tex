@@ -1,96 +1,176 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-z: hydrostatic columns on a height grid}{Physics of \code{run.mode = "column-hse-z"} (HSEMHS). 24 Oct 2026.}
+\doctitle{column-hse-z: hydrostatic columns on a height grid}{The physics of \code{run.mode = "column-hse-z"}, explained step by step (B.Sc.\ level). HSEMHS.}
 
-\section{What the mode does}
-Given the temperature $T(x,y,z)$ of a solar atmosphere on a geometric-height grid, the mode computes the gas pressure
-$P$, the density $\rho$, the electron density and the optical depth $\tau_{500}$ that every vertical column would have
-if it were in \textbf{hydrostatic equilibrium on its own}. Each column is independent of its neighbours: no horizontal
-force balance is attempted and the magnetic field plays no role. The result is the non-magnetic product of the code,
-the reference against which the magnetic modes are measured, and the starting state of \code{mhs-poisson-z} and
-\code{full-mhs-z}.
+\section{The question}
+We are given the temperature $T$ of a piece of the solar atmosphere at every point of a three-dimensional grid: two
+horizontal coordinates $x,y$ and the height $z$. We want to know the \textbf{gas pressure} $P$ and the \textbf{density}
+$\rho$ at every point, and from them how transparent the gas is, i.e.\ the \textbf{optical depth} $\tau_{500}$ at the
+wavelength 500\,nm. The answer this mode gives is the simplest physically consistent one: every vertical column of the grid
+is treated as a separate, static column of gas that carries its own weight. Nothing moves, and neighbouring columns do not
+interact.
 
-\section{Quantities}
-\begin{tabular}{>{$}l<{$} p{11.2cm} l}
+\section{The quantities}
+\begin{tabular}{>{$}l<{$} p{11.4cm} l}
 \toprule
 \text{Symbol} & Meaning & Unit \\ \midrule
-x,\,y,\,z & horizontal coordinates and height; $z$ is given top first (strictly decreasing) & m \\
-T & temperature, from the input, \textbf{never changed} & K \\
-P,\ u & gas pressure; the code integrates $u=\ln(P/1\,{\rm Pa})$ & Pa, -- \\
-\rho & mass density, $\rho=\rho(T,P)$ from the equation of state (EOS) & kg\,m$^{-3}$ \\
-n_e,\ \bar\mu & electron density; mean molecular weight & m$^{-3}$, -- \\
-g & surface gravity (274 for the Sun; from the file attribute \code{gravity\_m\_s2}) & m\,s$^{-2}$ \\
-H & pressure scale height $P/(\rho g)=k_BT/(\bar\mu m_{\rm H}g)$ & m \\
-P_{\rm ref} & pressure fixed at the anchor (bottom plane by default) & Pa \\
-\chi_{500} & extinction coefficient at 500\,nm (absorption plus scattering) & m$^{-1}$ \\
-\tau_{500} & optical depth at 500\,nm, counted downward from the top & -- \\
-m & column mass above a point & kg\,m$^{-2}$ \\
+x,\,y,\,z & horizontal coordinates and height ($z$ grows upward; the grid stores the top level first) & m \\
+T & temperature, given, never changed & K \\
+P & gas pressure: force per area exerted by the gas & Pa = N\,m$^{-2}$ \\
+u & $\ln(P/1\,{\rm Pa})$, the natural logarithm of the pressure & -- \\
+\rho & mass density & kg\,m$^{-3}$ \\
+g & gravitational acceleration at the solar surface, $g=274$ & m\,s$^{-2}$ \\
+n & number of free particles (atoms, ions, electrons, molecules) per volume & m$^{-3}$ \\
+n_e,\ P_e & number density of free electrons; electron pressure $n_ek_BT$ & m$^{-3}$, Pa \\
+k_B & Boltzmann constant, $1.381\times10^{-23}$ & J\,K$^{-1}$ \\
+m_{\rm H} & mass of a hydrogen atom, $1.67\times10^{-27}$ & kg \\
+\bar\mu & mean molecular weight: average mass of a free particle in units of $m_{\rm H}$ & -- \\
+H & pressure scale height & m \\
+m & column mass: the mass of gas above a point, per unit horizontal area & kg\,m$^{-2}$ \\
+P_{\rm ref} & the pressure prescribed at one level of every column (the anchor) & Pa \\
+\chi_{500} & extinction coefficient at 500\,nm: fraction of the light removed per metre & m$^{-1}$ \\
+\tau_{500} & optical depth at 500\,nm, counted from the top downward & -- \\
 \bottomrule
 \end{tabular}
 
-\section{The equation}
-In a static, non-magnetic atmosphere the vertical force balance on a gas parcel is
-\[
-\frac{dP}{dz}=-\rho g .
-\]
-With $\rho=\rho(T,P)$ and $T(z)$ given, this is an ordinary differential equation along each column. Written for
-$u=\ln P$,
-\[
-\boxed{\;\frac{du}{dz}=-\frac{g\,\rho\big(T(z),e^{u}\big)}{e^{u}}=-\frac{1}{H(T,P)}\;}
-\]
-For an ideal gas of fixed composition and ionisation, $H$ depends on $T$ only and the solution is the familiar
-exponential atmosphere $P(z)=P_{\rm ref}\exp\!\big(-\int dz/H\big)$. In the Sun $\bar\mu$ changes with ionisation and
-molecule formation, so $H$ depends on $P$ too; that is why the equation is integrated numerically with a full EOS. In
-the photosphere $H\approx100$--150\,km; over the 3.5\,Mm of the production box the pressure falls by about eight orders of
-magnitude (median $10^{5.0}$\,Pa at the bottom, $10^{-3.1}$\,Pa at the top, with a spread of 5.5\,dex between columns
-there), which is why $u=\ln P$ rather than $P$ is integrated.
-
-The column mass is integrated along with $u$: $dm/dz=-\rho$, so that $P(z)-P_{\rm top}=g\,m(z)$ can be checked.
-
-\section{Where the pressure is fixed (the anchor)}
-A first-order equation needs one value per column. The default is a \textbf{bottom anchor}: the same pressure
-$P_{\rm ref}$ at the lowest grid level in every column, and integration upward. For the production input
-(\code{IO/input-mhs-hse.nc}, Bifrost \code{en024048\_hion} snapshot 385 cropped to $-0.49\ldots+2.98$\,Mm)
-$P_{\rm ref}=1.035\times10^5$\,Pa, the median Bifrost pressure on that plane (spread 0.08\,dex). Alternatives are a top
-anchor (default 0.1\,Pa) and an anchor at a chosen height $z_{\rm ref}$ (integrated both ways).
-
-Why the bottom: the deep layers are where the pressure is best known and least sensitive to the details above. A top
-anchor makes the photospheric pressure depend on the full chromospheric and transition-region temperature structure,
-which differs strongly from column to column.
-
-\section{Equation of state and opacity}
-$\rho$, $n_e$ and $\chi_{500}$ come from a table built with Wittmann's LTE equation of state (solar composition,
-H$_2$ included, a Saha branch for H and He above a switch temperature) and the continuum opacity at 5000\,\AA,
-interpolated bicubically in $(\ln T,\ln P)$. The table \code{cache/eos\_table\_fullz.h5} covers 2172\,K--1.78\,MK and
-$10^{-13}$--$10^{15}$\,Pa. One EOS state supplies $\rho$, $n_e$, the electron pressure and $\chi_{500}$, so they are
-consistent with each other.
-
-\section{Optical depth}
-With $P(z)$ and $T(z)$ known, $\chi_{500}$ is known at every level and
-\[
-\tau_{500}(z)=\tau_{\rm top}+\int_{z}^{z_{\rm top}}\chi_{500}\,dz' ,
-\]
-integrated downward with the trapezoid rule. $\tau_{\rm top}$ accounts for the gas above the box. The default closure
-(\code{exp\_tail}) assumes that $\chi$ keeps falling exponentially with the scale height of the top two levels,
-$H_\chi=(z_1-z_2)/\ln(\chi_2/\chi_1)$, giving $\tau_{\rm top}=\chi_1H_\chi$. Where that is not meaningful ($\chi$ not
-falling, or $H_\chi>5000$\,km) half a cell, $\tfrac12\chi_1(z_1-z_2)$, is used and the column is flagged. The height of
-$\tau_{500}=1$, $z_{\tau1}(x,y)$, is the ``visible surface'': spectral lines form at fixed $\tau$, so this is what an
-inversion sees.
-
-\section{What the result means, and what it does not}
+\section{Hydrostatic equilibrium}
+Take a thin horizontal slab of gas with area $A$, between heights $z$ and $z+dz$. Three vertical forces act on it:
 \begin{itemize}
-\item Each column is exactly hydrostatic. \textbf{Horizontally the atmosphere is not in balance}: neighbouring columns
-with different temperatures have different $P(z)$, so there are horizontal pressure gradients that nothing balances.
-The mode reports them as the horizontal force residual $R_x,R_y$ (with $B=0$), and labels the output
-\code{vertical\_hse\_only}.
-\item A non-magnetic atmosphere can be in full 3-D static balance only if it is horizontally uniform (the curl of the
-force balance requires $\partial_x\rho=\partial_y\rho=0$). A structured atmosphere in true 3-D balance needs the
-Lorentz force, which is what the \code{mhs-*} and \code{full-mhs-z} modes add.
-\item The temperature is never altered.
+\item the gas below pushes it up with the force $P(z)\,A$;
+\item the gas above pushes it down with $P(z+dz)\,A$;
+\item gravity pulls it down with its weight, mass $\times\,g=\rho\,A\,dz\,g$.
 \end{itemize}
+If the slab does not accelerate, the forces cancel: $P(z)A-P(z+dz)A-\rho gA\,dz=0$. Dividing by $A\,dz$ and letting
+$dz\to0$:
+\[
+\boxed{\;\frac{dP}{dz}=-\rho\,g\;}
+\]
+The pressure \emph{decreases} upward, and it decreases fastest where the gas is densest. This is \textbf{hydrostatic
+equilibrium (HSE)}. It is the same law that makes the air pressure fall as you climb a mountain.
 
-\section{Typical result}
-Production input, full cube ($504\times504\times177$): $z_{\tau1}$ has percentiles 1/50/99 of $-29$ / $64$ / $127$\,km.
-The column-to-column scatter of $z_{\tau1}$ is set entirely by the temperature structure, because every column carries
-the same bottom pressure.
+\section{Equation of state: how $\rho$ follows from $T$ and $P$}
+\subsection{The ideal gas}
+The solar photosphere and chromosphere behave as an ideal gas: $P=n\,k_BT$. If the free particles have an average mass
+$\bar\mu\,m_{\rm H}$, the density is $\rho=n\,\bar\mu\,m_{\rm H}$, so
+\[
+\rho=\frac{\bar\mu\,m_{\rm H}}{k_B}\,\frac{P}{T}.
+\]
+At fixed temperature, doubling the pressure doubles the density.
+
+\subsection{Why $\bar\mu$ is not a constant}
+For neutral solar gas (about 91\,\% hydrogen and 9\,\% helium atoms by number) $\bar\mu\approx1.3$. When hydrogen ionises,
+each atom becomes two particles, a proton and an electron, with almost the same total mass, so $\bar\mu$ roughly halves
+(to $\approx0.6$ for fully ionised gas). In the coolest layers hydrogen forms H$_2$ molecules, which raises $\bar\mu$. How
+much is ionised is described by the \textbf{Saha equation}, for an atom in ionisation stage $i$:
+\[
+\frac{n_{i+1}\,n_e}{n_i}=\frac{2U_{i+1}}{U_i}\left(\frac{2\pi m_ek_BT}{h^2}\right)^{3/2}e^{-E_i/k_BT},
+\]
+where $E_i$ is the ionisation energy (13.6\,eV for hydrogen), $U$ are partition functions and $h$ is Planck's constant.
+Two features matter. The exponential makes ionisation switch on rapidly with temperature. And the factor $n_e$ on the left
+means that at higher density (more electrons around to recombine with) a higher temperature is needed for the same
+ionisation. So $\bar\mu$ depends on \emph{both} $T$ and $P$.
+
+\subsection{The table}
+Solving the Saha equations for all relevant elements together with charge conservation and molecule formation is too slow
+to do at every point of every step. It is done once, with Wittmann's equation-of-state code for solar composition, on a
+fine grid of $(\ln T,\ln P)$, and stored in a \textbf{table}. The code reads $\ln\rho$, $\ln n_e$ and the 500\,nm
+extinction $\ln\chi_{500}$ from it by smooth (bicubic) interpolation. Because all three come from the same solution, they
+are consistent with each other.
+
+\section{The scale height and why we work with $\ln P$}
+Insert the equation of state into hydrostatic equilibrium:
+\[
+\frac{dP}{dz}=-\frac{\bar\mu m_{\rm H}g}{k_BT}\,P=-\frac{P}{H},\qquad
+H\equiv\frac{P}{\rho g}=\frac{k_BT}{\bar\mu\,m_{\rm H}\,g}.
+\]
+$H$, the \textbf{pressure scale height}, has the dimension of a length. For $T=6000$\,K and $\bar\mu=1.3$ it is
+\[
+H=\frac{1.38\times10^{-23}\cdot6000}{1.3\cdot1.67\times10^{-27}\cdot274}\ {\rm m}\approx1.4\times10^5\ {\rm m}=140\ {\rm km}.
+\]
+If $H$ were constant (an isothermal gas), the solution would be $P(z)=P(z_0)\,e^{-(z-z_0)/H}$: the pressure falls by a
+factor $e\approx2.7$ every 140\,km. In general $H$ changes with height, and dividing by $P$ gives the form the code uses:
+\[
+\boxed{\;\frac{du}{dz}=-\frac{1}{H(T,P)},\qquad u=\ln P\;}
+\qquad\Rightarrow\qquad u(z)=u(z_0)-\int_{z_0}^{z}\frac{dz'}{H(z')} .
+\]
+Working with $u=\ln P$ has two advantages. A column spans many factors of ten in pressure, but $u$ changes smoothly and
+by moderate amounts, which is what a numerical integration handles best. And $P=e^u$ is automatically positive.
+
+\section{The anchor: one pressure per column}
+$du/dz=-1/H$ is a first-order differential equation: it determines how $u$ changes, not its value. Like any such
+equation it needs one starting value per column. The mode prescribes the \textbf{same pressure $P_{\rm ref}$ at one level
+in every column}, by default the bottom level (\code{anchor = "bottom"}), and integrates upward from there. The other
+options are the top level (integrate downward) and a chosen height $z_{\rm ref}$ inside the grid (integrate both ways).
+
+Why the bottom? Deep in the atmosphere the gas is dense and the temperature differences between columns matter least, so
+a common pressure there is a reasonable approximation. A top anchor would make the pressure in the photosphere depend
+on the very different temperatures of the chromosphere and transition region in each column. Since every column starts
+from the same $P_{\rm ref}$, all differences between columns come from their temperatures.
+
+Between grid levels the temperature is not known. The code assumes that $\ln T$ varies linearly with $z$ inside each
+interval and integrates with the classical fourth-order Runge--Kutta method, which evaluates the slope $-1/H$ four times
+per step and averages them. Each interval is computed with $n$ and $2n$ substeps; if the two disagree by more than
+$10^{-6}$ in $u$, the number of substeps is doubled until they agree. Steep temperature changes (the transition region)
+thus get more substeps automatically.
+
+\section{Column mass}
+Integrating $dP/dz=-\rho g$ from a height $z$ up to the top of the column gives
+\[
+P(z)-P_{\rm top}=g\int_z^{z_{\rm top}}\rho\,dz'=g\,m(z),
+\]
+where $m(z)$ is the mass of gas above $z$ per square metre. \emph{The pressure at any point is the weight of the gas
+above it} (plus whatever presses on the top). The code integrates $m$ along with $u$ and stores it, which also serves as a
+check of the integration.
+
+\section{Light, opacity and optical depth}
+\subsection{Extinction and the Beer--Lambert law}
+Light of intensity $I$ travelling a distance $ds$ through gas loses a fraction $\chi\,ds$:
+\[
+dI=-\chi\,I\,ds\qquad\Rightarrow\qquad I(s)=I(0)\,e^{-\int_0^s\chi\,ds'}=I(0)\,e^{-\tau}.
+\]
+The number $\tau=\int\chi\,ds$, the \textbf{optical depth}, counts how many ``absorption lengths'' the light crosses.
+$\chi_{500}$ includes both true absorption and scattering at 500\,nm. In the solar photosphere it is dominated by the
+negative hydrogen ion H$^-$ (a hydrogen atom with an extra electron, bound by only 0.75\,eV). Forming H$^-$ needs free
+electrons, which come mostly from easily ionised metals (Na, Ca, Fe, \dots), so $\chi_{500}$ rises steeply with temperature
+and with density. It comes from the same table as $\rho$.
+
+\subsection{Optical depth along the vertical}
+For light leaving the Sun vertically, the optical depth of a point at height $z$ is
+\[
+\tau_{500}(z)=\tau_{\rm top}+\int_z^{z_{\rm top}}\chi_{500}(z')\,dz' .
+\]
+It is zero at the top of the atmosphere and grows downward. Light emitted at optical depth $\tau$ escapes with probability
+$e^{-\tau}$, so most of the light we see comes from around $\tau\approx1$ (a result known as the Eddington--Barbier
+relation: the emerging intensity is close to the emission at $\tau=1$). The height $z_{\tau1}(x,y)$ where $\tau_{500}=1$ is
+the ``visible surface'' of the Sun. Spectral lines form at fixed optical depth, so the $\tau$ scale is what an
+observation or an inversion actually probes. For a viewing angle with $\mu=\cos\theta$ the path is longer by $1/\mu$, and
+$\tau_\mu=\tau/\mu$.
+
+\subsection{The gas above the box}
+The grid ends at $z_{\rm top}$, but the atmosphere does not. If $\chi$ continues to fall exponentially above the top,
+$\chi(z)=\chi_1e^{-(z-z_1)/H_\chi}$, the missing optical depth is
+\[
+\tau_{\rm top}=\int_{z_1}^{\infty}\chi_1e^{-(z-z_1)/H_\chi}\,dz=\chi_1H_\chi,\qquad
+H_\chi=\frac{z_1-z_2}{\ln(\chi_2/\chi_1)},
+\]
+with $H_\chi$ taken from the top two levels (index 1 is the top). If $\chi$ does not decrease upward there, this makes no
+sense, and half a grid cell is used instead, $\tau_{\rm top}=\tfrac12\chi_1(z_1-z_2)$.
+
+\section{What the answer means, and what it does not}
+Each column is now in exact vertical equilibrium. But consider two neighbouring columns at the same height, one hot and
+one cool. Their pressures differ, so there is a horizontal pressure gradient $\partial P/\partial x\ne0$: a sideways force
+that nothing balances. The atmosphere is \textbf{not} in three-dimensional equilibrium. The mode reports this horizontal
+force as a diagnostic and labels its output \emph{vertical HSE only}.
+
+Could any choice of pressure make a non-magnetic atmosphere fully static? The full force balance is
+$-\nabla P-\rho g\zh=0$. Take the curl of both sides. The curl of a gradient is always zero, and
+$\nabla\times(\rho g\zh)=g\,(\partial_y\rho,\,-\partial_x\rho,\,0)$, so
+\[
+\frac{\partial\rho}{\partial x}=\frac{\partial\rho}{\partial y}=0 .
+\]
+A static atmosphere without magnetic field must have the same density everywhere on each horizontal plane, and then the
+horizontal equations give $\partial_xP=\partial_yP=0$ too. A real, structured atmosphere (hot granules next to cool lanes)
+cannot be static without help: in the Sun that help is the motion of the gas, and in a static model it can only be the
+magnetic field. That is the subject of the \code{mhs-*} and \code{full-mhs-z} modes, which use this mode's result as their
+starting point.
 \end{document}

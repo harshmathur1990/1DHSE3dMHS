@@ -102,6 +102,23 @@ script \code{scripts/poisson/poisson\_tau\_direct.jl}.
 80-iteration cap in every step (relative residual $10^{-2}$--$2\times10^{-1}$): the next speed-up is a better preconditioner.
 \end{itemize}
 
+\section{Result on the production cube}
+$z(\tau{=}1)$ relative to the cube mean, median [5\,\%, 95\,\%] in km, by $|\B|$ at $\tau=1$ (fixed-point = the superseded scheme):
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+$|\B|$ at $\tau=1$ & column HSE in $\tau$ & fixed-point scheme & \textbf{mhs-poisson-ltau} \\ \midrule
+0--200\,G & $-38$ [$-85$, 187] & $-55$ [$-257$, 380] & $-10$ [$-35$, 73] \\
+200--500\,G & $-68$ [$-88$, 58] & $+120$ [$-180$, 549] & $-26$ [$-52$, 24] \\
+500--1000\,G & $-86$ [$-104$, $-36$] & $+183$ [$-198$, 587] & $-51$ [$-89$, $-17$] \\
+1000--1500\,G & $-121$ [$-144$, $-92$] & $+314$ [$-117$, 563] & $-96$ [$-125$, $-63$] \\
+1500--3000\,G & $-156$ [$-175$, $-140$] & $+402$ [58, 568] & $-130$ [$-167$, $-104$] \\
+\bottomrule
+\end{tabular}
+\end{center}
+Force imbalance after the solve, RMS in units of $\rho g$: 0.04--0.09 horizontal and 0.04--0.06 vertical for $\log\tau<0$
+(start 0.3--0.8).
+
 \section{Design history}
 \begin{enumerate}
 \item Fixed point (\code{scripts/poisson/poisson\_tau.jl}): map to a height grid, Poisson solve there, re-integrate the

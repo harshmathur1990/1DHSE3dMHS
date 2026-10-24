@@ -1,106 +1,138 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{mhs-poisson-ltau: pressure-only magnetohydrostatic correction ($\tau$ grid)}{Physics of \code{run.mode = "mhs-poisson-ltau"} (HSEMHS). 24 Oct 2026.}
+\doctitle{mhs-poisson-ltau: magnetohydrostatic correction on an optical-depth grid}{The physics of \code{run.mode = "mhs-poisson-ltau"}, explained step by step (B.Sc.\ level). HSEMHS.}
 
-\section{What the mode does}
-An inversion delivers $T$ and $\B$ on surfaces of constant $\log_{10}\tau_{500}$. To use them physically we need the gas
-pressure, the density and the \textbf{geometric height} of every $\tau$ level, i.e.\ where in space the surfaces lie.
-\code{column-hse-ltau} answers this column by column. This mode adds the horizontal force balance between columns and
-the Lorentz force of the given field: with $T(\tau)$ and $\B(\tau)$ fixed, it finds $\ln P(\tau)$ and the heights $z(\tau)$
-that minimise the force imbalance, in one non-linear least-squares solve directly on the $\tau$ grid. It is the
-optical-depth counterpart of \code{mhs-poisson-z}, and the mode intended for inversion output.
+\section{The question}
+An inversion gives the temperature $T$ and the magnetic field $\B$ on surfaces of constant optical depth $\tau_{500}$. The
+mode \code{column-hse-ltau} turns this into pressures, densities and heights by treating every pixel column as an isolated
+hydrostatic column. Here we go one step further, as \code{mhs-poisson-z} does on a height grid: we also require the
+columns to be in \textbf{horizontal force balance with each other} and include the \textbf{Lorentz force} of the given
+field. $T$ and $\B$ on the $\tau$ surfaces stay fixed. What is found is the pressure on every $\tau$ surface and, at the same
+time, the geometric height of every $\tau$ surface in every column. On a $\tau$ grid these two cannot be separated: the
+geometry is part of the answer.
 
-\section{Quantities}
-\begin{tabular}{>{$}l<{$} p{11.2cm} l}
+\section{The quantities}
+\begin{tabular}{>{$}l<{$} p{11.3cm} l}
 \toprule
 \text{Symbol} & Meaning & Unit \\ \midrule
-\tau & optical depth at 500\,nm; levels uniform in $\log_{10}\tau$ & -- \\
-T,\ \B & temperature and field on the $\tau$ levels, fixed & K, T \\
+\tau & optical depth at 500\,nm; the levels are equally spaced in $\log_{10}\tau$ & -- \\
+T,\ \B & temperature and field on the $\tau$ levels, given, fixed & K, T \\
 P,\ u & gas pressure on the $\tau$ levels; $u=\ln P$ & Pa, -- \\
-z(\tau) & height of a level in a column; follows from $P$ (Sect.~3) & m \\
-c(x,y) & height of the cut level $\tau_c$ in a column (one unknown per column) & m \\
-\chi,\ \rho & extinction and density from the EOS, functions of $(T,P)$ & m$^{-1}$, kg\,m$^{-3}$ \\
-\Lv & Lorentz force $\J\times\B$, $\J=\nabla\times\B/\mu_0$ in physical space & N\,m$^{-3}$ \\
-\tau_c & cut: levels with $\log_{10}\tau\ge\log_{10}\tau_c$ are solved (production $-4$, $z\approx0.56$\,Mm) & -- \\
+\rho,\ \chi & density and 500\,nm extinction, both functions of $(T,P)$ from the equation of state & kg\,m$^{-3}$, m$^{-1}$ \\
+z(x,y,\tau) & height of a $\tau$ level at the horizontal position $(x,y)$ & m \\
+\tau_c,\ c & the cut level (default $\log_{10}\tau_c=-4$) and its height in each column & --, m \\
+\J,\ \Lv & current $\nabla\times\B/\mu_0$ and Lorentz force $\J\times\B$, in physical space & A\,m$^{-2}$, N\,m$^{-3}$ \\
+g,\ \mu_0 & gravity 274; vacuum permeability $4\pi\times10^{-7}$ & m\,s$^{-2}$, T\,m\,A$^{-1}$ \\
 \bottomrule
 \end{tabular}
+
+\section{The force balance}
+A static gas has zero net force per unit volume:
+\[
+\F=-\nabla P+\J\times\B-\rho g\,\zh=0 ,\qquad
+\J\times\B=-\nabla\!\left(\frac{B^2}{2\mu_0}\right)+\frac{(\B\cdot\nabla)\B}{\mu_0}.
+\]
+The Lorentz force is a magnetic pressure plus a tension along curved field lines. As explained for \code{mhs-poisson-z},
+with the field fixed this balance can in general not be satisfied exactly (the tension of a given field does not hold up the
+buoyancy of a given temperature structure), so we look for the pressure that balances the forces \emph{as well as
+possible}. The new difficulty here is that all derivatives in $\F$ are in physical space, at fixed height, whereas our data
+live on $\tau$ surfaces.
 
 \section{Heights follow from the pressure}
-On a $\tau$ grid the geometry is not given: the spacing of two levels is $dz=-d\tau/\chi$, and $\chi$ depends on $P$.
-So the heights are part of the solution. In each column
+Going down by $dz$ adds the optical depth $d\tau=-\chi\,dz$, so in each column
 \[
-z_k=c+\sum_{m=k_c}^{k-1}\Delta z_m,\qquad \Delta z_m=-\int_{\ln\tau_m}^{\ln\tau_{m+1}}\frac{\tau}{\chi(T,P)}\,d\ln\tau ,
+\frac{dz}{d\ln\tau}=-\frac{\tau}{\chi(T,P)},\qquad
+z_k=c+\sum_{m=k_c}^{k-1}\Delta z_m,\quad \Delta z_m=-\int_{\ln\tau_m}^{\ln\tau_{m+1}}\frac{\tau}{\chi}\,d\ln\tau .
 \]
-i.e.\ the height of every solved level is the height $c$ of the cut level plus the thicknesses of the levels above it,
-each set by its own opacity. A change of pressure at one level shifts every level below it. Above the cut the column is
-kept hydrostatic in $\tau$ (as in \code{column-hse-ltau}) and moves rigidly with $c$.
-
-\section{The force balance in $\tau$ coordinates}
-The static balance $\F=-\nabla P+\Lv-\rho g\zh=0$ must hold in physical space, but our derivatives are along the $\tau$
-surfaces, which are tilted. For any quantity, $\partial_x f|_z=\partial_x f|_\tau-\partial_xz|_\tau\,\partial_zf$. Using the
-vertical balance $\partial_zP=-(\rho g-L_z)$:
-\[
-\boxed{\;F_x=-\partial_xP\big|_\tau-(\rho g-L_z)\,\partial_xz\big|_\tau+L_x,\qquad
-\frac{d\ln P}{d\ln\tau}=\frac{(\rho g-L_z)\,\tau}{\chi\,P}\;}
-\]
-(and the same for $y$). The horizontal equation is the familiar one with a geometric term: on a tilted $\tau$ surface,
-part of the weight of the gas acts sideways. The vertical equation is hydrostatic equilibrium in $\tau$ with the
-vertical Lorentz force reducing the effective weight. Both are divided by $P$ (a relative imbalance, as in
-\code{mhs-poisson-z}), and the objective
-\[
-\Phi=\sum_{\text{levels}}w\,\bar H^2\big(R_x^2+R_y^2\big)+\sum_{\text{intervals}}\frac{\bar H^2}{\Delta\bar z}R_z^2
-\]
-weights each level by its thickness and median scale height, so $R\bar H\approx F/(\rho g)$ layer by layer.
-
-$\Lv$ is computed from $\B$ on the $\tau$ surfaces at their current heights. When the heights change, the vertical
-spacing of the field samples changes and so do the currents; the solver follows this (Sect.~6 of the technical
-document). The field values themselves are never changed.
-
-\section{What decides the heights}
-Each column's heights relative to its neighbours are set by the horizontal balance: a column whose gas is lighter at a
-given height must be compressed (higher pressure) or displaced until the sideways pressure push vanishes. In a
-strong-field column, the magnetic pressure carries part of the load, so less gas pressure is needed, the gas is less
-dense and less opaque, and $\tau=1$ lies deeper: the \textbf{Wilson depression} emerges from the force balance, not
-from an assumption. One global constant (all columns moved together) is not fixed by the equations; it is set by
-requiring the mean height of $\tau=1$ to be zero.
-
-\section{Results on the production cube}
-\code{IO/input-mhs-ltau.nc}, $504\times504\times95$ levels; 17 Gauss--Newton steps, 14\,min on one node (8.3\,min on four).
-Force imbalance after the solve, RMS over log-$\tau$ bands in units of $\rho g$: horizontal 0.04--0.09 and vertical
-0.04--0.06 for $\log\tau<0$, 0.17 / 0.06 below $\tau=1$ (start: 0.3--0.8). $z(\tau=1)$ relative to the cube mean, median
-[5\,\%, 95\,\%] in km, binned by $|\B|$ at $\tau=1$:
-\begin{center}\small
-\begin{tabular}{lccc}
-\toprule
-$|\B|$ at $\tau=1$ & column HSE in $\tau$ & fixed-point scheme (superseded) & \textbf{mhs-poisson-ltau} \\ \midrule
-0--200\,G (245\,123 columns) & $-38$ [$-85$, 187] & $-55$ [$-257$, 380] & $-10$ [$-35$, 73] \\
-200--500\,G & $-68$ [$-88$, 58] & $+120$ [$-180$, 549] & $-26$ [$-52$, 24] \\
-500--1000\,G & $-86$ [$-104$, $-36$] & $+183$ [$-198$, 587] & $-51$ [$-89$, $-17$] \\
-1000--1500\,G & $-121$ [$-144$, $-92$] & $+314$ [$-117$, 563] & $-96$ [$-125$, $-63$] \\
-1500--3000\,G (440) & $-156$ [$-175$, $-140$] & $+402$ [58, 568] & $-130$ [$-167$, $-104$] \\
-\midrule
-columns outside $-200\ldots+300$\,km & 2290 & 69\,522 & 77 \\
-\bottomrule
-\end{tabular}
-\end{center}
+The height of a level is the height $c$ of the cut level plus the thicknesses of the layers in between, and each thickness is
+set by the opacity, which depends on the pressure. Two consequences:
 \begin{itemize}
-\item The depression grows monotonically with field strength, somewhat less than in independent columns, because the
-neighbours now share the load through the horizontal balance.
-\item In weak-field regions the column-to-column scatter of $\tau=1$ shrinks by a factor of about 3: horizontal pressure
-balance couples the columns that column HSE treats separately.
-\item An earlier scheme alternated a height-grid Poisson solve with re-integration of the $\tau$ columns. It lifted the
-strong-field columns instead of depressing them: it integrated the heights with a pressure that it then replaced. It is
-kept only as history (\code{scripts/poisson/poisson\_tau.jl}).
+\item \emph{A change of pressure at one level moves every level below it}: higher pressure, more opacity, thinner layer, and
+everything below shifts up.
+\item The unknowns are the pressures on the $\tau$ levels and one height $c$ per column; all other heights follow.
 \end{itemize}
+Above the cut ($\log\tau<-4$) the column is kept hydrostatic in $\tau$, exactly as in \code{column-hse-ltau}, and moves up
+and down rigidly with $c$.
 
-\section{Limitations}
-\begin{itemize}
-\item As in \code{mhs-poisson-z}, a fixed $\B$ cannot balance the buoyancy of the temperature structure; the remaining
-imbalance is of that kind. Above the cut ($\log\tau<-4$) the columns are only hydrostatic.
-\item The heights of a few strong-field columns are only weakly constrained: when the solve stops, they still move by a
-few km per step while $\Phi$ changes by less than $10^{-4}$. Different runs agree to about 1\,m at the median and
-12--24\,m at the 99th percentile.
-\item The vertical integration uses the trapezoid rule on the 0.1\,dex grid; sharp temperature jumps on that grid make
-individual level thicknesses uncertain (see the cap in \code{column-hse-ltau}).
-\end{itemize}
+\section{Vertical balance along $\tau$}
+The vertical component of $\F=0$ is $dP/dz=-(\rho g-L_z)$: the pressure difference across a slab carries its weight minus
+whatever the vertical Lorentz force carries. Divide by $dz=-d\tau/\chi$ and multiply by $\tau/P$:
+\[
+\boxed{\;\frac{d\ln P}{d\ln\tau}=\frac{(\rho g-L_z)\,\tau}{\chi\,P}\;}
+\]
+Without the field this is the hydrostatic equation of \code{column-hse-ltau}. An upward Lorentz force ($L_z>0$) carries
+part of the weight, so the pressure needs to rise less steeply with optical depth.
+
+\section{Horizontal balance on tilted surfaces}
+A $\tau$ surface is generally not flat: its height $z(x,y,\tau)$ varies across the box. Consider the pressure along such a
+surface, $\tilde P(x,\tau)=P(x,z(x,\tau))$. By the chain rule, moving along $x$ on the surface changes it by
+\[
+\left.\frac{\partial P}{\partial x}\right|_\tau=\left.\frac{\partial P}{\partial x}\right|_z+\frac{\partial P}{\partial z}\left.\frac{\partial z}{\partial x}\right|_\tau .
+\]
+The physical force needs $\partial P/\partial x$ at fixed height, so we solve for it and use the vertical balance
+$\partial P/\partial z=-(\rho g-L_z)$:
+\[
+\boxed{\;F_x=-\left.\frac{\partial P}{\partial x}\right|_\tau-(\rho g-L_z)\left.\frac{\partial z}{\partial x}\right|_\tau+L_x\;}
+\]
+and the same for $y$. The middle term has a simple meaning. If a $\tau$ surface slopes, comparing pressures along it means
+comparing points at different heights, and the weight of the gas between them must be subtracted. On a tilted surface part of
+the weight acts sideways. Horizontal balance therefore ties together the pressures \emph{and} the heights of
+neighbouring columns: a pressure difference along a $\tau$ surface can be balanced by a tilt of the surface.
+
+\section{The Lorentz force on a $\tau$ grid}
+$\J=\nabla\times\B/\mu_0$ also needs derivatives in physical space. With the field given on the $\tau$ levels, the same chain
+rule gives, for any field component $f$,
+\[
+\frac{\partial f}{\partial z}=\frac{df/d\ln\tau}{dz/d\ln\tau},\qquad
+\left.\frac{\partial f}{\partial x}\right|_z=\left.\frac{\partial f}{\partial x}\right|_\tau-\left.\frac{\partial z}{\partial x}\right|_\tau\frac{\partial f}{\partial z}.
+\]
+So even though the field values on the $\tau$ levels are fixed, the currents and the Lorentz force depend on where the levels
+lie: if two levels move apart, the vertical gradients of the field between them become smaller, and so do the currents
+they imply. The solver accounts for this dependence.
+
+\section{The quantity minimised}
+As on the height grid, the forces are divided by the pressure (a relative imbalance, so that lowering the pressure is not
+rewarded) and weighted so that each layer counts in units of the weight of its own gas:
+\[
+R_x=\frac{F_x}{P},\quad R_y=\frac{F_y}{P},\quad R_z=\Delta\ln P-\int\frac{(\rho g-L_z)\tau}{\chi P}\,d\ln\tau,
+\qquad
+\Phi=\sum_{\text{levels}}w\,\bar H^2\big(R_x^2+R_y^2\big)+\sum_{\text{intervals}}\frac{\bar H^2}{\Delta\bar z}R_z^2 .
+\]
+$\bar H$ is the typical scale height $P/(\rho g)$ of a level and $w$, $\Delta\bar z$ its typical thickness, so that
+$\bar H R\approx F/(\rho g)$ and $\Phi$ approximates a volume integral of the squared imbalance in units of the weight.
+$\Phi$ is minimised over the pressures below the cut and the column heights $c$ (least squares: three equations per point,
+one pressure unknown per point and one height per column, no exact solution).
+
+\section{What decides the heights: the Wilson depression}
+Consider a column with a strong, nearly vertical field among weak-field neighbours. Its magnetic pressure $B^2/2\mu_0$
+pushes outward on the neighbours, so at the same height it can hold its own against them with less gas pressure. Less gas
+pressure means lower density and lower opacity, so light escapes from deeper: the $\tau$ surfaces of this column lie
+lower. Horizontal balance enforces exactly this through the tilt term of Sect.~6. The depression of strong-field regions,
+seen in sunspots near the limb as the \textbf{Wilson depression}, therefore comes out of the force balance; it is not put
+in by hand. Conversely, hot granules have a high opacity, and their $\tau$ surfaces lie higher.
+
+One quantity is not determined: all columns can be moved up or down together without changing any force. This global
+offset is fixed at the end by setting the average height of $\tau=1$ to zero.
+
+\section{How the minimum is found}
+$\Phi$ depends non-linearly on the unknowns (through the equation of state, the opacity in the heights and the field
+derivatives). Each step replaces the residuals by their linear approximation in the change of the unknowns (Gauss--Newton,
+the least-squares form of Newton's method) and solves the resulting linear least-squares problem. The linear problem
+contains the cumulative sum of Sect.~4 (a pressure change shifts all heights below it), a horizontal coupling between
+neighbouring columns (Sect.~6), and the vertical equation of Sect.~5. It is solved iteratively, guided by a fast approximate
+solution in horizontal Fourier modes, as on the height grid.
+
+A pure Gauss--Newton step can be too ambitious where the problem is strongly non-linear. Two safeguards keep it
+reliable. First, the step is scaled down as a whole if it would move any column by more than 300\,km or change any pressure
+by more than a factor $e^2$; scaling the whole step keeps its direction, which still lowers $\Phi$. Second, a step that does
+not lower $\Phi$ is retried with \textbf{damping} (Levenberg--Marquardt): a penalty on the size of the change, which turns
+the step gradually from the Gauss--Newton direction toward the direction of steepest descent. The iteration stops when
+$\Phi$ has stopped decreasing over several consecutive steps.
+
+\section{Summary}
+On a $\tau$ grid the force balance determines both the pressure on each $\tau$ surface and where the surfaces lie in space.
+Vertically the gas is hydrostatic along $\tau$ with the vertical Lorentz force carrying part of the weight; horizontally the
+columns balance each other across tilted surfaces; the heights follow from the opacity. As on the height grid, a fixed field
+cannot hold up every density contrast, so the balance is the best possible compromise, and above the cut the columns
+are only hydrostatic.
 \end{document}
