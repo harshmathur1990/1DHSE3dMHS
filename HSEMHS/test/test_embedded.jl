@@ -112,10 +112,10 @@ include("embedded_helpers.jl")
             @test !st.valid && st.reason == want
             ws.res = old
         end
-        # equal heights of adjacent levels (a capped τ-grid interval) are valid and counted
+        # equal heights of adjacent levels are invalid: heights must strictly decrease downwards
         snap = H.snapshot(res); snap.z[9, 3, 3] = snap.z[8, 3, 3]; old = ws.res; ws.res = snap
         st = H.EquilibriumStatus(); H.check_fields!(ws, st)
-        @test st.valid && st.stats["equal_height_intervals"] == 1
+        @test !st.valid && st.reason == :folded
         ws.res = old
         H.free_embedded!(ws)
         tau = load_tau_fixture("11x12", :)

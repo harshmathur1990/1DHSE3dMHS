@@ -9,5 +9,4 @@ g = 274.0
 [eos]
 table_file = "cache/eos_table_fullz.h5"
 [tau_grid]
-cap_per_dex = 50.0
 align = "ptot"

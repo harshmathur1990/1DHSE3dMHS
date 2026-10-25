@@ -51,7 +51,7 @@ function ref_options(mode::Symbol, fx)
         poi = mode == :mhs_poisson_z ? H.PoissonZOptions(z_cut_m = 1.0e6, max_steps = 30, rtol = 1e-4) : nothing
         return (axis = fx.z, x = fx.x, y = fx.y, g = fx.g, column = col, poisson = poi)
     end
-    col = H.ColumnTauOptions(cap_per_dex = 50.0, align = "ptot")
+    col = H.ColumnTauOptions(align = "ptot")
     poi = mode == :mhs_poisson_ltau ? H.PoissonTauOptions(logtau_cut = -4.0, max_steps = 30, rtol = 1e-4) : nothing
     return (axis = fx.lt, x = fx.x, y = fx.y, g = 274.0, column = col, poisson = poi)
 end

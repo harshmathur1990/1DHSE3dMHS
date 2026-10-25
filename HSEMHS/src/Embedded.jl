@@ -41,7 +41,6 @@ end
 
 """Column HSE on the τ grid (`[tau_grid]`): no pressure anchor, the top closure P = g τ ρ/χ sets the pressure."""
 Base.@kwdef struct ColumnTauOptions
-    cap_per_dex::Float64 = 50.0
     align::String = "ptot"            # "ptot" | "none"
 end
 
@@ -97,8 +96,7 @@ function option_errors(o::ColumnZOptions, z::AbstractVector)
 end
 
 option_errors(o::ColumnTauOptions, lt::AbstractVector) =
-    push_if!(push_if!(String[], o.cap_per_dex > 0, "cap_per_dex must be positive"),
-             o.align in ("ptot", "none"), "align must be \"ptot\" or \"none\", got \"$(o.align)\"")
+    push_if!(String[], o.align in ("ptot", "none"), "align must be \"ptot\" or \"none\", got \"$(o.align)\"")
 
 function solver_errors(e, o)
     push_if!(e, o.max_steps >= 1, "poisson max_steps must be ≥ 1")
@@ -186,10 +184,9 @@ end
 """
 Outcome of one embedded solve, identical on every rank.
 
-`valid` is true when the returned fields are physically usable: EOS clean, all finite, P, ρ, χ₅₀₀ > 0, heights not
-increasing and τ not decreasing down every column, and (Poisson z) the hydrostatic continuation above the cut
-succeeded. Equal heights of adjacent levels are valid: the τ-grid column integration ends a capped interval
-(`cap_per_dex`) without advancing z; their global count is `stats["equal_height_intervals"]`. `reason` is the first failed check (:eos_out_of_envelope, :continuation_failed, :nonfinite, :nonpositive,
+`valid` is true when the returned fields are physically usable: EOS clean, all finite, P, ρ, χ₅₀₀ > 0, heights strictly
+decreasing and τ strictly increasing down every column, and (Poisson z) the hydrostatic continuation above the cut
+succeeded. `reason` is the first failed check (:eos_out_of_envelope, :continuation_failed, :nonfinite, :nonpositive,
 :folded) or else the solver's stopping reason (:converged, :no_descent, :max_steps; column modes: :converged). The
 Poisson stopping rule is on relative decreases of Φ, which does not prove stationarity: `gn_decrement` (the relative
 decrease of Φ one further undamped Gauss–Newton step would predict) and `grad_norm` = ‖JᵀWR‖ measure it, `cg_its` and
@@ -524,15 +521,16 @@ end
 """Column HSE on the τ grid (aligned on P + B²/2μ₀ if requested, gauged to mean z(τ = 1) = 0)."""
 function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     res = ws.res; o = ws.column
-    lnP, z, ncap, Pt, nb, nbad = PoissonTau.column_hse_tau(ws.par, ws.axis, lT, bx, by, bz, ws.eos, ws.g;
-                                                           cap_per_dex = o.cap_per_dex, align = o.align)
+    lnP, z, nfailed, Pt, nb, nbad = PoissonTau.column_hse_tau(ws.par, ws.axis, lT, bx, by, bz, ws.eos, ws.g;
+                                                              align = o.align)
     res.lnP .= lnP; res.z .= z; res.Pgas .= exp.(lnP)
-    st.stats["capped_intervals"] = ncap
+    st.stats["columns_failed"] = nfailed
     st.stats["align_total_pressure_Pa"] = Pt
     st.stats["align_extrapolated_columns"] = nb
     if nbad > 0
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
-        return fail!(st, :eos_out_of_envelope, nbad, "column HSE in τ left the EOS table in $nbad points")
+        return fail!(st, :eos_out_of_envelope, nfailed,
+                     "column HSE in τ left the EOS table in $nfailed columns ($nbad levels)")
     end
     poisson_mode(ws.mode) || tau_state!(ws, lT)
     return st
@@ -572,18 +570,15 @@ function check_fields!(ws::EmbeddedWorkspace, st)
     nnp = gcount(par, count(<=(0), res.Pgas) + count(<=(0), res.rho) + count(<=(0), res.chi500))
     nnp > 0 && return fail!(st, :nonpositive, nnp, "$nnp non-positive pressures, densities or opacities")
     nk, ny, nx = size(res.z)
-    nfold = 0; nequal = 0
+    nfold = 0
     @inbounds for i in 1:nx, j in 1:ny
         ok = true
         for k in 1:nk-1
-            dz = res.z[k+1, j, i] - res.z[k, j, i]
-            (dz <= 0 && res.tau500[k+1, j, i] >= res.tau500[k, j, i]) || (ok = false)
-            dz == 0 && (nequal += 1)
+            (res.z[k+1, j, i] < res.z[k, j, i] && res.tau500[k+1, j, i] > res.tau500[k, j, i]) || (ok = false)
         end
         ok || (nfold += 1)
     end
     nfold = gcount(par, nfold)
-    st.stats["equal_height_intervals"] = gcount(par, nequal)
-    nfold > 0 && return fail!(st, :folded, nfold, "$nfold columns where z increases or τ decreases downwards")
+    nfold > 0 && return fail!(st, :folded, nfold, "$nfold columns where z does not decrease or τ does not increase downwards")
     return st
 end

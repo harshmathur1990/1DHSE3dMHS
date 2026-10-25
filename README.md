@@ -55,8 +55,11 @@ and timings: [`docs/technical/`](docs/technical).
   tolerance 1e-6 in ln P, up to 64), `ln T` linear in z between levels; one pressure `P_ref` prescribed at the anchor level
   (bottom by default) of **every column**.
 * **τ-grid HSE** (`column-hse-ltau`): `d ln P/d ln τ = gτρ/(χP)`, `dz/d ln τ = −τ/χ`, Heun substeps; top closure
-  `P_top = g τ_top/κ_top` (κ = χ/ρ constant above the top level); the rise of ln P per interval is capped
-  (`tau_grid.cap_per_dex`, default 50 per dex) against an interpolation artefact of hot-over-cool layers. Columns are
+  `P_top = g τ_top/κ_top` (κ = χ/ρ constant above the top level). With P = g m this is d ln m/d ln τ = τ/(κm) and
+  dz = −dm/ρ, so heights strictly decrease; the rise of ln P is not limited (below a hot-over-cool interface the cool
+  layer's low opacity genuinely needs a large column mass per unit τ), and a column whose pressure would leave the EOS
+  table is reported as failed rather than altered. (Until `embedding-api` the rise was capped at `tau_grid.cap_per_dex`,
+  which left capped intervals with zero thickness.) Columns are
   aligned by equal `P + B²/2μ₀` at one height (an approximation: magnetic tension neglected), then a global gauge sets
   the mean height of τ = 1 to zero. No externally supplied reference pressure is needed, but the top closure and the
   alignment are modelling choices, and absolute heights are relative to the gauge, not measured.
@@ -201,7 +204,7 @@ sections or keys are rejected. Keys used per mode:
 |---|---|---|
 | `column-hse-z` | `[input]` (names, `crop_z_m`), `physics.g`, `[eos]`, `[column_hse]`, `[tau]`, `[parallel]`, `output.compression`, `run.overwrite` | |
 | `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed |
-| `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file}`, `tau_grid.{cap_per_dex, align}`, `run.overwrite` | other `[input]` keys ignored |
+| `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file}`, `tau_grid.align`, `run.overwrite` | other `[input]` keys ignored |
 | `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, max_steps, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0}` | |
 | `full-mhs-z` | `input.file`, `eos.table_file`, `run.output` (a **directory**), `full_mhs.*` | everything else is not forwarded: `physics.g`, `[column_hse]`, `[mhs]`, `[parallel]`, `[tau]`, `[output]`, `run.overwrite`, input dataset names; P_ref and g come from the file attributes |
 
@@ -289,13 +292,10 @@ The current stopping rule (Φ-only, 3 consecutive) has been run only on 96² cro
   inflate the pressure, hence `z_cut`.
 * `mhs-poisson-ltau`: the PCG reaches its iteration cap in every step on the full cube; a few strong-field column heights
   are weakly determined (runs agree to ~1 m median, 12–24 m at the 99th percentile, up to 150 m on a 96² crop).
-* τ-grid HSE: capped intervals (2585 of ~2.4 × 10⁷ on the production cube) do not integrate the rest of their thickness
-  (code follow-up below).
 * `full-mhs-z`: no production run has met its stopping rule; a run on the full cube takes more than a day on 4 nodes.
 
 **Code follow-ups (not changed by the documentation work):** propagate the Poisson solvers' termination (converged / no
-decrease / step limit) into the exit status, and the full driver's status into `scripts/run.jl`; in `hse_tau!` integrate
-the geometric thickness of a capped interval; in `solve_tau` decide whether the damping should also be lowered after a
+decrease / step limit) into the exit status, and the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping should also be lowered after a
 full *scaled* step (`α == sc`, currently only `α == 1`); validate strictly increasing, uniform x, y and log τ in the τ
 reader; automated tests for the slab layer and the Poisson modes.
 

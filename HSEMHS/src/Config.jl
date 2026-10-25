@@ -103,7 +103,6 @@ const CONFIG_SCHEMA = [
         "lm_mu0" => 0.0,               # ltau: initial Levenberg–Marquardt damping
     ],
     "tau_grid" => [                  # column-hse-ltau and mhs-poisson-ltau
-        "cap_per_dex" => 50.0,         # largest rise of ln P per dex in τ (hot-over-cool runaway tail)
         "align" => "ptot",             # ptot: P + B²/2μ₀ equal at one height; none: z = 0 at log10 τ = 0 per column
     ],
     "full_mhs" => [                  # full-mhs-z (the M5 joint GN driver, scripts/m5_bifrost/m5h_fullres.jl); M5i defaults

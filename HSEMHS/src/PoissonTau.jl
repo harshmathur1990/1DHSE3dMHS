@@ -2,8 +2,10 @@
 # scripts/poisson/poisson_tau.jl (column HSE in τ) and scripts/poisson/poisson_tau_direct.jl (the direct Poisson solve).
 #
 # Column HSE in τ: d ln P/d ln τ = g τ ρ/(χ P), dz/d ln τ = −τ/χ, integrated down from the top (P = g τ ρ/χ there) with
-# adaptive Heun substeps (ln P changes ≤ 0.05 per substep) and a cap of cap_per_dex on the rise of ln P per dex in τ
-# (the hot-over-cool runaway tail); columns aligned so that P + B²/2μ₀ is equal at one height; gauge mean z(τ = 1) = 0.
+# adaptive Heun substeps (ln P changes ≤ 0.05 per substep), no limit on the rise of ln P (with P = g m this is
+# d ln m/d ln τ = τ/(κ m), and dz = −dm/ρ: heights strictly decrease); a column whose pressure leaves the EOS table is
+# returned as failed (NaN below that level), not altered; columns aligned so that P + B²/2μ₀ is equal at one height;
+# gauge mean z(τ = 1) = 0.
 #
 # Poisson in τ: one Gauss–Newton (Levenberg–Marquardt) solve. Unknowns per column: ln P on the levels below the cut level
 # k_c (log10 τ ≥ logtau_cut) and the height c of that level; heights from the pressure, z_k = c + Σ Δz,
@@ -39,9 +41,12 @@ end
 
 """
 Column on the τ grid, integrated down from the top: d ln P/d ln τ = g τ ρ/(χ P), dz/d ln τ = −τ/χ (z = 0 at log10 τ = 0).
-Returns the number of capped level intervals (ln P rise above cap_per_dex per dex in τ, or past the EOS table edge).
+With P = g m (m the column mass) this is d ln m/d ln τ = τ/(κ m), κ = χ/ρ, and dz = −dm/ρ, so heights strictly decrease.
+The rise of ln P is not limited: below a hot-over-cool interface the low opacity of the cool layer genuinely requires
+a large column mass per unit τ. Returns true, or false if the pressure leaves the EOS table (or the EOS fails) in some
+interval; then lnP and z are NaN from that level down and the column is reported as failed.
 """
-function hse_tau!(lnP, z, lT, lt, tab, g, cap_per_dex)
+function hse_tau!(lnP, z, lT, lt, tab, g)
     nt = length(lt)
     τ = exp.(LN10 .* lt)
     lp = log(1e2)
@@ -55,27 +60,29 @@ function hse_tau!(lnP, z, lT, lt, tab, g, cap_per_dex)
     lPmax = tab.Y[end] - 1.0
     rhs(lTs, lτ, l) = (s = q_chi(tab, lTs, l); (g * exp(lτ) * s[1] / s[2], -exp(lτ) / s[2]))
     z[1] = 0.0
-    ncap = 0
+    isfinite(lp) || (lnP .= NaN; z .= NaN; return false)
     for k in 1:nt-1
         a, b = LN10 * lt[k], LN10 * lt[k+1]
         l = lnP[k]; zz = z[k]; x = a
-        capk = cap_per_dex * (lt[k+1] - lt[k])
         while x < b
             sx = (x - a) / (b - a)
             f1, g1 = rhs(lT[k] + (lT[k+1] - lT[k]) * sx, x, l)
+            isfinite(f1) || (@views lnP[k+1:end] .= NaN; z[k+1:end] .= NaN; z .= NaN; return false)
             h = min(b - x, 0.05 / max(abs(f1), 1e-30))
             sy = (x + h - a) / (b - a)
             f2, g2 = rhs(lT[k] + (lT[k+1] - lT[k]) * sy, x + h, l + h * f1)
             ln = l + h / 2 * (f1 + f2)
-            if !isfinite(f2) || ln > lPmax || ln - lnP[k] > capk
-                l = min(lnP[k] + capk, lPmax); ncap += 1; break
+            if !isfinite(f2) || ln > lPmax                         # left the EOS table: the column fails
+                @views lnP[k+1:end] .= NaN
+                z .= NaN
+                return false
             end
-            l += h / 2 * (f1 + f2); zz += h / 2 * (g1 + g2); x += h
+            l = ln; zz += h / 2 * (g1 + g2); x += h
         end
         lnP[k+1] = l; z[k+1] = zz
     end
     z .-= interp_lt(z, lt, 0.0)
-    return ncap
+    return true
 end
 
 """Shift columns so that P + B²/2μ₀ is equal at one height (the global median bottom total pressure)."""
@@ -113,24 +120,26 @@ function gauge!(par, z, lt)
 end
 
 """
-Column HSE in τ for every owned column, aligned and gauged. Returns (lnP, z, ncap, Pref_total, nbelow, nbad): nbad is
-the global number of non-finite ln P (columns that left the EOS table); when nbad > 0 the alignment and gauge are
-skipped (they would spread the NaNs) and every rank returns the same nbad, so callers decide collectively.
+Column HSE in τ for every owned column, aligned and gauged. Returns (lnP, z, nfailed, Pref_total, nbelow, nbad):
+nfailed is the global number of columns whose pressure left the EOS table, nbad the global number of non-finite ln P;
+when nbad > 0 the alignment and gauge are skipped (they would spread the NaNs) and every rank returns the same values,
+so callers decide collectively.
 """
-function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; cap_per_dex = 50.0, align = "ptot")
+function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot")
     nt, ny, nx = size(lT)
     lnP = zeros(nt, ny, nx); z = zeros(nt, ny, nx)
-    ncap = Threads.Atomic{Int}(0)
+    nfail = Threads.Atomic{Int}(0)
     Threads.@threads for i in 1:nx
         for j in 1:ny
-            Threads.atomic_add!(ncap, hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g, cap_per_dex))
+            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g) || Threads.atomic_add!(nfail, 1)
         end
     end
+    nfailed = gcount(par, nfail[])
     nbad = gcount(par, count(!isfinite, lnP))
-    nbad > 0 && return lnP, z, gcount(par, ncap[]), NaN, 0, nbad
+    nbad > 0 && return lnP, z, nfailed, NaN, 0, nbad
     Pt, nb = align == "ptot" ? align_ptot!(par, z, lnP, lT, Bx, By, Bz, tab, g) : (NaN, 0)
     gauge!(par, z, lt)
-    return lnP, z, gcount(par, ncap[]), Pt, nb, 0
+    return lnP, z, nfailed, Pt, nb, 0
 end
 
 """

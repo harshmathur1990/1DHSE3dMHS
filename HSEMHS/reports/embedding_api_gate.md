@@ -55,10 +55,11 @@ height axis broadcast in height modes; the aligned and gauged heights in τ mode
 `eos_violations`, `counts` (per failed check), `stats` (column-stage statistics, cut level, alignment, gauge shift),
 `messages`, `seconds`.
 
-* `valid` = EOS clean ∧ all fields finite ∧ P, ρ, χ₅₀₀ > 0 ∧ z not increasing and τ not decreasing down
-  every column (amended in `a5cdc9e`: equal heights of adjacent levels are valid — the τ-grid column HSE ends a
-  capped `cap_per_dex` interval without advancing z; 1683 such columns on `IO/input-mhs-ltau.nc` were wrongly
-  rejected by the original strict check; counted in `stats["equal_height_intervals"]`) ∧ (Poisson z) the continuation above the cut succeeded. `reason` is the first failed check
+* `valid` = EOS clean ∧ all fields finite ∧ P, ρ, χ₅₀₀ > 0 ∧ z strictly decreasing and τ strictly increasing down
+  every column (heights cannot repeat at different τ). Follow-up: on `IO/input-mhs-ltau.nc` this check flagged 1683
+  columns whose capped τ-grid intervals (`cap_per_dex`) had zero thickness; `a5cdc9e` briefly relaxed the check, the
+  next commit reverted that and removed the cap from `hse_tau!` instead (0 failed, 0 folded columns on that input;
+  reference outputs unchanged) ∧ (Poisson z) the continuation above the cut succeeded. `reason` is the first failed check
   (`:eos_out_of_envelope`, `:continuation_failed`, `:nonfinite`, `:nonpositive`, `:folded`), else the solver's stopping
   reason (`:converged`, `:no_descent`, `:max_steps`; column modes `:converged`).
 * **Stationarity.** The Poisson solvers stop on `n_consec` consecutive relative decreases of Φ below `rtol`; that does
@@ -80,8 +81,7 @@ All option structs mirror the standalone config sections (same names, defaults, 
 | | `z_ref` | m | NaN | inside the axis when `anchor = :height` | `column_hse.z_ref_m` |
 | | `n_sub`, `adapt`, `rk_tol`, `n_sub_max` | — | 4, true, 1e-6, 64 | ≥ 1, —, > 0, ≥ n_sub | `column_hse.*` |
 | | `tau_top`, `H_max`, `mu` | —, m, — | `:exp_tail`, 5e6, 1 | `:exp_tail`/`:half_cell`/`:zero`, > 0, > 0 | `tau.top`, `tau.H_max_m`, `tau.mu` |
-| `ColumnTauOptions` | `cap_per_dex` | ln P per dex | 50 | > 0 | `tau_grid.cap_per_dex` |
-| | `align` | — | `"ptot"` | `"ptot"`, `"none"` | `tau_grid.align` |
+| `ColumnTauOptions` | `align` | — | `"ptot"` | `"ptot"`, `"none"` | `tau_grid.align` |
 | `PoissonZOptions` | `z_cut_m` | m | 1e6 | ≥ 3 solved levels at or below the cut (`POISSON_Z_MIN_LEVELS`) | `poisson.z_cut_m` |
 | | `max_steps`, `rtol`, `n_consec` | — | 100, 1e-4, 3 | ≥ 1, > 0, ≥ 1 | `poisson.*` |
 | | `anchor_w` | — | 1 | > 0 | `poisson.anchor_w` |

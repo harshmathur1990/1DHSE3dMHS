@@ -34,7 +34,7 @@ function tau_setup(cfg, tag, mode::Symbol)
     g = tau_gravity(cfg, path)
     tab = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)
     G = cfg.tau_grid; P = cfg.poisson
-    column = ColumnTauOptions(cap_per_dex = G.cap_per_dex, align = G.align)
+    column = ColumnTauOptions(align = G.align)
     poisson = mode == :mhs_poisson_ltau ?
               PoissonTauOptions(logtau_cut = P.logtau_cut, max_steps = P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
                                 cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0) : nothing
@@ -99,11 +99,9 @@ function run_column_hse_ltau(cfg::Config)
         res = solve_embedded!(s.ws, log.(s.T), s.Bx, s.By, s.Bz)
         st = res.status
         st.reason == :eos_out_of_envelope && error(st.messages[1])
-        ncap = st.stats["capped_intervals"]
-        s.logm(@sprintf("columns: ln P capped in %d level intervals (> %.0f per dex); aligned on P + B²/2μ₀ = %.4e Pa (%d columns extrapolated)",
-                        ncap, G.cap_per_dex, st.stats["align_total_pressure_Pa"], st.stats["align_extrapolated_columns"]))
-        write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "column-hse-ltau", "align" => G.align,
-                                                                     "cap_per_dex" => G.cap_per_dex, "capped_intervals" => ncap))
+        s.logm(@sprintf("columns: aligned on P + B²/2μ₀ = %.4e Pa (%d columns extrapolated)",
+                        st.stats["align_total_pressure_Pa"], st.stats["align_extrapolated_columns"]))
+        write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "column-hse-ltau", "align" => G.align))
     finally
         free_embedded!(s.ws)
     end
@@ -128,7 +126,7 @@ function run_mhs_poisson_ltau(cfg::Config)
                         st.stats["gauge_shift_m"] / 1e3))
         write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "mhs-poisson-ltau",
                        "logtau_cut" => s.lt[st.stats["cut_level"]], "phi_start" => st.phi0, "phi_end" => st.phi,
-                       "steps" => st.steps, "align" => G.align, "cap_per_dex" => G.cap_per_dex,
+                       "steps" => st.steps, "align" => G.align,
                        "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement))
     finally
         free_embedded!(s.ws)
