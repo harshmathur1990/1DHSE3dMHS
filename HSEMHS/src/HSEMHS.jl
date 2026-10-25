@@ -22,6 +22,7 @@ using Dates
 using Random
 using LinearAlgebra
 using Libdl
+using ProgressMeter: Progress, next!, finish!
 
 include("Constants.jl")
 include("Status.jl")

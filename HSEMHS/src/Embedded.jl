@@ -263,6 +263,7 @@ mutable struct EmbeddedWorkspace
     fft::Union{Nothing,SlabFFT}
     res::EquilibriumResult
     logf::Any
+    progress::Bool
 end
 
 height_mode(mode) = mode in (:column_hse_z, :mhs_poisson_z)
@@ -283,16 +284,17 @@ function uniform_spacing(name, v)
 end
 
 """
-    prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson=nothing, logf=s->nothing) -> EmbeddedWorkspace
+    prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson=nothing, logf=s->nothing, progress=false) -> EmbeddedWorkspace
 
 Collective over `comm`. `mode` ∈ $(EMBEDDED_MODES). `axis` is the height axis z [m] (top first, decreasing) for the
 height modes or the log10 τ500 axis (increasing) for the τ modes; `x`, `y` are the global, uniform, increasing horizontal
 axes [m]; `eos` an EOSTable or the path of one (loaded once per rank); `g` [m s⁻²]; `column` a ColumnZOptions (height
 modes) or ColumnTauOptions (τ modes); `poisson` a PoissonZOptions / PoissonTauOptions for the Poisson modes. The slab
-context duplicates `comm`; release it with `free_embedded!`.
+context duplicates `comm`; release it with `free_embedded!`. `progress = true` (typically on one rank) shows a
+progress bar over this rank's columns during column HSE.
 """
 function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, column, poisson = nothing,
-                          logf = s -> nothing)
+                          logf = s -> nothing, progress::Bool = false)
     # stage 1: local checks and the EOS table, agreed before any collective construction
     local_state = agree(comm, "prepare_embedded($mode)") do
         mode in EMBEDDED_MODES || invalid("mode must be one of $(EMBEDDED_MODES), got :$mode")
@@ -333,7 +335,7 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         fft = SlabFFT(par, n, length(ys))
     end
     res = EquilibriumResult(length(ax), length(ys), b.nx)
-    return EmbeddedWorkspace(mode, par, ax, xs, ys, dx, dy, tab, Float64(g), column, poisson, fft, res, logf)
+    return EmbeddedWorkspace(mode, par, ax, xs, ys, dx, dy, tab, Float64(g), column, poisson, fft, res, logf, progress)
 end
 
 """Release the communicators of the workspace's slab context (collective). The workspace cannot be used afterwards."""
@@ -420,10 +422,13 @@ function column_z!(ws::EmbeddedWorkspace, lT, st)
     ncol = ny * nx
     cst = zeros(UInt8, ny, nx); nsub = zeros(Int16, ny, nx); ttm = zeros(UInt8, ny, nx)
     nchunk = min(ncol, 8 * Threads.nthreads())
+    bar = Progress(ncol; desc = "Column HSE, height grid (this rank's columns) ", dt = 10, output = stdout,
+                   enabled = ws.progress)
     Threads.@threads :static for ch in 1:nchunk
         u = zeros(nk); m = zeros(nk); chi = zeros(nk); tau = zeros(nk)
         Pc = zeros(nk); rc = zeros(nk); nc = zeros(nk); sc = zeros(UInt8, nk)
         for c in ch:nchunk:ncol
+            next!(bar)
             j = (c - 1) % ny + 1
             i = (c - 1) ÷ ny + 1
             X = @view lT[:, j, i]
@@ -445,6 +450,7 @@ function column_z!(ws::EmbeddedWorkspace, lT, st)
             end
         end
     end
+    finish!(bar)
     @inbounds for i in 1:nx, j in 1:ny, k in 1:nk
         res.z[k, j, i] = z[k]
     end
@@ -522,7 +528,7 @@ end
 function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     res = ws.res; o = ws.column
     lnP, z, nfailed, Pt, nb, nbad = PoissonTau.column_hse_tau(ws.par, ws.axis, lT, bx, by, bz, ws.eos, ws.g;
-                                                              align = o.align)
+                                                              align = o.align, progress = ws.progress)
     res.lnP .= lnP; res.z .= z; res.Pgas .= exp.(lnP)
     st.stats["columns_failed"] = nfailed
     st.stats["align_total_pressure_Pa"] = Pt

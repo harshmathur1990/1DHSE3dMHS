@@ -21,6 +21,7 @@ using MPI, FFTW, LinearAlgebra, Printf, HDF5
 import ..HSEMHS as H
 using ..Slab
 import ..HSEMHS: ParCtx, rank0, MU0
+using ProgressMeter: Progress, next!, finish!
 import ..PoissonZ: tbcast!, pcg!
 
 const LN10 = log(10.0)
@@ -125,15 +126,19 @@ nfailed is the global number of columns whose pressure left the EOS table, nbad 
 when nbad > 0 the alignment and gauge are skipped (they would spread the NaNs) and every rank returns the same values,
 so callers decide collectively.
 """
-function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot")
+function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false)
     nt, ny, nx = size(lT)
     lnP = zeros(nt, ny, nx); z = zeros(nt, ny, nx)
     nfail = Threads.Atomic{Int}(0)
+    bar = Progress(nx * ny; desc = "Column HSE, tau grid (this rank's columns) ", dt = 10, output = stdout,
+                   enabled = progress)
     Threads.@threads for i in 1:nx
         for j in 1:ny
             hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g) || Threads.atomic_add!(nfail, 1)
+            next!(bar)
         end
     end
+    finish!(bar)
     nfailed = gcount(par, nfail[])
     nbad = gcount(par, count(!isfinite, lnP))
     nbad > 0 && return lnP, z, nfailed, NaN, 0, nbad
