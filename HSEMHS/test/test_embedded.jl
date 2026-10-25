@@ -105,12 +105,18 @@ include("embedded_helpers.jl")
         res = H.solve_embedded!(ws, fx.lnT, fx.Bx, fx.By, fx.Bz)
         @test res.status.valid
         for (defect, want) in ((r -> r.ne[5, 2, 2] = NaN, :nonfinite), (r -> r.rho[7, 1, 1] = -1.0, :nonpositive),
-                               (r -> r.tau500[9, 3, 3] = r.tau500[8, 3, 3], :folded))
+                               (r -> r.tau500[9, 3, 3] = 0.5 * r.tau500[8, 3, 3], :folded),
+                               (r -> r.z[9, 3, 3] = r.z[8, 3, 3] + 1.0, :folded))
             snap = H.snapshot(res); defect(snap); ws2 = ws; old = ws.res; ws.res = snap
             st = H.EquilibriumStatus(); H.check_fields!(ws, st)
             @test !st.valid && st.reason == want
             ws.res = old
         end
+        # equal heights of adjacent levels (a capped τ-grid interval) are valid and counted
+        snap = H.snapshot(res); snap.z[9, 3, 3] = snap.z[8, 3, 3]; old = ws.res; ws.res = snap
+        st = H.EquilibriumStatus(); H.check_fields!(ws, st)
+        @test st.valid && st.stats["equal_height_intervals"] == 1
+        ws.res = old
         H.free_embedded!(ws)
         tau = load_tau_fixture("11x12", :)
         ws = H.prepare_embedded(comm, :column_hse_ltau; axis = tau.lt, x = tau.x, y = tau.y, eos = tab, g = 274.0,

@@ -186,9 +186,10 @@ end
 """
 Outcome of one embedded solve, identical on every rank.
 
-`valid` is true when the returned fields are physically usable: EOS clean, all finite, P, ρ, χ₅₀₀ > 0, heights strictly
-decreasing and τ strictly increasing down every column, and (Poisson z) the hydrostatic continuation above the cut
-succeeded. `reason` is the first failed check (:eos_out_of_envelope, :continuation_failed, :nonfinite, :nonpositive,
+`valid` is true when the returned fields are physically usable: EOS clean, all finite, P, ρ, χ₅₀₀ > 0, heights not
+increasing and τ not decreasing down every column, and (Poisson z) the hydrostatic continuation above the cut
+succeeded. Equal heights of adjacent levels are valid: the τ-grid column integration ends a capped interval
+(`cap_per_dex`) without advancing z; their global count is `stats["equal_height_intervals"]`. `reason` is the first failed check (:eos_out_of_envelope, :continuation_failed, :nonfinite, :nonpositive,
 :folded) or else the solver's stopping reason (:converged, :no_descent, :max_steps; column modes: :converged). The
 Poisson stopping rule is on relative decreases of Φ, which does not prove stationarity: `gn_decrement` (the relative
 decrease of Φ one further undamped Gauss–Newton step would predict) and `grad_norm` = ‖JᵀWR‖ measure it, `cg_its` and
@@ -571,15 +572,18 @@ function check_fields!(ws::EmbeddedWorkspace, st)
     nnp = gcount(par, count(<=(0), res.Pgas) + count(<=(0), res.rho) + count(<=(0), res.chi500))
     nnp > 0 && return fail!(st, :nonpositive, nnp, "$nnp non-positive pressures, densities or opacities")
     nk, ny, nx = size(res.z)
-    nfold = 0
+    nfold = 0; nequal = 0
     @inbounds for i in 1:nx, j in 1:ny
         ok = true
         for k in 1:nk-1
-            (res.z[k+1, j, i] < res.z[k, j, i] && res.tau500[k+1, j, i] > res.tau500[k, j, i]) || (ok = false)
+            dz = res.z[k+1, j, i] - res.z[k, j, i]
+            (dz <= 0 && res.tau500[k+1, j, i] >= res.tau500[k, j, i]) || (ok = false)
+            dz == 0 && (nequal += 1)
         end
         ok || (nfold += 1)
     end
     nfold = gcount(par, nfold)
-    nfold > 0 && return fail!(st, :folded, nfold, "$nfold columns where z does not decrease or τ does not increase downwards")
+    st.stats["equal_height_intervals"] = gcount(par, nequal)
+    nfold > 0 && return fail!(st, :folded, nfold, "$nfold columns where z increases or τ decreases downwards")
     return st
 end
