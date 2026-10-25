@@ -55,8 +55,10 @@ height axis broadcast in height modes; the aligned and gauged heights in τ mode
 `eos_violations`, `counts` (per failed check), `stats` (column-stage statistics, cut level, alignment, gauge shift),
 `messages`, `seconds`.
 
-* `valid` = EOS clean ∧ all fields finite ∧ P, ρ, χ₅₀₀ > 0 ∧ z strictly decreasing and τ strictly increasing down
-  every column ∧ (Poisson z) the continuation above the cut succeeded. `reason` is the first failed check
+* `valid` = EOS clean ∧ all fields finite ∧ P, ρ, χ₅₀₀ > 0 ∧ z not increasing and τ not decreasing down
+  every column (amended in `a5cdc9e`: equal heights of adjacent levels are valid — the τ-grid column HSE ends a
+  capped `cap_per_dex` interval without advancing z; 1683 such columns on `IO/input-mhs-ltau.nc` were wrongly
+  rejected by the original strict check; counted in `stats["equal_height_intervals"]`) ∧ (Poisson z) the continuation above the cut succeeded. `reason` is the first failed check
   (`:eos_out_of_envelope`, `:continuation_failed`, `:nonfinite`, `:nonpositive`, `:folded`), else the solver's stopping
   reason (`:converged`, `:no_descent`, `:max_steps`; column modes `:converged`).
 * **Stationarity.** The Poisson solvers stop on `n_consec` consecutive relative decreases of Φ below `rtol`; that does
