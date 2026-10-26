@@ -1,200 +1,405 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{mhs-poisson-z: a pressure-only magnetohydrostatic correction}{The physics of \code{run.mode = "mhs-poisson-z"}, explained step by step (B.Sc.\ level). HSEMHS.}
+\doctitle{mhs-poisson-z: a pressure-only magnetohydrostatic correction on a geometric-height grid}{Physics and method of \code{run.mode = "mhs-poisson-z"} in HSEMHS. A self-contained description.}
 
-\section{The question}
-The mode \code{column-hse-z} puts every vertical column into hydrostatic equilibrium on its own. Neighbouring columns then
-push on each other with forces nothing balances, and the magnetic field is ignored. Here we keep the temperature $T$ and
-the magnetic field $\B$ exactly as given and ask: \emph{which pressure field balances, as well as possible, gravity and the
-magnetic force in all three directions?} Only the pressure changes. This idea comes from the FIRTEZ-dz inversion code
-(Borrero et al.): inside an inversion the atmosphere changes at every iteration, and a pressure-only correction can restore
-the force balance in minutes, whereas changing the field as well takes far longer.
+\begin{abstract}
+\noindent Starting from an atmosphere whose columns are each in hydrostatic equilibrium, this mode adjusts the gas pressure
+in three dimensions so that pressure, gravity and the Lorentz force of a given magnetic field balance each other as well as
+possible. Temperature and magnetic field stay fixed; only the pressure changes. Because a fixed field generally cannot hold
+up every horizontal density contrast, an exact equilibrium does not exist, and the pressure is found as the minimiser of a
+weighted sum of squared relative force residuals. We derive the force balance, show why its pressure part is a Poisson
+problem, explain what a pressure change can and cannot achieve, define the residuals and their weights, and describe the
+Gauss--Newton iteration, the Fourier-mode preconditioner, the step control, the stopping rule, the treatment of the
+low-$\beta$ upper atmosphere and the computation of the optical depth. All assumptions, including how the pressure level is
+fixed, are listed.
+\end{abstract}
 
-\section{The quantities}
-\begin{tabular}{>{$}l<{$} p{11.3cm} l}
+\section{Introduction}
+A hydrostatic atmosphere in which every vertical column carries its own weight separately has two shortcomings. First,
+neighbouring columns of different temperature have different pressures at the same height, so horizontal pressure forces
+remain unbalanced. Second, the magnetic field is ignored. This mode keeps the temperature $T$ and the magnetic field $\B$
+exactly as given and asks: \emph{which pressure field balances, as well as possible, the pressure force, gravity and the
+magnetic force in all three directions?} The idea comes from the FIRTEZ-dz inversion code (Borrero et al.), where the
+atmosphere changes in every inversion cycle and a pressure-only correction restores the force balance far faster than a
+correction of the field would.
+
+\textbf{Input:} $T$ and $\B$ on a three-dimensional geometric-height grid that is periodic in $x$ and $y$; the gravity $g$;
+a reference pressure $P_{\rm ref}$ for the starting state; the height $z_{\rm cut}$ below which the force balance is solved.
+\textbf{Output:} $P$, $\rho$ and $\tau_{500}$ on the grid, the height of $\tau_{500}=1$ in every column, and the starting
+(column-hydrostatic) pressure for comparison.
+
+\section{Notation}
+\begin{tabularx}{\linewidth}{>{$}l<{$} Y l l}
 \toprule
-\text{Symbol} & Meaning & Unit \\ \midrule
-x,\,y,\,z & horizontal coordinates (the box is periodic in $x$ and $y$) and height & m \\
-T,\ \B & temperature and magnetic field, given, \textbf{both fixed} & K, T \\
-\J & electric current density, $\J=\nabla\times\B/\mu_0$ & A\,m$^{-2}$ \\
-\Lv & Lorentz force per volume, $\Lv=\J\times\B$; fixed, because $\B$ is fixed & N\,m$^{-3}$ \\
-P,\ u & gas pressure, the only unknown; $u=\ln P$ & Pa, -- \\
-\rho & density, $\rho(T,P)$ from the equation of state & kg\,m$^{-3}$ \\
-g & gravity, 274; the gravitational force points along $-\zh$ & m\,s$^{-2}$ \\
-H,\ \bar H & pressure scale height $P/(\rho g)$; its median over a horizontal layer & m \\
-\F & net force per volume on the gas & N\,m$^{-3}$ \\
-\beta & plasma beta, $2\mu_0P/B^2$: gas pressure over magnetic pressure & -- \\
-\mu_0 & vacuum permeability, $4\pi\times10^{-7}$ & T\,m\,A$^{-1}$ \\
-z_{\rm cut} & top of the region in which the force balance is solved & m \\
+\text{Symbol} & Meaning & Unit & Role \\ \midrule
+x,\ y & horizontal coordinates, periodic; $x_i$, $i=1\dots N_x$, $y_j$, $j=1\dots N_y$, spacing $\Delta x$, $\Delta y$ & m & given \\
+z & height (upward); levels $z_k$, $k=1\dots N_z$, top first & m & given \\
+T,\ X & temperature; $X=\ln T$ & K & given, fixed \\
+\B & magnetic field at the grid points & T & given, fixed \\
+\J & current density $\nabla\times\B/\mu_0$ & A\,m$^{-2}$ & fixed \\
+\Lv & Lorentz force per unit volume $\J\times\B$ & N\,m$^{-3}$ & fixed \\
+P,\ u & gas pressure; $u=\ln(P/1\,{\rm Pa})$ & Pa, -- & unknown \\
+P_{\rm ref} & pressure at the bottom of every column in the starting state & Pa & parameter \\
+\rho,\ q & density $\rho(T,P)$; $q=\rho/P$ & kg\,m$^{-3}$, s$^2$\,m$^{-2}$ & derived \\
+H,\ \bar H_k & scale height $P/(\rho g)$; its median over layer $k$ in the starting state & m & derived, fixed \\
+\F & net force per unit volume & N\,m$^{-3}$ & residual \\
+\R & relative residual $\F/P$ & m$^{-1}$ & residual \\
+\Phi & objective: weighted sum of squared residuals & m & minimised \\
+\beta & plasma beta $2\mu_0P/B^2$ & -- & derived \\
+z_{\rm cut},\ k_c & top of the solved region (default 1\,Mm); its level index & m, -- & parameter \\
+n & number of solved levels, $n=N_z-k_c+1$ & -- & derived \\
+h_k & level spacing $z_k-z_{k+1}$ in the solved region & m & grid \\
+w_k & thickness of the cell around level $k$ & m & grid \\
+\delta u & change of $u$ in one Gauss--Newton step & -- & step \\
+\mathsf J,\ \mathsf W & Jacobian matrix $\partial\R/\partial u$; diagonal matrix of the weights & & derived \\
+g & gravitational acceleration, from the input file (274) & m\,s$^{-2}$ & parameter \\
+\mu_0 & vacuum permeability $4\pi\times10^{-7}$ & T\,m\,A$^{-1}$ & constant \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 
-\section{The forces}
+\section{The force balance}\label{sec:force}
+\subsection{The three forces}
 A small volume of gas feels three forces per unit volume:
 \begin{enumerate}
-\item \textbf{pressure}, $-\nabla P$: gas is pushed from high to low pressure;
-\item \textbf{gravity}, $-\rho g\,\zh$;
-\item the \textbf{Lorentz force} $\Lv=\J\times\B$: the field acts on the electric currents flowing in the ionised gas.
+\item the \textbf{pressure force} $-\nabla P$, pushing gas from high to low pressure;
+\item \textbf{gravity} $-\rho g\,\zh$;
+\item the \textbf{Lorentz force} $\Lv=\J\times\B$ of the magnetic field on the electric currents in the ionised gas. In a slowly
+changing plasma the currents follow from the field by Amp\`ere's law, $\J=\nabla\times\B/\mu_0$.
 \end{enumerate}
-The currents follow from the field by Amp\`ere's law (in a slowly changing plasma), $\J=\nabla\times\B/\mu_0$. With a vector
-identity the Lorentz force splits into two parts with a clear meaning:
-\[
+With a vector identity the Lorentz force splits into two parts with a clear meaning:
+\begin{equation}
 \J\times\B=\frac{(\nabla\times\B)\times\B}{\mu_0}=\underbrace{-\nabla\!\left(\frac{B^2}{2\mu_0}\right)}_{\text{magnetic pressure}}
-+\underbrace{\frac{(\B\cdot\nabla)\B}{\mu_0}}_{\text{magnetic tension}} .
-\]
++\underbrace{\frac{(\B\cdot\nabla)\B}{\mu_0}}_{\text{magnetic tension}} .\label{eq:lorentz}
+\end{equation}
 Field lines push sideways on each other like a gas with pressure $B^2/2\mu_0$, and curved field lines pull like stretched
-rubber bands. The gas is static when the forces cancel:
-\[
-\boxed{\;\F\equiv-\nabla P+\J\times\B-\rho g\,\zh=0\;}
-\]
-In this mode $\J\times\B$ is a \emph{given} force field (computed once from the fixed $\B$), and $\rho$ depends on $P$
-through the equation of state. The question is therefore which pressure balances gravity plus a given force field.
+rubber bands.
 
-\section{Why it is called a Poisson step}
-Take the divergence of $\F=0$, using $\nabla\cdot\nabla P=\nabla^2P$:
-\[
-\nabla^2P=\nabla\cdot(\J\times\B)-g\,\frac{\partial\rho}{\partial z}.
-\]
-This is a \textbf{Poisson equation} for $P$, the same type of equation as for the electric potential of a charge
-distribution. FIRTEZ solves essentially this, iterating because $\rho$ depends on $P$. Poisson equations can be solved
-very fast in a periodic box (Sect.~9).
+\subsection{Magnetohydrostatic equilibrium in three components}
+The gas is static when the three forces cancel:
+\begin{equation}
+\boxed{\;\F\equiv-\nabla P+\J\times\B-\rho\,g\,\zh=0\;}\label{eq:mhs}
+\end{equation}
+or, component by component,
+\begin{equation}
+-\frac{\partial P}{\partial x}+L_x=0,\qquad -\frac{\partial P}{\partial y}+L_y=0,\qquad -\frac{\partial P}{\partial z}-\rho g+L_z=0 .
+\label{eq:mhs3}
+\end{equation}
+In this mode $\Lv$ is a \emph{given} force field, computed once from the fixed $\B$, and $\rho$ depends on $P$ through the
+equation of state. The question is therefore which single scalar field $P(x,y,z)$ balances gravity plus a given vector
+force field.
 
-\section{What a pressure correction can do, and what it cannot}
+\subsection{Why it is called a Poisson step}
+Take the divergence of Eq.~\eqref{eq:mhs}, using $\nabla\cdot\nabla P=\nabla^2P$:
+\begin{equation}
+\nabla^2P=\nabla\cdot(\J\times\B)-g\,\frac{\partial\rho}{\partial z}.\label{eq:poisson}
+\end{equation}
+This is a \textbf{Poisson equation} for $P$, the same type of equation as that for the electric potential of a charge
+distribution, with a right-hand side that itself depends on $P$ through $\rho$. FIRTEZ solves essentially this equation,
+iterating on the density. Poisson problems in a horizontally periodic box can be solved very fast with Fourier transforms
+(Sect.~\ref{sec:prec}). The method used here does not solve Eq.~\eqref{eq:poisson} literally but minimises the residual of
+Eq.~\eqref{eq:mhs} (Sect.~\ref{sec:ls}); each of its linear steps turns out to be a Poisson-type equation.
+
+\input{common/eos.tex}
+
+\section{What a pressure correction can do, and what it cannot}\label{sec:helm}
 \subsection{Gradient and non-gradient forces}
 A force field in the box can be split (the \textbf{Helmholtz decomposition}) into
-\[
+\begin{equation}
 \F=\underbrace{-\nabla\phi}_{\text{gradient part}}+\underbrace{\mathbf S}_{\text{non-gradient part}},
 \qquad \int\mathbf S\cdot\nabla\psi\,dV=0\ \text{for every function }\psi .
-\]
-The gradient part is the slope of a scalar ``potential'' $\phi$, like a pressure force, and has no curl. The non-gradient
-part is everything else: it carries the whole curl of $\F$, and the orthogonality condition means (after integrating by
-parts) that it has no divergence. The two parts are orthogonal, so their sizes add like the sides of a right triangle:
-$\int|\F|^2dV=\int|\nabla\phi|^2dV+\int|\mathbf S|^2dV$. The split is unique only once boundary conditions are fixed: our
-box is periodic in $x$ and $y$ but has a top and a bottom, so what happens at those boundaries (and an additive constant in
-$\phi$) has to be specified. With a weighting of the volume, as below, ``orthogonal'' is meant in that weighted sense.
+\end{equation}
+The gradient part is the slope of a scalar potential $\phi$, like a pressure force, and has no curl. The non-gradient part
+carries the whole curl of $\F$, and the orthogonality condition means, after integration by parts, that it has no divergence.
+The two parts are orthogonal, so their sizes add like the sides of a right triangle,
+$\int|\F|^2dV=\int|\nabla\phi|^2dV+\int|\mathbf S|^2dV$. The split is unique once boundary conditions are fixed: the box is
+periodic in $x$ and $y$ but has a top and a bottom, where conditions (and an additive constant in $\phi$) have to be
+specified.
 
 A change of pressure $\delta P$ changes the force by $-\nabla\delta P$, a pure gradient. If the density did not change, a
-pressure correction could in principle remove the gradient part (choose $\delta P=-\phi$) and could never touch
-$\mathbf S$. This picture explains what the method can achieve; the solver itself does not compute such a projection. It
-minimises a weighted sum of squares of the \emph{relative} residual (Sect.~7), which is a non-linear problem, so it neither
-removes the gradient part exactly nor leaves $\mathbf S$ untouched.
+pressure correction could remove the gradient part ($\delta P=-\phi$) and could never touch $\mathbf S$. This picture explains
+what the method can achieve; the solver itself does not compute such a projection. It minimises a weighted sum of squares
+of the relative residual (Sect.~\ref{sec:ls}), a non-linear problem, so it neither removes the gradient part exactly nor
+leaves $\mathbf S$ untouched.
 
-\subsection{Which forces are non-gradient?}
-Take the curl of the force balance. The curl of any gradient is zero, and for gravity
+\subsection{Which forces are not gradients?}
+Take the curl of Eq.~\eqref{eq:mhs}. The curl of a gradient is zero, and
 $\nabla\times(\rho g\zh)=g\,(\partial_y\rho,\,-\partial_x\rho,\,0)$, so
-\[
+\begin{equation}
 \nabla\times\F=\nabla\times(\J\times\B)-g\left(\frac{\partial\rho}{\partial y},\,-\frac{\partial\rho}{\partial x},\,0\right).
-\]
-Term by term:
-\begin{itemize}
-\item \textbf{pressure}: always a gradient;
-\item \textbf{gravity}: a gradient only if $\rho$ is the same everywhere on each horizontal plane. A heavy column next to
-a light one at the same height cannot be static: the weight of the heavy column makes the pressure below it rise faster
-with depth, and the resulting sideways push has nowhere to go. This is \textbf{buoyancy};
-\item \textbf{Lorentz force}: the magnetic pressure is a gradient, the tension in general is not.
-\end{itemize}
-So static equilibrium requires the \textbf{curl condition}
-\[
+\end{equation}
+Term by term: the \textbf{pressure} force is always a gradient. \textbf{Gravity} is a gradient only if $\rho$ is uniform on
+each horizontal plane; a heavy column next to a light one at the same height cannot be static (\textbf{buoyancy}). The
+\textbf{Lorentz force} has a gradient part (the magnetic pressure) and in general a non-gradient part (the tension). Static
+equilibrium therefore requires the \textbf{curl condition}
+\begin{equation}
 \nabla\times(\J\times\B)=g\left(\frac{\partial\rho}{\partial y},\,-\frac{\partial\rho}{\partial x},\,0\right):
-\]
+\label{eq:curl}
+\end{equation}
 only the tension of the field can hold up horizontal density differences. Without a field this forces
-$\partial_x\rho=\partial_y\rho=0$: a static non-magnetic atmosphere is horizontally uniform. With a given $\B$ the curl
-condition holds only if the field happens to have exactly the right tension everywhere. There is no reason to expect
-this of a field taken from a moving simulation or an inversion, so in general \emph{no pressure makes the atmosphere exactly
-static}; for a particular field this has to be checked, not assumed. The mode looks for the best compromise.
+$\partial_x\rho=\partial_y\rho=0$. With a given $\B$, Eq.~\eqref{eq:curl} holds only if the field happens to have exactly the
+right tension everywhere. There is no reason to expect this of a field taken from a moving simulation or an inversion, so in
+general \emph{no pressure makes the atmosphere exactly static}, and the mode looks for the best compromise.
 
 \subsection{The density loophole}
-The density is not fixed: with $T$ fixed, a pressure change changes it,
-\[
+The density is not fixed: at fixed $T$ a pressure change changes it,
+\begin{equation}
 \delta\rho=\rho\left.\frac{\partial\ln\rho}{\partial\ln P}\right|_T\frac{\delta P}{P},
 \qquad\text{so}\qquad \delta(\nabla\times\F)=-g\,\nabla\times(\delta\rho\,\zh).
-\]
-By making the pressure fall faster with height under a dense column, the correction lowers that column's density at a
-given height and shrinks the horizontal density contrast, and with it part of $\mathbf S$. What it can never remove is the
-part caused by the temperature differences at fixed pressure, or by the tension of $\B$: only a change of $\B$ (the
-\code{full-mhs-z} mode) or of $T$ can do that.
+\end{equation}
+By making the pressure fall faster with height under a dense column, the correction lowers that column's density at a given
+height and reduces the horizontal density contrast, and with it part of $\mathbf S$. What it can never remove is the part
+caused by temperature differences at fixed pressure or by the tension of $\B$: that requires changing $\B$ or $T$.
 
-\section{Measuring the imbalance in units of the weight}
-Divide the force by the pressure and use $u=\ln P$ (so $\nabla P/P=\nabla u$ and $\rho g/P=1/H$):
-\[
-\boxed{\;\R\equiv\frac{\F}{P}=-\nabla u-\frac{\zh}{H(T,P)}+\frac{\J\times\B}{P}\;}
-\]
+\section{The quantity minimised}\label{sec:ls}
+\subsection{Relative residual}
+Divide the force by the pressure and use $u=\ln P$ ($\nabla P/P=\nabla u$, $\rho g/P=g\,q=1/H$):
+\begin{equation}
+\boxed{\;\R\equiv\frac{\F}{P}=-\nabla u-g\,q(T,u)\,\zh+\Lv\,e^{-u}\;}\label{eq:R}
+\end{equation}
 \begin{enumerate}
-\item $P=e^u$ is positive automatically, across the many decades of pressure in the box.
-\item $\R$ is a \emph{relative} imbalance. If we minimised $|\F|$ itself, the cheapest way to make the force small would be to make
-the pressure small everywhere (all forces scale with $P$); dividing by $P$ removes that false incentive.
+\item $P=e^u$ stays positive across the many decades of pressure in the box.
+\item $\R$ is a \emph{relative} imbalance. Minimising $|\F|$ itself would reward making the pressure small everywhere (all
+forces scale with $P$); dividing by $P$ removes that false incentive.
 \item Without the Lorentz force, $R_z=0$ is $du/dz=-1/H$, ordinary hydrostatic equilibrium.
-\item $R\,\bar H\approx F/(\rho g)$: multiplied by the scale height, the residual is the unbalanced force in units of the
+\item $|\R|\,H\approx|\F|/(\rho g)$: multiplied by the scale height, the residual is the unbalanced force in units of the
 weight of the gas. A value of 1 means an unbalanced force as large as gravity.
 \end{enumerate}
 
-\section{Least squares}
-At every point the force balance gives three equations ($x$, $y$, $z$), but there is only one unknown, the pressure. With
-more equations than unknowns and no exact solution, we look for the \textbf{best compromise}: the pressure that makes the sum of
-the squared residuals as small as possible, just as fitting a straight line through many points minimises the squared
-distances. The quantity minimised is
+\subsection{More equations than unknowns: least squares}
+At every point the force balance gives three equations, but there is only one unknown, the pressure. With more equations
+than unknowns and, by Sect.~\ref{sec:helm}, no exact solution, we look for the \textbf{best compromise}: the pressure that
+minimises the weighted sum of squared residuals, just as fitting a straight line through many points minimises the squared
+distances. The objective is a discrete volume integral,
+\begin{equation}
+\boxed{\;\Phi(u)=\sum_{k,j,i}w_k\,\bar H_k^2\left[(R_x)_{ijk}^2+(R_y)_{ijk}^2\right]+\sum_{k,j,i}h_k\,\bar H_{k+1/2}^2\,(R_z)_{ij,k+1/2}^2\;}
+\label{eq:Phi}
+\end{equation}
+(the discrete residuals are defined in Sect.~\ref{sec:disc}). $w_k$ and $h_k$ are the thicknesses of the cells around the
+levels and between them, so $\Phi$ approximates $\int|\R|^2\bar H^2\,dz$ summed over the columns. $\bar H_k$ is the median of
+$H$ over layer $k$ in the starting state and stays fixed during the solve; $\bar H_{k+1/2}=\sqrt{\bar H_k\bar H_{k+1}}$. The
+factor $\bar H^2$ makes each term a force in units of the local weight, so that the deep, dense layers, whose forces are
+orders of magnitude larger, do not swamp the upper ones. The reported measure of the imbalance is
+${\rm RMS}\,|\R|\bar H=\sqrt{\Phi/W}$, with $W$ the sum of all weights ($w_k$ twice, for $x$ and $y$, and $h_k$) over all
+columns.
+
+\subsection{The pressure level: the reference pressure}\label{sec:level}
+Force balance hardly fixes the overall level of the pressure. For an ideal gas of fixed ionisation, multiplying $P$
+everywhere by a constant leaves $\nabla u$ and $q$ unchanged, so only the Lorentz term $\Lv e^{-u}$ and the weak pressure
+dependence of the ionisation would notice. The level is therefore fixed separately, in two stages:
+\begin{enumerate}
+\item The \textbf{starting state} is the column-hydrostatic atmosphere with the same pressure $P_{\rm ref}$ at the bottom of
+every column (for the production input, the median of the simulation's own pressure over the bottom plane). It is computed
+by integrating $du/dz=-g\,q$ upward from the bottom in every column (classical Runge--Kutta with substep doubling to a
+tolerance of $10^{-6}$ in $u$). The bottom is used because there, deep below the visible surface, the true pressure varies
+least across a horizontal plane.
+\item During the solve each step is penalised for changing the \textbf{mean of $u$ over the bottom plane}
+(Sect.~\ref{sec:normal}). The pattern of $u$ on the bottom plane is free to change, so the horizontal forces there can be
+balanced; only its mean is held near the starting value $\ln P_{\rm ref}$. This is a penalty, not an exact constraint, and the
+limit on the size of each step can shift it slightly.
+\end{enumerate}
+
+\section{\texorpdfstring{The low-$\beta$ problem and the cut at $z_{\rm cut}$}{The low-beta problem and the cut at z\_cut}}\label{sec:cut}
+The plasma beta $\beta=2\mu_0P/B^2$ compares gas and magnetic pressure. Deep down $\beta\gg1$: the gas dominates. Higher up
+$\beta\ll1$: the Lorentz force dwarfs every gas force, and a static state needs a nearly \textbf{force-free} field,
+$\J\times\B\approx0$ (currents along the field lines). A field from a dynamic simulation or an inversion is not force-free.
+With $\B$ fixed, the only way to balance a large Lorentz force is a large pressure gradient, i.e.\ a large pressure; and
+because $\partial P/\partial z$ links each layer to the one below, raising the pressure high up raises it in the photosphere
+too, which would destroy the result where it matters most.
+
+The force balance is therefore solved only on the levels with $z_k\le z_{\rm cut}$ (default 1\,Mm), where the gas still
+dominates. Above $z_{\rm cut}$ each column is integrated in plain hydrostatic equilibrium, $du/dz=-g\,q$, upward from the
+solved pressure at the first level below the cut (Sect.~\ref{sec:above}). FIRTEZ makes the same physical choice more
+gradually (its magnetic term decays exponentially above a chosen height). $z_{\rm cut}$ is a physical parameter: it marks
+where we stop trusting the given field to be in equilibrium.
+
+\section{Assumptions}\label{sec:assume}
+\begin{enumerate}[label=\textbf{A\arabic*.},leftmargin=2.2em]
+\item \textbf{Static gas:} velocities neglected.
+\item \textbf{Fixed temperature and field.} $T$ and $\B$ are not changed; hence $\J$ and $\Lv$ are fixed, computed once.
+\item \textbf{Best compromise, not equilibrium:} the solution minimises Eq.~\eqref{eq:Phi}; an exact equilibrium generally does
+not exist (Sect.~\ref{sec:helm}).
+\item \textbf{Weights} $\bar H_k$ from the starting state, fixed during the solve.
+\item \textbf{Pressure level:} equal $P_{\rm ref}$ at the bottom of every column in the starting state; afterwards the mean
+of $\ln P$ over the bottom plane held by a per-step penalty (Sect.~\ref{sec:level}).
+\item \textbf{Horizontally periodic box}; no condition is imposed at the top and bottom of the solved region other than those
+implied by the residuals there (the natural boundary conditions of the least-squares problem).
+\item \textbf{Hydrostatic above $z_{\rm cut}$:} no Lorentz force and no horizontal balance there.
+\item \textbf{LTE ideal gas} with ionisation and molecules from the table; \textbf{constant vertical gravity}, plane-parallel
+geometry.
+\item \textbf{Discretisation:} field and pressure at the same grid points; second-order differences.
+\end{enumerate}
+
+\section{The discrete problem}\label{sec:disc}
+\subsection{Grid of the solved region}
+The solved region consists of the levels $k_c\dots N_z$ ($k_c$ the first level with $z_k\le z_{\rm cut}$), renumbered
+$k=1\dots n$ from the top. Every unknown $u_{ijk}$ sits at a grid point. Between levels $k$ and $k+1$ the spacing is
+$h_k=z_k-z_{k+1}$ and the face lies at $z_{k+1/2}=\tfrac12(z_k+z_{k+1})$; the outer faces lie half a spacing outside the
+end levels. The cell thickness is $w_k=z_{k-1/2}-z_{k+1/2}$. Altogether there are $nN_xN_y$ unknowns and
+$(3n-1)N_xN_y$ residuals.
+
+\subsection{The Lorentz force}
+The current is computed on the full grid with second-order differences, centred and periodic in $x$ and $y$,
 \[
-\Phi(u)=\sum_{\text{points}}w\,\bar H^2\left(R_x^2+R_y^2\right)+\sum_{\text{between layers}}h\,\bar H^2R_z^2 .
+(\partial_xf)_{ijk}=\frac{f_{i+1,jk}-f_{i-1,jk}}{2\Delta x},\qquad (\partial_yf)_{ijk}=\frac{f_{i,j+1,k}-f_{i,j-1,k}}{2\Delta y},
 \]
-$w$ and $h$ are the thicknesses of the cells, so $\Phi$ approximates an integral over the volume. $\bar H$ (the layer median
-of $H$ in the starting state) makes each term a force in units of the local weight, so the deep, dense layers, whose forces
-are many orders of magnitude larger, do not swamp the upper ones. Force balance hardly fixes the overall level of the pressure: for
-an ideal gas of fixed ionisation, multiplying $P$ everywhere by a constant leaves $\nabla u$ and $1/H$ unchanged, so only the
-Lorentz term $\J\times\B/P$ (and the weak pressure dependence of the ionisation) would notice. The level is therefore fixed
-separately: each step is penalised for changing the mean of $u$ on the bottom plane, which keeps that mean close to its
-starting (column-HSE) value. It is a penalty, not an exact constraint, and the limit on the size of each step can shift it
-slightly.
+and in $z$ with the second-order three-point formula for unequal spacing (one-sided at the top and bottom levels). Then
+\begin{equation}
+\J=\frac1{\mu_0}\big(\partial_yB_z-\partial_zB_y,\ \partial_zB_x-\partial_xB_z,\ \partial_xB_y-\partial_yB_x\big),\qquad
+\Lv=\big(J_yB_z-J_zB_y,\ J_zB_x-J_xB_z,\ J_xB_y-J_yB_x\big).
+\end{equation}
 
-\section{The low-$\beta$ problem and the cut at $z_{\rm cut}$}
-The ratio $\beta=2\mu_0P/B^2$ compares gas and magnetic pressure. Deep down $\beta\gg1$: the gas dominates. Higher up
-$\beta\ll1$: there the Lorentz force dwarfs every gas force, and a static state needs a nearly \textbf{force-free} field,
-$\J\times\B\approx0$ (currents flowing along the field lines). A field from a dynamic simulation or an inversion is not
-force-free. With $\B$ fixed, the only way to balance a large Lorentz force is a large pressure gradient, i.e.\ a large
-pressure. And because $\partial P/\partial z$ links each layer to the one below, raising the pressure high up raises it in
-the photosphere too, which would destroy the result where it matters most.
+\subsection{The residuals}
+The horizontal residuals live at the grid points,
+\begin{equation}
+(R_x)_{ijk}=-\frac{u_{i+1,jk}-u_{i-1,jk}}{2\Delta x}+(L_x)_{ijk}\,e^{-u_{ijk}},\qquad
+(R_y)_{ijk}=-\frac{u_{i,j+1,k}-u_{i,j-1,k}}{2\Delta y}+(L_y)_{ijk}\,e^{-u_{ijk}},\label{eq:Rxy}
+\end{equation}
+and the vertical one on the interior faces $k+1/2$, $k=1\dots n-1$:
+\begin{equation}
+(R_z)_{ij,k+1/2}=-\frac{u_{ijk}-u_{ij,k+1}}{h_k}-\frac{g}{2}\big(q_{ijk}+q_{ij,k+1}\big)
++\frac12\big((L_z)_{ijk}e^{-u_{ijk}}+(L_z)_{ij,k+1}e^{-u_{ij,k+1}}\big),\label{eq:Rz}
+\end{equation}
+with $q_{ijk}=\rho(T_{ijk},e^{u_{ijk}})\,e^{-u_{ijk}}$. Placing $R_z$ between the levels makes the vertical pressure
+difference a compact two-point difference; the density and the Lorentz force are averaged to the face.
 
-The force balance is therefore solved only below a height $z_{\rm cut}$ (by default 1\,Mm), where the gas still dominates.
-Above it each column is integrated in plain hydrostatic equilibrium, $du/dz=-1/H$, starting from the solved pressure at
-$z_{\rm cut}$. FIRTEZ makes the same physical choice more gradually (its magnetic term decays exponentially above a chosen
-height). $z_{\rm cut}$ is a physical parameter: it marks where we stop trusting the given field to be in equilibrium.
-Above it the atmosphere is hydrostatic, not magnetohydrostatic.
+\section{The Gauss--Newton iteration}\label{sec:gn}
+\subsection{Linearisation}
+$\R$ depends on $u$ linearly through $-\nabla u$, but non-linearly through $q(T,u)$ and the factor $e^{-u}$. Newton's method
+for one equation $f(u)=0$ replaces $f$ by its tangent and solves $f(u)+f'(u)\,\delta u=0$. For a least-squares problem the
+analogue is \textbf{Gauss--Newton}: replace the residual vector by its linear approximation in the step,
+\begin{equation}
+\R(u+\delta u)\approx\R(u)+\mathsf J\,\delta u ,\qquad \mathsf J=\frac{\partial\R}{\partial u},
+\end{equation}
+and minimise the resulting quadratic $\Phi(u+\delta u)\approx(\R+\mathsf J\delta u)^{\!\top}\mathsf W(\R+\mathsf J\delta u)$.
+The derivatives are
+\begin{align}
+\delta(R_x)_{ijk}&=-\frac{\delta u_{i+1,jk}-\delta u_{i-1,jk}}{2\Delta x}-(L_x)_{ijk}e^{-u_{ijk}}\,\delta u_{ijk}
+\quad\text{(and likewise for $y$)},\\
+\delta(R_z)_{ij,k+1/2}&=-\big(a_k\,\delta u_{ijk}+b_k\,\delta u_{ij,k+1}\big),\\
+a_k&=\frac1{h_k}+\frac12\Big(g\,q'_{ijk}+(L_z)_{ijk}e^{-u_{ijk}}\Big),\qquad
+b_k=-\frac1{h_k}+\frac12\Big(g\,q'_{ij,k+1}+(L_z)_{ij,k+1}e^{-u_{ij,k+1}}\Big),
+\end{align}
+with $q'=\partial q/\partial u=q\,\big(\partial\ln\rho/\partial\ln P|_T-1\big)$, taken from the derivative of the table
+interpolation. ($a_k$ and $b_k$ also depend on $i$, $j$; the indices are dropped for brevity.)
 
-\section{How the minimum is found}
-\subsection{Gauss--Newton}
-$\R$ depends on $u$ linearly through $-\nabla u$, but non-linearly through $\rho(T,P)$ and the factor $1/P$ in the Lorentz
-term. In one dimension, Newton's method finds a root of $f(u)$ by replacing $f$ with its tangent and solving
-$f(u)+f'(u)\,\delta u=0$. The many-variable least-squares version, \textbf{Gauss--Newton}, replaces $\R$ by its linear
-approximation $\R(u+\delta u)\approx\R(u)+\mathbf J_R\,\delta u$ ($\mathbf J_R$ the matrix of derivatives) and minimises
-the resulting quadratic in $\delta u$. Setting its derivative to zero gives the \textbf{normal equations}
-\[
-\mathbf J_R^{\!\top}W\mathbf J_R\,\delta u=-\mathbf J_R^{\!\top}W\R,
-\]
-with $W$ the weights of $\Phi$. Since $\mathbf J_R$ contains the derivatives $-\nabla$, the leading part of
-$\mathbf J_R^{\!\top}W\mathbf J_R$ is $-\nabla\cdot(W\nabla\,\cdot)$, a weighted Laplacian: \emph{each step is a Poisson
-equation for $\delta u$}, plus local terms from the equation of state and the Lorentz force. The step is limited (the
-pressure may change by at most a factor $e^2$ per point and step) and halved until $\Phi$ actually decreases. The
-iteration stops when $\Phi$ has stopped decreasing.
+\subsection{The normal equations}\label{sec:normal}
+Setting the derivative of the quadratic with respect to $\delta u$ to zero gives the \textbf{normal equations}
+\begin{equation}
+\boxed{\;\big(\mathsf J^{\!\top}\mathsf W\mathsf J+\mathsf E+\mathsf A\big)\,\delta u=-\mathsf J^{\!\top}\mathsf W\,\R\;}
+\label{eq:normal}
+\end{equation}
+with two additional terms:
+\begin{itemize}
+\item $\mathsf E$, a small diagonal damping, $E_k=10^{-2}\,\kappa_1^2\,w_k\bar H_k^2$ with $\kappa_1=2\pi/(N_x\Delta x)$ the
+smallest horizontal wavenumber of the box: one per cent of the horizontal stiffness of the longest wave. It keeps the
+system well posed for components that the residuals barely see.
+\item $\mathsf A$, the \textbf{anchor} penalty of Sect.~\ref{sec:level}: the term $\tfrac12A\big(\sum_{\rm bottom}\delta
+u\big)^2$ is added to the quadratic, so $\mathsf A=A\,\mathbf c\mathbf c^{\!\top}$ with $\mathbf c$ the indicator vector of
+the bottom-plane points and $A=w_{\rm a}\,\bar H_{n-1/2}^2/(h_{n-1}N_xN_y)$ ($w_{\rm a}$ = \code{anchor\_w}, default 1),
+comparable to the vertical stiffness of the lowest face.
+\end{itemize}
+The right-hand side $-\mathsf J^{\!\top}\mathsf W\R$ is minus half the gradient of $\Phi$. Since $\mathsf J$ contains the
+difference operators $-\nabla$, the leading part of $\mathsf J^{\!\top}\mathsf W\mathsf J$ is
+$-\nabla\cdot\big(w\bar H^2\nabla\,\cdot\big)$, a weighted Laplacian: \emph{each step is a Poisson equation for $\delta u$},
+plus local terms from the equation of state and the Lorentz force. Gauss--Newton neglects the second derivatives of the
+residuals. That is accurate where the residuals are small, but when a sizeable residual remains at the minimum, as here,
+the convergence is only linear: $\Phi$ decreases by a roughly constant factor per step rather than ever faster.
 
-\subsection{Fourier modes}
+\subsection{Solving the normal equations: preconditioned conjugate gradients}
+Equation~\eqref{eq:normal} is a symmetric, positive-definite linear system with as many unknowns as solved grid points (tens
+of millions). It is never written out as a matrix. The \textbf{conjugate-gradient} (CG) method needs only products of the
+matrix with a vector, and each product applies $\mathsf J$ and $\mathsf J^{\!\top}$ with the stencils above. CG starts from
+$\delta u=0$ and builds the solution from successive search directions, each conjugate to the previous ones. It converges in
+few iterations if a good \textbf{preconditioner} $\mathsf M\approx\mathsf J^{\!\top}\mathsf W\mathsf J+\mathsf E+\mathsf A$
+with a cheap inverse is available: CG is then applied in effect to $\mathsf M^{-1}(\mathsf J^{\!\top}\mathsf W\mathsf
+J+\mathsf E+\mathsf A)$, which is close to the identity. CG stops when the residual of the linear system has fallen to
+$10^{-3}$ of its starting value (\code{cg\_tol}) or after 80 iterations (\code{cg\_maxit}). An inexact solution is
+acceptable, because the step is in any case only the minimiser of a linear model.
+
+\subsection{\texorpdfstring{The preconditioner: Fourier modes in $x$ and $y$}{The preconditioner: Fourier modes in x and y}}\label{sec:prec}
 In a horizontally periodic box any function can be written as a sum of waves,
-$u(x,y,z)=\sum_{k_x,k_y}\hat u(k_x,k_y,z)\,e^{i(k_xx+k_yy)}$. A horizontal derivative acts on a wave as a multiplication,
-$\partial_x\to ik_x$, so the Laplacian becomes $-k_x^2-k_y^2+\partial_z^2$ and each wave $(k_x,k_y)$ obeys its own
-one-dimensional equation in $z$. On the grid each is a tridiagonal linear system, solved in a number of operations proportional to
-the number of layers. This is the fast approximate solver (the ``preconditioner'') that guides the iterative solution of
-each Gauss--Newton step.
+$\delta u_{ijk}=\sum_{k_x,k_y}\hat u_k(k_x,k_y)\,e^{\,i(k_xx_i+k_yy_j)}$. A centred difference acts on a wave as a
+multiplication, $\partial_x\to i\sin(k_x\Delta x)/\Delta x$, so the horizontal part of the operator becomes a multiplication
+by $\sigma^2=\sin^2(k_x\Delta x)/\Delta x^2+\sin^2(k_y\Delta y)/\Delta y^2$. If all coefficients were the same throughout each
+horizontal layer, every wave $(k_x,k_y)$ would obey its own one-dimensional equation in $z$. The preconditioner makes exactly
+this approximation: the coefficients $a_k$, $b_k$ are replaced by their medians over each layer, and the local Lorentz terms of
+the horizontal residuals are dropped. For each wave the vertical system is then tridiagonal,
+\begin{equation}
+\begin{gathered}
+\big(C_k+w_k\bar H_k^2\,\sigma^2+E_k\big)\hat u_k+D_{k-1}\hat u_{k-1}+D_k\hat u_{k+1}=\hat r_k ,\\
+C_k=h_{k-1}\bar H_{k-1/2}^2\,b_{k-1}^2+h_k\bar H_{k+1/2}^2\,a_k^2,\qquad D_k=h_k\bar H_{k+1/2}^2\,a_kb_k ,
+\end{gathered}
+\end{equation}
+and is solved in a number of operations proportional to $n$ (Thomas algorithm). The horizontal mean wave ($k_x=k_y=0$) also
+carries the anchor term, a rank-one matrix, which is included exactly with the Sherman--Morrison formula on top of the
+tridiagonal solve. Applying $\mathsf M^{-1}$ costs one forward two-dimensional Fourier transform per layer, one tridiagonal
+solve per wave and one inverse transform. The medians are recomputed at every Gauss--Newton step.
 
-\section{Optical depth}
-With $P$ known everywhere, the equation of state gives $\rho$ and the 500\,nm extinction $\chi_{500}$, and
-\[
-\tau_{500}(z)=\tau_{\rm top}+\int_z^{z_{\rm top}}\chi_{500}\,dz',
-\]
-with the gas above the box approximated by an exponentially decreasing $\chi$ (as in \code{column-hse-z}). The height of
-$\tau_{500}=1$ is the visible surface; since the opacity grows with density, any change of pressure moves it.
+\subsection{Step control}
+The solution $\delta u$ of Eq.~\eqref{eq:normal} is the step the linear model recommends. Two safeguards protect against the
+non-linearity:
+\begin{enumerate}
+\item \textbf{Cap:} every component is clamped to $|\delta u_{ijk}|\le2$ (the pressure may change by at most a factor
+$e^2\approx7.4$ per point and step).
+\item \textbf{Backtracking:} try $u+\alpha\,\delta u$ with $\alpha=1,\tfrac12,\tfrac14,\dots$ (at most 12 trials) and accept the
+first trial that lowers $\Phi$ and stays inside the equation-of-state table.
+\end{enumerate}
+If no trial lowers $\Phi$, the iteration stops.
 
-\section{Summary}
-The mode reduces, as far as a pressure change can, the force imbalance left by independent hydrostatic columns: mostly the
-gradient part, and through the density part of the non-gradient part. It minimises a residual; it does not guarantee an
-exact equilibrium. The rest, the buoyancy of
-the given temperature structure that the given field cannot hold up, requires the field to change. Above $z_{\rm cut}$ the
-atmosphere is only hydrostatic.
+\subsection{Stopping rule}\label{sec:stop}
+After each accepted step the relative decrease $\Delta\Phi/\Phi=(\Phi_{\rm old}-\Phi_{\rm new})/\Phi_{\rm old}$ is computed.
+The iteration stops when
+\begin{itemize}
+\item $\Delta\Phi/\Phi<\code{rtol}$ ($10^{-4}$) on \code{n\_consec} = 3 consecutive steps (converged: the objective no longer
+decreases appreciably); or
+\item the number of steps reaches \code{max\_steps} (100); or
+\item no trial step lowers $\Phi$.
+\end{itemize}
+Requiring several consecutive small decreases avoids stopping on one accidentally small step. The log records which of the
+three ended the iteration, together with $\Phi/\Phi_0$, the RMS of $|\R|\bar H$, the number of CG iterations, $\alpha$ and the
+number of capped components of every step.
+
+\section{\texorpdfstring{Above $z_{\rm cut}$}{Above z\_cut}}\label{sec:above}
+Above the solved region each column is integrated hydrostatically upward from the solved pressure at level $k_c$, with the
+trapezoidal rule on the grid levels:
+\begin{equation}
+u_{k}-u_{k+1}+\frac{g\,(z_k-z_{k+1})}{2}\big(q(T_k,u_k)+q(T_{k+1},u_{k+1})\big)=0,\qquad k=k_c-1,\dots,1 .
+\end{equation}
+The equation is implicit in $u_k$ and is solved by Newton's method (at most 30 iterations, until $|\Delta u_k|<10^{-12}$). The
+result is a column-hydrostatic upper atmosphere whose pressure joins the solved one continuously at $z_{\rm cut}$.
+
+\section{Optical depth}\label{sec:tau}
+With $P$ known everywhere, the table gives $\rho$ and the 500\,nm extinction $\chi_{500}$. The vertical optical depth
+\begin{equation}
+\tau_{500}(z)=\tau_{\rm top}+\int_z^{z_1}\chi_{500}\,dz'
+\end{equation}
+is integrated from the top with the trapezoidal rule. The gas above the grid is represented by an exponential continuation of
+$\chi_{500}$ with the scale height $H_\chi=(z_1-z_2)/\ln(\chi_2/\chi_1)$ of the top two levels, $\tau_{\rm top}=\chi_1H_\chi$
+(half a grid cell, $\tfrac12\chi_1(z_1-z_2)$, if $\chi$ does not decrease upward there or $H_\chi$ exceeds 5000\,km). The height
+of $\tau_{500}=1$ is interpolated linearly in $\log_{10}\tau$ between the bracketing levels. Since the opacity grows with
+density, any change of pressure moves it.
+
+\section{Three dimensions: what the result means}
+\begin{itemize}
+\item Below $z_{\rm cut}$ the pressure balances, as well as a pressure change can, the horizontal and vertical forces of
+gravity and the given Lorentz force: mostly their gradient part, and through the density part of the non-gradient part.
+It is a minimum of $\Phi$, not an exact equilibrium. The remaining imbalance, the buoyancy of the given temperature
+structure that the given field cannot hold up, would require the field (or the temperature) to change.
+\item Above $z_{\rm cut}$ the atmosphere is column-hydrostatic, not magnetohydrostatic.
+\item The pressure level rests on $P_{\rm ref}$ at the bottom of the starting state and on the anchor penalty on the mean of
+the bottom plane.
+\end{itemize}
+
+\section{Summary of the algorithm}
+\begin{enumerate}
+\item Read $T$, $\B$ and the grid; compute the starting state: column hydrostatic equilibrium with $P=P_{\rm ref}$ at the bottom
+of every column.
+\item Compute $\J$ and $\Lv=\J\times\B$ once.
+\item On the levels $z\le z_{\rm cut}$: compute $\bar H_k$ and the weights; evaluate $\R$ and $\Phi$.
+\item Repeat: build the layer-median preconditioner; solve the normal equations by preconditioned CG; clamp the step to
+$|\delta u|\le2$; backtrack until $\Phi$ decreases; accept. Stop after three consecutive steps with
+$\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step lowers $\Phi$.
+\item Integrate each column hydrostatically above $z_{\rm cut}$.
+\item Compute $\rho$, $\tau_{500}$ and $z(\tau_{500}=1)$; write the result.
+\end{enumerate}
 \end{document}

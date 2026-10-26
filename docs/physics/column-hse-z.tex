@@ -1,178 +1,305 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-z: hydrostatic columns on a height grid}{The physics of \code{run.mode = "column-hse-z"}, explained step by step (B.Sc.\ level). HSEMHS.}
+\doctitle{column-hse-z: hydrostatic columns on a geometric-height grid}{Physics and method of \code{run.mode = "column-hse-z"} in HSEMHS. A self-contained description.}
 
-\section{The question}
-We are given the temperature $T$ of a piece of the solar atmosphere at every point of a three-dimensional grid: two
-horizontal coordinates $x,y$ and the height $z$. We want to know the \textbf{gas pressure} $P$ and the \textbf{density}
-$\rho$ at every point, and from them how transparent the gas is, i.e.\ the \textbf{optical depth} $\tau_{500}$ at the
-wavelength 500\,nm. The answer this mode gives is the simplest physically consistent one: every vertical column of the grid
-is treated as a separate, static column of gas that carries its own weight. Nothing moves, and neighbouring columns do not
-interact.
+\begin{abstract}
+\noindent Given the temperature of a three-dimensional piece of the solar atmosphere on a grid of geometric heights, this
+mode computes the gas pressure, the density, the electron density, the 500\,nm extinction and the optical depth at every
+grid point. It does so by treating every vertical column of the grid as an isolated, static column of gas that carries its
+own weight (hydrostatic equilibrium), with the same prescribed pressure at one level of every column. The equation of
+state includes ionisation and molecules. The equation solved, its boundary condition, the numerical integration, the
+accuracy control, the computation of the optical depth and the assumptions are derived and explained step by step, as
+well as what the result does not satisfy: horizontal force balance.
+\end{abstract}
 
-\section{The quantities}
-\begin{tabular}{>{$}l<{$} p{11.4cm} l}
+\section{Introduction}
+A radiative magnetohydrodynamic simulation or a model atmosphere describes the gas by its temperature $T$, its density
+$\rho$, its pressure $P$ and its velocity. If only the temperature is kept, the simplest physically consistent way to
+recover the pressure and the density is to assume that the gas is \emph{at rest} and that each vertical column supports its
+own weight. This mode implements exactly that. Its output serves two purposes: it is a stand-alone hydrostatic
+atmosphere with an optical-depth scale, and it is the starting point of the magnetohydrostatic modes, which add the
+horizontal force balance and the magnetic field.
+
+\textbf{Input:} the temperature $T(x,y,z)$ on a rectangular grid, the coordinates $x$, $y$, $z$, the gravity $g$ and one
+reference pressure $P_{\rm ref}$. \textbf{Output:} $P$, $\rho$, $n_e$, $P_e$, $\bar\mu$, $n_{\rm H}$, the column mass $m$,
+$\chi_{500}$ and $\tau_{500}$ on the same grid, the height of $\tau_{500}=1$ in every column, and a diagnostic of the
+horizontal and vertical force imbalance.
+
+\section{Notation}
+\begin{tabularx}{\linewidth}{>{$}l<{$} Y l l}
 \toprule
-\text{Symbol} & Meaning & Unit \\ \midrule
-x,\,y,\,z & horizontal coordinates and height ($z$ grows upward; the grid stores the top level first) & m \\
-T & temperature, given, never changed & K \\
-P & gas pressure: force per area exerted by the gas & Pa = N\,m$^{-2}$ \\
-u & $\ln(P/1\,{\rm Pa})$, the natural logarithm of the pressure & -- \\
-\rho & mass density & kg\,m$^{-3}$ \\
-g & gravitational acceleration at the solar surface, $g=274$ & m\,s$^{-2}$ \\
-n & number of free particles (atoms, ions, electrons, molecules) per volume & m$^{-3}$ \\
-n_e,\ P_e & number density of free electrons; electron pressure $n_ek_BT$ & m$^{-3}$, Pa \\
-k_B & Boltzmann constant, $1.381\times10^{-23}$ & J\,K$^{-1}$ \\
-m_{\rm H} & mass of a hydrogen atom, $1.67\times10^{-27}$ & kg \\
-\bar\mu & mean molecular weight: average mass of a free particle in units of $m_{\rm H}$ & -- \\
-H & pressure scale height & m \\
-m & column mass: the mass of gas above a point, per unit horizontal area & kg\,m$^{-2}$ \\
-P_{\rm ref} & the pressure prescribed at one level of every column (the anchor) & Pa \\
-\chi_{500} & extinction coefficient at 500\,nm: fraction of the light removed per metre & m$^{-1}$ \\
-\tau_{500} & optical depth at 500\,nm, counted from the top downward & -- \\
+\text{Symbol} & Meaning & Unit & Role \\ \midrule
+x,\ y & horizontal coordinates; grid $x_i$, $i=1\dots N_x$, $y_j$, $j=1\dots N_y$, uniform spacing $\Delta x$, $\Delta y$ & m & given \\
+z & height, growing upward; grid $z_k$, $k=1\dots N_z$, stored top first ($z_1>z_2>\dots>z_{N_z}$) & m & given \\
+T & temperature & K & given, fixed \\
+X & $\ln(T/1\,{\rm K})$ & -- & given \\
+P & gas pressure & Pa & unknown \\
+u & $\ln(P/1\,{\rm Pa})$, the variable that is integrated & -- & unknown \\
+\rho & mass density, $\rho(T,P)$ from the equation of state & kg\,m$^{-3}$ & derived \\
+q & $\rho/P$ & s$^2$\,m$^{-2}$ & derived \\
+n_e,\ P_e & electron number density; electron pressure $n_ek_BT$ & m$^{-3}$, Pa & derived \\
+\bar\mu & mean molecular weight, $\rho k_BT/(P m_{\rm u})$ & -- & derived \\
+n_{\rm H} & number density of hydrogen nuclei, $\rho$ divided by the mass per H nucleus & m$^{-3}$ & derived \\
+H & pressure scale height $P/(\rho g)$ & m & derived \\
+m & column mass: mass above a point per unit horizontal area & kg\,m$^{-2}$ & derived \\
+g & gravitational acceleration (274\,m\,s$^{-2}$ at the solar surface) & m\,s$^{-2}$ & parameter \\
+P_{\rm ref} & pressure prescribed at the anchor level of every column & Pa & parameter \\
+z_{\rm ref} & anchor height (only for the anchor option \code{height}) & m & parameter \\
+\chi_{500} & extinction coefficient at 500\,nm (absorption plus scattering) & m$^{-1}$ & derived \\
+\tau_{500} & optical depth at 500\,nm along the vertical, counted downward from the top & -- & derived \\
+\tau_{\rm top} & optical depth of the gas above the top of the grid & -- & derived \\
+H_\chi & scale height of $\chi_{500}$ at the top of the grid & m & derived \\
+\mu & cosine of the viewing angle (default 1, vertical) & -- & parameter \\
+k_B,\ m_{\rm u} & Boltzmann constant $1.381\times10^{-23}$\,J\,K$^{-1}$; atomic mass unit $1.661\times10^{-27}$\,kg & & constants \\
+\F & net force per unit volume & N\,m$^{-3}$ & diagnostic \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 
-\section{Hydrostatic equilibrium}
-Take a thin horizontal slab of gas with area $A$, between heights $z$ and $z+dz$. Three vertical forces act on it:
+\section{The force balance of a static gas}\label{sec:force}
+\subsection{All three components}
+A small volume of gas is at rest when the forces on it cancel. Without a magnetic field, two forces act per unit volume:
+the pressure force $-\nabla P$ (gas is pushed from high to low pressure) and gravity $-\rho g\,\zh$. The static momentum
+equation is therefore
+\begin{equation}
+\F\equiv-\nabla P-\rho\,g\,\zh=0,\qquad\text{i.e.}\qquad
+-\frac{\partial P}{\partial x}=0,\quad -\frac{\partial P}{\partial y}=0,\quad -\frac{\partial P}{\partial z}-\rho g=0 .
+\label{eq:F}
+\end{equation}
+This mode imposes \emph{only the vertical component}, separately in every column. The two horizontal components are not
+imposed; Sect.~\ref{sec:3d} shows why they cannot be satisfied in general, and how large they remain is reported as a
+diagnostic.
+
+\subsection{Hydrostatic equilibrium of a column}
+Take a thin horizontal slab of area $A$ between $z$ and $z+dz$. The gas below pushes it up with the force $P(z)A$, the gas
+above pushes it down with $P(z+dz)A$, and gravity pulls it down with its weight $\rho\,A\,dz\,g$. Equilibrium means
+$P(z)A-P(z+dz)A-\rho gA\,dz=0$. Dividing by $A\,dz$ and letting $dz\to0$ gives the \textbf{hydrostatic equation}
+\begin{equation}
+\boxed{\;\frac{dP}{dz}=-\rho\,g\;}\label{eq:hse}
+\end{equation}
+which is the $z$ component of Eq.~\eqref{eq:F}: the pressure falls upward, fastest where the gas is densest.
+
+\input{common/eos.tex}
+
+\section{The equation solved}\label{sec:eq}
+\subsection{Logarithmic form}
+Divide Eq.~\eqref{eq:hse} by $P$ and use $u=\ln P$ (so $du=dP/P$) and $\rho=q\,P$:
+\begin{equation}
+\boxed{\;\frac{du}{dz}=-g\,q\big(T(z),u\big)=-g\,\exp\!\big(\ln\rho(X,u)-u\big)=-\frac{1}{H(T,P)}\;}\label{eq:dudz}
+\end{equation}
+In an isothermal gas of constant $\bar\mu$, $H$ is a constant and the solution is $P=P_0\,e^{-(z-z_0)/H}$: the pressure falls
+by a factor $e$ every scale height. Integrating in $u$ instead of $P$ has two advantages: a column spans eight or more
+orders of magnitude in $P$, but $u$ changes smoothly and by moderate amounts per grid interval, which is what a numerical
+integrator handles best; and $P=e^u$ is positive whatever happens.
+
+\subsection{The boundary condition: one pressure per column}\label{sec:anchor}
+Equation~\eqref{eq:dudz} is a first-order ordinary differential equation for $u(z)$ in each column. It fixes how the
+pressure changes with height, not its value: if $u(z)$ is a solution, a different starting value gives a different, equally
+valid solution. One value per column is needed, and the mode prescribes the \textbf{same pressure $P_{\rm ref}$ at the
+same level in every column}:
+\begin{equation}
+u(x_i,y_j,z_a)=\ln P_{\rm ref}\qquad\text{for all columns }(i,j),\label{eq:anchor}
+\end{equation}
+where the anchor level $z_a$ is chosen by \code{column\_hse.anchor}:
 \begin{itemize}
-\item the gas below pushes it up with the force $P(z)\,A$;
-\item the gas above pushes it down with $P(z+dz)\,A$;
-\item gravity pulls it down with its weight, mass $\times\,g=\rho\,A\,dz\,g$.
+\item \code{bottom} (default): $z_a=z_{N_z}$, the lowest level; the integration runs upward.
+\item \code{top}: $z_a=z_1$; the integration runs downward ($P_{\rm ref}$ defaults to 0.1\,Pa if not set).
+\item \code{height}: $z_a=z_{\rm ref}$ anywhere inside the grid; the integration runs upward and downward from it.
 \end{itemize}
-If the slab does not accelerate, the forces cancel: $P(z)A-P(z+dz)A-\rho gA\,dz=0$. Dividing by $A\,dz$ and letting
-$dz\to0$:
-\[
-\boxed{\;\frac{dP}{dz}=-\rho\,g\;}
-\]
-The pressure \emph{decreases} upward, and it decreases fastest where the gas is densest. This is \textbf{hydrostatic
-equilibrium (HSE)}. It is the same law that makes the air pressure fall as you climb a mountain.
+$P_{\rm ref}$ is either a number in the configuration or, with \code{P\_ref = "from\_input"}, the attribute
+\code{P\_ref\_Pa} of the input file. For the production input this attribute is the median of the simulation's own
+pressure over the bottom plane.
 
-\section{Equation of state: how $\rho$ follows from $T$ and $P$}
-\subsection{The ideal gas}
-The solar photosphere and chromosphere behave as an ideal gas: $P=n\,k_BT$. If the free particles have an average mass
-$\bar\mu\,m_{\rm H}$, the density is $\rho=n\,\bar\mu\,m_{\rm H}$, so
-\[
-\rho=\frac{\bar\mu\,m_{\rm H}}{k_B}\,\frac{P}{T}.
-\]
-At fixed temperature, doubling the pressure doubles the density.
+\textbf{Why the bottom?} The anchor condition~\eqref{eq:anchor} declares the anchor plane to be a surface of constant
+pressure. Deep in the atmosphere, below the visible surface, the gas is dense, the relative temperature differences
+between columns are smaller and the true pressure varies much less across a horizontal plane than higher up, so this is
+the level at which the assumption is least wrong. All differences between the columns above it then come from their
+temperature profiles. With a top anchor the photospheric pressure of each column would instead depend on the hot,
+strongly structured chromosphere and transition region above it.
 
-\subsection{Why $\bar\mu$ is not a constant}
-For neutral solar gas (about 91\,\% hydrogen and 9\,\% helium atoms by number) $\bar\mu\approx1.3$. When hydrogen ionises,
-each atom becomes two particles, a proton and an electron, with almost the same total mass, so $\bar\mu$ roughly halves
-(to $\approx0.6$ for fully ionised gas). In the coolest layers hydrogen forms H$_2$ molecules, which raises $\bar\mu$. How
-much is ionised is described by the \textbf{Saha equation}, for an atom in ionisation stage $i$:
-\[
-\frac{n_{i+1}\,n_e}{n_i}=\frac{2U_{i+1}}{U_i}\left(\frac{2\pi m_ek_BT}{h^2}\right)^{3/2}e^{-E_i/k_BT},
-\]
-where $E_i$ is the ionisation energy (13.6\,eV for hydrogen), $U$ are partition functions and $h$ is Planck's constant.
-Two features matter. The exponential makes ionisation switch on rapidly with temperature. And the factor $n_e$ on the left
-means that at higher density (more electrons around to recombine with) a higher temperature is needed for the same
-ionisation. So $\bar\mu$ depends on \emph{both} $T$ and $P$.
+\textbf{Existence and uniqueness.} The right-hand side of Eq.~\eqref{eq:dudz} is a smooth function of $z$ and $u$ (the
+table interpolation has continuous first derivatives), so for every column the equation with its anchor value has
+exactly one solution, as long as $(T,P)$ stays inside the table.
 
-\subsection{The table}
-Solving the Saha equations for all relevant elements together with charge conservation and molecule formation is too slow
-to do at every point of every step. It is done once, with Wittmann's equation-of-state code for solar composition, on a
-fine grid of $(\ln T,\ln P)$, and stored in a \textbf{table}. The code reads $\ln\rho$, $\ln n_e$ and the 500\,nm
-extinction $\ln\chi_{500}$ from it by smooth (bicubic) interpolation. Because all three come from the same solution, they
-are consistent with each other.
+\subsection{Statement of the problem}
+For every column $(i,j)$, $i=1\dots N_x$, $j=1\dots N_y$, independently: \emph{find $u(z)$ on $z_{N_z}\le z\le z_1$ such
+that $du/dz=-g\,q(T,u)$ and $u(z_a)=\ln P_{\rm ref}$; then compute $\rho$, $n_e$, $\chi_{500}$ from the table, the column
+mass and the optical depth.} There is no coupling between columns: the problem consists of $N_xN_y$ independent
+one-dimensional initial-value problems.
 
-\section{The scale height and why we work with $\ln P$}
-Insert the equation of state into hydrostatic equilibrium:
-\[
-\frac{dP}{dz}=-\frac{\bar\mu m_{\rm H}g}{k_BT}\,P=-\frac{P}{H},\qquad
-H\equiv\frac{P}{\rho g}=\frac{k_BT}{\bar\mu\,m_{\rm H}\,g}.
-\]
-$H$, the \textbf{pressure scale height}, has the dimension of a length. For $T=6000$\,K and $\bar\mu=1.3$ it is
-\[
-H=\frac{1.38\times10^{-23}\cdot6000}{1.3\cdot1.67\times10^{-27}\cdot274}\ {\rm m}\approx1.4\times10^5\ {\rm m}=140\ {\rm km}.
-\]
-If $H$ were constant (an isothermal gas), the solution would be $P(z)=P(z_0)\,e^{-(z-z_0)/H}$: the pressure falls by a
-factor $e\approx2.7$ every 140\,km. In general $H$ changes with height, and dividing by $P$ gives the form the code uses:
-\[
-\boxed{\;\frac{du}{dz}=-\frac{1}{H(T,P)},\qquad u=\ln P\;}
-\qquad\Rightarrow\qquad u(z)=u(z_0)-\int_{z_0}^{z}\frac{dz'}{H(z')} .
-\]
-Working with $u=\ln P$ has two advantages. A column spans many factors of ten in pressure, but $u$ changes smoothly and
-by moderate amounts, which is what a numerical integration handles best. And $P=e^u$ is automatically positive.
+\section{Assumptions}\label{sec:assume}
+\begin{enumerate}[label=\textbf{A\arabic*.},leftmargin=2.2em]
+\item \textbf{Static gas.} All velocities are neglected; the momentum flux and the pressure of turbulent or wave motions are
+not included.
+\item \textbf{No magnetic force.} The field, if present in the input, is not used.
+\item \textbf{Vertical balance only, column by column.} Only the $z$ component of $\F=0$ is imposed; the horizontal
+components are left unbalanced (Sect.~\ref{sec:3d}).
+\item \textbf{Equal pressure on the anchor plane.} Every column has $P=P_{\rm ref}$ at $z_a$ (Sect.~\ref{sec:anchor}). This is
+the only external pressure information.
+\item \textbf{Constant, vertical gravity.} $g$ is the same everywhere; the curvature of the Sun and the decrease of $g$ with
+height (0.4\,\% over 3\,Mm) are neglected (plane-parallel geometry).
+\item \textbf{LTE ideal gas of solar composition}, with ionisation and molecules from the Saha and molecular equilibria
+(Sect.~\ref{sec:eos}).
+\item \textbf{Temperature between grid levels:} $\ln T$ varies linearly with $z$ inside each grid interval.
+\item \textbf{Optical depth:} continuum extinction at 500\,nm along the vertical (or along a fixed angle with $\mu\ne1$),
+without lines; the gas above the grid is represented by an exponential extrapolation of $\chi_{500}$ (Sect.~\ref{sec:tau}).
+\end{enumerate}
 
-\section{The anchor: one pressure per column}
-$du/dz=-1/H$ is a first-order differential equation: it determines how $u$ changes, not its value. Like any such
-equation it needs one starting value per column. The mode prescribes the \textbf{same pressure $P_{\rm ref}$ at one level
-in every column}, by default the bottom level (\code{anchor = "bottom"}), and integrates upward from there. The other
-options are the top level (integrate downward) and a chosen height $z_{\rm ref}$ inside the grid (integrate both ways).
+\section{Numerical solution}\label{sec:num}
+\subsection{Temperature inside an interval}
+The temperature is known only on the grid levels. Inside the interval $[z_{k+1},z_k]$ the integrator needs it at
+arbitrary heights; by assumption A7,
+\begin{equation}
+X(z)=X_{k+1}+(X_k-X_{k+1})\,\frac{z-z_{k+1}}{z_k-z_{k+1}},\qquad X=\ln T .
+\end{equation}
+Interpolating $\ln T$ rather than $T$ keeps the temperature positive and represents an exponential rise (such as the
+transition region) better.
 
-Why the bottom? Deep in the atmosphere the gas is dense and the temperature differences between columns matter least, so
-a common pressure there is a reasonable approximation. A top anchor would make the pressure in the photosphere depend
-on the very different temperatures of the chromosphere and transition region in each column. Since every column starts
-from the same $P_{\rm ref}$, all differences between columns come from their temperatures.
+\subsection{The classical Runge--Kutta method}
+Write Eq.~\eqref{eq:dudz} as $du/dz=f(z,u)$ with $f=-g\,q(X(z),u)$. A step of length $s$ from $(z,u)$ evaluates the slope
+four times,
+\begin{equation}
+\begin{aligned}
+k_1&=f(z,\,u), & k_2&=f\!\left(z+\tfrac{s}{2},\,u+\tfrac{s}{2}k_1\right),\\
+k_3&=f\!\left(z+\tfrac{s}{2},\,u+\tfrac{s}{2}k_2\right), & k_4&=f(z+s,\,u+s\,k_3),
+\end{aligned}
+\qquad
+u(z+s)\approx u+\frac{s}{6}\,(k_1+2k_2+2k_3+k_4).\label{eq:rk4}
+\end{equation}
+The slopes at the beginning, twice in the middle and at the end are averaged with weights $1,2,2,1$ (Simpson's rule). The
+error per step is proportional to $s^5$ and the total error to $s^4$: halving the step reduces the error by about a factor 16.
+For an upward integration $s>0$, for a downward one $s<0$.
 
-Between grid levels the temperature is not known. The code assumes that $\ln T$ varies linearly with $z$ inside each
-interval and integrates with the classical fourth-order Runge--Kutta method, which evaluates the slope $-1/H$ four times
-per step and averages them. Each interval is computed with $n$ and $2n$ substeps; if the two disagree by more than
-$10^{-6}$ in $u$, the number of substeps is doubled until they agree. Steep temperature changes (the transition region)
-thus get more substeps automatically.
+\subsection{Substeps and their control}
+Each grid interval is crossed in $n$ equal substeps. The accuracy is controlled interval by interval:
+\begin{enumerate}
+\item Integrate the interval with $n=n_{\rm sub}$ substeps (default 4) and with $2n$ substeps, from the same starting value.
+\item If the two end values differ by more than \code{rk\_tol} ($10^{-6}$ in $u$, i.e.\ a relative pressure difference of
+$10^{-6}$), double $n$ and compare again ($2n$ against $4n$, \dots), up to \code{n\_sub\_max} = 64 substeps.
+\item Keep the result with the larger number of substeps.
+\end{enumerate}
+Because the error falls by a factor 16 per doubling, the difference between two successive results is a good estimate of
+the error of the coarser one, and the kept, finer result is more accurate than the tolerance. Steep temperature changes,
+such as the transition region, automatically receive more substeps. Two flags are stored per column: whether any interval
+needed refinement, and whether any interval still missed the tolerance at 64 substeps.
 
-\section{Column mass}
-Integrating $dP/dz=-\rho g$ from a height $z$ up to the top of the column gives
-\[
-P(z)-P_{\rm top}=g\int_z^{z_{\rm top}}\rho\,dz'=g\,m(z),
-\]
-where $m(z)$ is the mass of gas above $z$ per square metre. \emph{The pressure at any point is the weight of the gas
-above it} (plus whatever presses on the top). The code integrates $m$ along with $u$ and stores it, which also serves as a
-check of the integration.
+\subsection{Order of the integration for the three anchors}
+\begin{itemize}
+\item \code{bottom}: $u_{N_z}=\ln P_{\rm ref}$; then intervals $N_z\!\to\!N_z\!-\!1\to\dots\to1$ (upward).
+\item \code{top}: $u_1=\ln P_{\rm ref}$; then $1\to2\to\dots\to N_z$ (downward).
+\item \code{height}: find the interval $[z_{k_r+1},z_{k_r}]$ that contains $z_{\rm ref}$; integrate from $z_{\rm ref}$ up to
+$z_{k_r}$ and on upward, and from $z_{\rm ref}$ down to $z_{k_r+1}$ and on downward.
+\end{itemize}
+At the anchor level the stored pressure is exactly $P_{\rm ref}$. If a substep reaches a $(T,P)$ outside the table, the
+column is marked as failed and its outputs are left undefined (NaN).
 
-\section{Light, opacity and optical depth}
-\subsection{Extinction and the Beer--Lambert law}
-Light of intensity $I$ travelling a distance $ds$ through gas loses a fraction $\chi\,ds$:
-\[
-dI=-\chi\,I\,ds\qquad\Rightarrow\qquad I(s)=I(0)\,e^{-\int_0^s\chi\,ds'}=I(0)\,e^{-\tau}.
-\]
-The number $\tau=\int\chi\,ds$, the \textbf{optical depth}, counts how many ``absorption lengths'' the light crosses.
-$\chi_{500}$ includes both true absorption and scattering at 500\,nm. In the solar photosphere it is dominated by the
-negative hydrogen ion H$^-$ (a hydrogen atom with an extra electron, bound by only 0.75\,eV). Forming H$^-$ needs free
-electrons, which come mostly from easily ionised metals (Na, Ca, Fe, \dots), so $\chi_{500}$ rises steeply with temperature
-and with density. It comes from the same table as $\rho$.
+\subsection{Column mass}\label{sec:mass}
+Integrating Eq.~\eqref{eq:hse} from a height $z$ to the top of the grid gives
+\begin{equation}
+P(z)=P(z_1)+g\int_z^{z_1}\rho\,dz'\equiv P(z_1)+g\,m(z):\label{eq:colmass}
+\end{equation}
+\emph{the pressure at a point equals the weight of the gas above it per unit area}, plus whatever presses on the top of the
+grid. The code integrates $dm/dz=-\rho$ with the same Runge--Kutta substeps as $u$ and stores $m(z_k)$ counted from the top
+plane. It also stores an independent trapezoidal sum $\sum\tfrac12(\rho_k+\rho_{k+1})(z_k-z_{k+1})$ on the grid levels. The
+two agree closely, and $g\,m$ should match $P-P(z_1)$; both serve as checks of the integration.
 
-\subsection{Optical depth along the vertical}
-For light leaving the Sun vertically, the optical depth of a point at height $z$ is
-\[
-\tau_{500}(z)=\tau_{\rm top}+\int_z^{z_{\rm top}}\chi_{500}(z')\,dz' .
-\]
-It grows downward. It would be zero at the very top of the atmosphere; at the top of our box it is $\tau_{\rm top}$,
-the optical depth of the gas above the box (see below), which is small but not zero. Light emitted at optical depth $\tau$
-escapes with probability $e^{-\tau}$, so most of the continuum light we see comes from around $\tau\approx1$ (the
-Eddington--Barbier relation: the emerging intensity is close to the emission at $\tau=1$). The height $z_{\tau1}(x,y)$
-where $\tau_{500}=1$ is therefore called the ``visible surface''. Spectral lines are formed over a \emph{range} of optical
-depths, described by their contribution functions, and different lines (and different parts of one line) sample different
-ranges; $\tau_{500}$ is the common reference scale on which inversions report them. For a viewing angle with $\mu=\cos\theta$ the path is longer by $1/\mu$, and
-$\tau_\mu=\tau/\mu$.
+\subsection{Derived quantities}
+At every grid point, with $X_k$ and $u_k$ known, the table gives $\ln\rho$, $\ln n_e$ and $\ln\chi_{500}$. From them
+$P_e=n_ek_BT$, $\bar\mu=\rho k_BT/(P m_{\rm u})$ and $n_{\rm H}=\rho/(\text{mass per hydrogen nucleus})$, the latter being
+fixed by the composition.
 
-\subsection{The gas above the box}
-The grid ends at $z_{\rm top}$, but the atmosphere does not. If $\chi$ continues to fall exponentially above the top,
-$\chi(z)=\chi_1e^{-(z-z_1)/H_\chi}$, the missing optical depth is
-\[
-\tau_{\rm top}=\int_{z_1}^{\infty}\chi_1e^{-(z-z_1)/H_\chi}\,dz=\chi_1H_\chi,\qquad
-H_\chi=\frac{z_1-z_2}{\ln(\chi_2/\chi_1)},
-\]
-with $H_\chi$ taken from the top two levels (index 1 is the top). If $\chi$ does not decrease upward there, this makes no
-sense, and half a grid cell is used instead, $\tau_{\rm top}=\tfrac12\chi_1(z_1-z_2)$.
+\section{Optical depth}\label{sec:tau}
+\subsection{Definition}
+Light of intensity $I$ crossing a path $ds$ loses $dI=-\chi I\,ds$, so $I=I_0e^{-\tau}$ with $\tau=\int\chi\,ds$, the number
+of absorption lengths crossed. For light leaving vertically the optical depth of height $z$ is
+\begin{equation}
+\tau_{500}(z)=\tau_{\rm top}+\int_z^{z_1}\chi_{500}(z')\,dz' ,\label{eq:tau}
+\end{equation}
+which grows downward. For a viewing angle $\theta$ the path through each layer is longer by $1/\mu$, $\mu=\cos\theta$, and
+the stored value is $\tau/\mu$ (default $\mu=1$). Light emitted at optical depth $\tau$ escapes with probability $e^{-\tau}$, so
+most of the continuum light we see comes from around $\tau_{500}\approx1$, the ``visible surface''.
 
-\section{What the answer means, and what it does not}
-Each column is now in exact vertical equilibrium. But consider two neighbouring columns at the same height, one hot and
-one cool. Their pressures differ, so there is a horizontal pressure gradient $\partial P/\partial x\ne0$: a sideways force
-that nothing balances. The atmosphere is \textbf{not} in three-dimensional equilibrium. The mode reports this horizontal
-force as a diagnostic and labels its output \emph{vertical HSE only}.
+\subsection{Discretisation}
+The integral is evaluated with the trapezoidal rule on the grid levels, starting from the top:
+\begin{equation}
+\tau_1=\tau_{\rm top},\qquad \tau_{k+1}=\tau_k+\tfrac12\,(\chi_k+\chi_{k+1})\,(z_k-z_{k+1}),\quad k=1\dots N_z-1 .
+\end{equation}
 
-Could any choice of pressure make a non-magnetic atmosphere fully static? The full force balance is
-$-\nabla P-\rho g\zh=0$. Take the curl of both sides. The curl of a gradient is always zero, and
+\subsection{The gas above the grid}
+The atmosphere continues above $z_1$. If $\chi_{500}$ keeps falling exponentially there,
+$\chi(z)=\chi_1e^{-(z-z_1)/H_\chi}$, the optical depth of everything above the grid is
+\begin{equation}
+\tau_{\rm top}=\int_{z_1}^{\infty}\chi_1\,e^{-(z-z_1)/H_\chi}\,dz=\chi_1H_\chi ,\qquad
+H_\chi=\frac{z_1-z_2}{\ln(\chi_2/\chi_1)} ,\label{eq:tautop}
+\end{equation}
+with $H_\chi$ measured from the top two levels. This is used (option \code{exp\_tail}, the default) when it makes sense:
+$\chi_2>\chi_1>0$ (the extinction decreases upward) and $0<H_\chi<5000$\,km. Otherwise half a grid cell is used,
+$\tau_{\rm top}=\tfrac12\chi_1(z_1-z_2)$. The options \code{half\_cell} and \code{zero} force the alternatives.
+
+\subsection{\texorpdfstring{The height of $\tau_{500}=1$}{The height of tau500 = 1}}
+In every column the code finds the two levels with $\tau_k\le1\le\tau_{k+1}$ and interpolates linearly in $\log_{10}\tau$:
+\begin{equation}
+z_{\tau=1}=z_k+(z_{k+1}-z_k)\,\frac{0-\log_{10}\tau_k}{\log_{10}\tau_{k+1}-\log_{10}\tau_k}.
+\end{equation}
+
+\section{Iteration and acceptance criteria}
+There is no global iteration in this mode: every column is integrated once, and the result is the solution of the
+discretised initial-value problem. The only accuracy criteria are local:
+\begin{itemize}
+\item per grid interval, $|u^{(2n)}-u^{(n)}|\le10^{-6}$ (the Runge--Kutta tolerance, Sect.~\ref{sec:num});
+\item every evaluated $(T,P)$ lies inside the table envelope.
+\end{itemize}
+The run reports how many columns needed refinement, how many missed the tolerance, the largest number of substeps used,
+how many columns used each $\tau_{\rm top}$ closure, and how many columns left the table. If any column left the table the
+run ends with the status \code{eos\_failure}; otherwise it is \code{converged}. Because no reductions over columns enter the
+values, the result is identical for every number of processes and threads.
+
+\section{Three dimensions: what the result does not satisfy}\label{sec:3d}
+\subsection{The residual force}
+After the integration every column obeys the $z$ component of Eq.~\eqref{eq:F}. The full three-dimensional imbalance is
+evaluated on the grid as a diagnostic,
+\begin{equation}
+F_x=-\frac{\partial P}{\partial x},\qquad F_y=-\frac{\partial P}{\partial y},\qquad F_z=-\frac{\partial P}{\partial z}-\rho g ,
+\end{equation}
+with three-point, second-order finite differences ($x$ and $y$ periodic, $z$ on the non-uniform grid). The layer medians
+and 99th percentiles of $|F_h|/(\rho g)$ (with $F_h=\sqrt{F_x^2+F_y^2}$) and of $|F_z|/(\rho g)$ are reported: the
+unbalanced force in units of the weight of the gas. $F_z$ is small (it measures only the difference between the
+Runge--Kutta solution and a three-point derivative on the grid); $F_h$ is not.
+
+\subsection{Why horizontal balance is impossible without help}
+Consider two neighbouring columns at the same height, one hot and one cool. In the hot column the scale height is larger,
+so above the common anchor plane the pressure falls more slowly: at the same height the hot column has a higher pressure.
+There is a horizontal pressure gradient that nothing balances. Can \emph{any} pressure field make a non-magnetic
+atmosphere static? Take the curl of $\F=0$. The curl of a gradient is zero, and
 $\nabla\times(\rho g\zh)=g\,(\partial_y\rho,\,-\partial_x\rho,\,0)$, so
-\[
+\begin{equation}
 \frac{\partial\rho}{\partial x}=\frac{\partial\rho}{\partial y}=0 .
-\]
-A static atmosphere without magnetic field must have the same density everywhere on each horizontal plane, and then the
-horizontal equations give $\partial_xP=\partial_yP=0$ too. A real, structured atmosphere (hot granules next to cool lanes)
-cannot be static without help: in the Sun that help is the motion of the gas, and in a static model it can only be the
-magnetic field. That is the subject of the \code{mhs-*} and \code{full-mhs-z} modes, which use this mode's result as their
-starting point.
+\end{equation}
+A static, non-magnetic atmosphere must have a uniform density on every horizontal plane, and then also a uniform pressure.
+A structured atmosphere (hot granules beside cool intergranular lanes) cannot be static: in the Sun the imbalance drives
+flows, and in a static model only a magnetic force could take its place. The magnetohydrostatic modes of HSEMHS address
+this; the present mode deliberately does not, and labels its output \emph{vertical HSE only}.
+
+\section{Limitations}
+\begin{itemize}
+\item The horizontal force balance is not satisfied (Sect.~\ref{sec:3d}); the result is not a three-dimensional equilibrium.
+\item The absolute pressure level rests entirely on $P_{\rm ref}$ and on the assumption that the anchor plane is isobaric.
+A different $P_{\rm ref}$ shifts $\ln P$ of a column by nearly the same amount at all heights (exactly so for constant
+$\bar\mu$), and moves the $\tau$ scale accordingly.
+\item Dynamic pressure, magnetic pressure and tension are absent, so in strongly magnetised or fast-moving regions the
+pressure can differ substantially from that of the original simulation.
+\item The optical depth uses continuum extinction only and a model of the gas above the grid.
+\end{itemize}
+
+\section{Summary of the algorithm}
+\begin{enumerate}
+\item Read $T$, $x$, $y$, $z$; set $g$ and $P_{\rm ref}$; load the equation-of-state table.
+\item For every column independently (in parallel): set $u=\ln P_{\rm ref}$ at the anchor; integrate $du/dz=-g\rho/P$ and
+$dm/dz=-\rho$ interval by interval with RK4, $\ln T$ linear in $z$, substeps doubled until two successive results agree
+to $10^{-6}$ (at most 64).
+\item At every level evaluate $\rho$, $n_e$, $\chi_{500}$ from the table; derive $P_e$, $\bar\mu$, $n_{\rm H}$ and the
+trapezoidal column mass.
+\item Integrate $\tau_{500}$ from the top with the trapezoidal rule, starting from $\tau_{\rm top}=\chi_1H_\chi$; find
+$z(\tau_{500}=1)$.
+\item Evaluate the three-dimensional residual force as a diagnostic; write all fields and the per-layer statistics.
+\end{enumerate}
 \end{document}

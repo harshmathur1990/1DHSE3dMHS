@@ -1,0 +1,67 @@
+% Shared section of the physics documents: equation of state and 500 nm extinction (\input by each mode document).
+\section{The equation of state and the opacity}\label{sec:eos}
+Every force balance in this document involves the density $\rho$, and every optical depth involves the extinction
+coefficient $\chi_{500}$. Neither is an unknown of its own: at given temperature and pressure both are fixed by the
+microphysics of the gas. This section explains how.
+
+\subsection{The ideal gas}
+In the solar photosphere and chromosphere the particles interact only weakly, so the gas obeys the ideal-gas law. If $n$
+is the number of free particles (atoms, ions, molecules and electrons) per cubic metre,
+\begin{equation}
+P=n\,k_BT .\label{eq:ideal}
+\end{equation}
+If the average mass of a free particle is $\bar\mu\,m_{\rm u}$ (with $m_{\rm u}$ the atomic mass unit and $\bar\mu$ the
+\textbf{mean molecular weight}), the mass density is $\rho=n\,\bar\mu\,m_{\rm u}$, and therefore
+\begin{equation}
+\rho=\frac{\bar\mu\,m_{\rm u}}{k_B}\,\frac{P}{T}.\label{eq:rho_ideal}
+\end{equation}
+At fixed $\bar\mu$ and $T$ the density is proportional to the pressure.
+
+\subsection{\texorpdfstring{Why $\bar\mu$ depends on $T$ and $P$}{Why the mean molecular weight depends on T and P}: ionisation and molecules}
+For neutral solar gas (about 91\,\% hydrogen and 9\,\% helium atoms by number, plus a small fraction of heavier elements)
+$\bar\mu\approx1.3$. When a hydrogen atom is ionised it becomes two free particles, a proton and an electron, of almost
+the same total mass; in fully ionised gas $\bar\mu\approx0.6$. In the coolest layers hydrogen partly forms H$_2$ molecules,
+which raises $\bar\mu$. The degree of ionisation of an element in stage $i$ is given by the \textbf{Saha equation}
+\begin{equation}
+\frac{n_{i+1}\,n_e}{n_i}=\frac{2U_{i+1}(T)}{U_i(T)}\left(\frac{2\pi m_ek_BT}{h^2}\right)^{3/2}e^{-E_i/k_BT},\label{eq:saha}
+\end{equation}
+with $E_i$ the ionisation energy (13.6\,eV for hydrogen), $U_i$ the partition functions, $m_e$ the electron mass and $h$
+Planck's constant. Two properties matter for us. (i) Because of the exponential, ionisation switches on over a narrow
+range of temperature. (ii) The electron density $n_e$ appears on the left: at higher density there are more electrons to
+recombine with, and a higher temperature is needed for the same ionisation. Hence $\bar\mu=\bar\mu(T,P)$, and
+Eq.~\eqref{eq:rho_ideal} is no longer a simple proportionality. The Saha equations of all elements are coupled through the
+common $n_e$ and through charge conservation ($n_e$ equals the total charge of the ions), and the molecular equilibria
+(H$_2$, H$_2^+$, H$^-$) are solved together with them. This assumes \textbf{local thermodynamic equilibrium} (LTE): the
+level populations and ionisation stages are those of a gas in equilibrium at the local $T$.
+
+\subsection{\texorpdfstring{The 500\,nm extinction}{The 500 nm extinction}}
+Light of wavelength 500\,nm travelling a distance $ds$ loses the fraction $\chi_{500}\,ds$ of its intensity, by absorption
+and by scattering. In the solar photosphere $\chi_{500}$ is dominated by the negative hydrogen ion H$^-$ (a hydrogen atom
+with a second, weakly bound electron, binding energy 0.75\,eV), whose abundance is proportional to the electron density.
+The electrons come mostly from easily ionised metals (Na, Mg, Si, Ca, Fe, \dots), so $\chi_{500}$ grows steeply with
+temperature and with density. The code adds the continuum contributions of H (bound--free and free--free), H$^-$,
+H$_2^+$, He, He$^-$, the metals C, N, Mg, Si, Ca and Fe, Rayleigh scattering on H, He and H$_2$, and Thomson scattering
+on free electrons, each counted once. Spectral lines are not included: $\chi_{500}$ is a continuum extinction.
+
+\subsection{The table and its interpolation}
+Solving the coupled Saha, molecular and charge equations at every grid point at every step would be far too slow. They
+are therefore solved once, with Wittmann's equation-of-state code for solar composition (with a dedicated hot branch above
+a switch temperature $T_{\rm sw}$, where the original solver fails in the hot, low-pressure corner), on a grid of
+$X=\ln T$ and $Y=\ln P$, and stored in a table. For every node the table holds the three functions
+\[
+\ln\rho(X,Y),\qquad \ln n_e(X,Y),\qquad \ln\chi_{500}(X,Y),
+\]
+together with their derivatives $\partial_X$, $\partial_Y$ and $\partial_X\partial_Y$. Between the nodes each function is
+evaluated by \textbf{bicubic Hermite interpolation}: a cubic polynomial in each direction that matches the stored values
+and derivatives at the four corners of the cell. The result is continuous with continuous first derivatives, which is
+important for the Newton-type solvers of the magnetohydrostatic modes, and it provides the derivative
+$\partial\ln\rho/\partial\ln P|_T$ that they need. The table used by all modes is \code{cache/eos\_table\_fullz.h5}.
+Its range of $T$ and $P$ (its \emph{envelope}) covers the input atmospheres; a point outside the envelope is reported as
+an equation-of-state failure, never extrapolated.
+
+Two derived quantities appear repeatedly:
+\begin{equation}
+q\equiv\frac{\rho}{P}\quad[{\rm s^2\,m^{-2}}],\qquad H\equiv\frac{P}{\rho\,g}=\frac{1}{g\,q}=\frac{k_BT}{\bar\mu\,m_{\rm u}\,g}\quad[{\rm m}].
+\label{eq:H}
+\end{equation}
+$H$ is the \textbf{pressure scale height}. For $T=6000$\,K and $\bar\mu=1.3$, $H\approx140$\,km.

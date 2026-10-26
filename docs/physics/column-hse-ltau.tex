@@ -1,151 +1,277 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-ltau: hydrostatic columns on an optical-depth grid}{The physics of \code{run.mode = "column-hse-ltau"}, explained step by step (B.Sc.\ level). HSEMHS.}
+\doctitle{column-hse-ltau: hydrostatic columns on an optical-depth grid}{Physics and method of \code{run.mode = "column-hse-ltau"} in HSEMHS. A self-contained description.}
 
-\section{The question}
-When we observe the Sun we do not see heights; we see light. A Stokes inversion therefore returns the temperature and the
-magnetic field not at fixed geometric heights but on surfaces of constant \textbf{optical depth} $\tau_{500}$: at
-$\log_{10}\tau_{500}=0,\,-1,\,-2,\dots$ in every pixel. To turn such an atmosphere into a physical one we need, in every
-pixel, the gas pressure and the density on each $\tau$ surface, and the \textbf{geometric height} at which that surface
-lies. This mode computes them by assuming that every pixel column is in hydrostatic equilibrium on its own.
+\begin{abstract}
+\noindent A Stokes inversion returns the temperature and the magnetic field of the solar atmosphere on surfaces of constant
+optical depth, not at geometric heights. This mode turns such an atmosphere into a physical one: for every pixel column it
+computes the gas pressure and the density on each optical-depth level and the geometric height at which the level lies,
+assuming that each column is in hydrostatic equilibrium on its own. We derive the hydrostatic equation in optical depth,
+show why it needs no externally supplied reference pressure and what replaces it, describe the closure at the top of the
+column, the numerical integration, the safeguard against interpolation artefacts at sharp temperature jumps, and the rule
+that places the columns relative to each other in height by equalising the total (gas plus magnetic) pressure. All
+assumptions are listed.
+\end{abstract}
 
-\section{The quantities}
-\begin{tabular}{>{$}l<{$} p{11.4cm} l}
+\section{Introduction}
+When we observe the Sun we receive light, and the light from a given depth is attenuated by the gas above it. A spectral
+line inversion therefore naturally describes the atmosphere as a function of \textbf{optical depth} $\tau_{500}$ (the
+optical depth in the continuum at 500\,nm): it gives $T$ and $\B$ at, for example, $\log_{10}\tau_{500}=-8.0,-7.9,\dots,+1.4$
+in every pixel. Such an atmosphere has no pressure, no density and no geometry: we do not know how many kilograms of gas a
+given $\tau$ interval contains, nor how many kilometres thick it is. Both follow from two physical laws, hydrostatic
+equilibrium and the dependence of the opacity on the state of the gas.
+
+\textbf{Input:} the $\log_{10}\tau_{500}$ levels, the horizontal coordinates $x$, $y$, and $T$, $B_x$, $B_y$, $B_z$ on every
+level of every column; the gravity $g$. \textbf{Output:} on the same $\tau$ levels, $P$, $\rho$ and the height $z$, plus the
+height of $\tau_{500}=1$ in every column. $T$ and $\B$ are copied unchanged.
+
+\section{Notation}
+\begin{tabularx}{\linewidth}{>{$}l<{$} Y l l}
 \toprule
-\text{Symbol} & Meaning & Unit \\ \midrule
-\tau & optical depth at 500\,nm, counted from the top downward; the grid levels are equally spaced in $\log_{10}\tau$ & -- \\
-T,\ \B & temperature and magnetic field on the $\tau$ levels, given, never changed & K, T \\
-P,\ \rho & gas pressure and density on the $\tau$ levels & Pa, kg\,m$^{-3}$ \\
-\chi & extinction coefficient at 500\,nm (fraction of the light removed per metre) & m$^{-1}$ \\
-\kappa & extinction per unit mass, $\kappa=\chi/\rho$ & m$^2$\,kg$^{-1}$ \\
-m & column mass: mass of gas above a point per unit area & kg\,m$^{-2}$ \\
-z(\tau) & geometric height of a $\tau$ level in a column & m \\
-g & solar surface gravity, 274 & m\,s$^{-2}$ \\
-\mu_0 & vacuum permeability, $4\pi\times10^{-7}$ & T\,m\,A$^{-1}$ \\
+\text{Symbol} & Meaning & Unit & Role \\ \midrule
+x,\ y & horizontal coordinates of the pixels, $x_i$, $y_j$, uniform spacing $\Delta x$, $\Delta y$ & m & given \\
+\tau & optical depth at 500\,nm, counted from the top downward & -- & coordinate \\
+\ell_k & $\log_{10}\tau_k$ of level $k=1\dots N_\tau$, increasing (top first), equally spaced ($\Delta\ell=0.1$) & -- & given \\
+s & $\ln\tau=\ell\ln10$, the integration variable & -- & coordinate \\
+T,\ X & temperature on the levels; $X=\ln T$ & K & given, fixed \\
+\B & magnetic field on the levels, $(B_x,B_y,B_z)$ & T & given, fixed \\
+P,\ u & gas pressure on the levels; $u=\ln(P/1\,{\rm Pa})$ & Pa, -- & unknown \\
+z & geometric height of a level in its column (upward) & m & unknown \\
+\rho & mass density $\rho(T,P)$ & kg\,m$^{-3}$ & derived \\
+\chi & extinction coefficient at 500\,nm, $\chi_{500}(T,P)$ & m$^{-1}$ & derived \\
+\kappa & extinction per unit mass, $\kappa=\chi/\rho$ & m$^2$\,kg$^{-1}$ & derived \\
+q & $\rho/P$ & s$^2$\,m$^{-2}$ & derived \\
+m & column mass above a point per unit area & kg\,m$^{-2}$ & derived \\
+H & pressure scale height $P/(\rho g)$ & m & derived \\
+P_{\rm tot} & total pressure $P+B^2/(2\mu_0)$ & Pa & derived \\
+P_{\rm tot}^{\rm ref} & reference total pressure used to align the columns & Pa & derived \\
+c_{\rm max} & largest allowed rise of $\ln P$ per decade of $\tau$ (\code{cap\_per\_dex}, default 50) & -- & parameter \\
+g & gravitational acceleration, 274 & m\,s$^{-2}$ & parameter \\
+\mu_0 & vacuum permeability $4\pi\times10^{-7}$ & T\,m\,A$^{-1}$ & constant \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 
-\section{Optical depth is a measure of mass}
-Optical depth is defined by how much light is removed on the way out: going down a distance $dz$ adds
-$d\tau=\chi\,dz$ (with $z$ upward, $d\tau=-\chi\,dz$). Write $\chi=\kappa\rho$: the extinction is the product of how much gas
-there is and how strongly each kilogram of it absorbs. Then
-\[
-d\tau=-\kappa\,\rho\,dz=\kappa\,dm,
-\]
-because $-\rho\,dz=dm$ is the mass added to the column above as we go down by $dz$. So optical depth is \emph{column
-mass weighted by the opacity}. For a gas with constant $\kappa$, $\tau=\kappa\,m$ exactly.
+\section{Optical depth measures mass}\label{sec:taumass}
+Going down by a height $dz$ (with $z$ upward, $dz<0$) the light from below has to cross an additional layer, and the optical
+depth grows by
+\begin{equation}
+d\tau=-\chi\,dz .\label{eq:dtau}
+\end{equation}
+Write $\chi=\kappa\rho$: the extinction is the amount of gas, $\rho$, times how strongly each kilogram of it removes light,
+$\kappa$. The mass of the column above a point grows by $dm=-\rho\,dz$ over the same step. Therefore
+\begin{equation}
+d\tau=\kappa\,dm .\label{eq:taumass}
+\end{equation}
+\emph{Optical depth is column mass weighted by the opacity.} For gas with a constant $\kappa$, $\tau=\kappa m$ exactly. This
+is the key to the whole mode: an optical-depth scale carries information about how much mass lies above each level.
 
-\section{Hydrostatic equilibrium in optical depth}
-On a height grid, hydrostatic equilibrium reads $dP/dz=-\rho g$ (the weight of a thin slab is carried by the pressure
-difference across it). Divide it by $d\tau=-\kappa\rho\,dz$:
-\[
-\boxed{\;\frac{dP}{d\tau}=\frac{g}{\kappa}\;}
-\]
-This is the classical form used in stellar atmospheres. Since $dP=g\,dm$ (the pressure is the weight of the gas above),
-it simply says that adding the optical depth $d\tau$ means adding the mass $d\tau/\kappa$. With constant $\kappa$ it integrates to
-$P=g\tau/\kappa$: \emph{the pressure at optical depth $\tau$ is the weight of the gas that produces that much opacity.}
+\section{Hydrostatic equilibrium in optical depth}\label{sec:hse}
+\subsection{Derivation}
+A thin horizontal slab of gas at rest carries its own weight by the pressure difference across it. With $z$ upward this is
+the hydrostatic equation $dP/dz=-\rho g$ (the vertical component of $-\nabla P-\rho g\zh=0$). Since $dm=-\rho\,dz$ it can
+also be written $dP=g\,dm$: the pressure at a point is the weight of the gas above it. Dividing by Eq.~\eqref{eq:taumass}:
+\begin{equation}
+\boxed{\;\frac{dP}{d\tau}=\frac{g}{\kappa(T,P)}\;}\label{eq:hsetau}
+\end{equation}
+Adding the optical depth $d\tau$ means adding the mass $d\tau/\kappa$, whose weight is $g\,d\tau/\kappa$. For constant
+$\kappa$, $P=g\tau/\kappa$.
 
-The levels are equally spaced in $\log_{10}\tau$, so the code integrates in $\ln\tau$ ($d\tau=\tau\,d\ln\tau$) and in
-$\ln P$ ($dP=P\,d\ln P$):
-\[
-\boxed{\;\frac{d\ln P}{d\ln\tau}=\frac{g\,\tau}{\kappa\,P}=\frac{g\,\tau\,\rho}{\chi\,P}\;}
-\]
-$\rho$ and $\chi$ depend on $T$ and $P$ through the equation of state (ideal gas with ionisation and molecules, from
-Wittmann's code, tabulated in $(\ln T,\ln P)$). The equation is therefore integrated numerically, level by level from the
-top down.
+\subsection{The form that is integrated}
+The levels are equally spaced in $\log_{10}\tau$, and $\tau$ spans ten decades. We therefore integrate in $s=\ln\tau$
+($d\tau=\tau\,ds$) and in $u=\ln P$ ($dP=P\,du$). With $\kappa=\chi/\rho$:
+\begin{equation}
+\boxed{\;\frac{du}{ds}=\frac{g\,\tau}{\kappa\,P}=\frac{g\,\tau\,\rho}{\chi\,P}=\frac{g\,\tau\,q(T,P)}{\chi(T,P)}\;}\label{eq:duds}
+\end{equation}
+and, from Eq.~\eqref{eq:dtau}, the geometric thickness of the layers:
+\begin{equation}
+\boxed{\;\frac{dz}{ds}=-\frac{\tau}{\chi(T,P)}\;}\label{eq:dzds}
+\end{equation}
+Where the gas is opaque (large $\chi$) a step in $\ln\tau$ is a thin layer; where it is transparent, the same step is a thick
+one. Equations~\eqref{eq:duds} and \eqref{eq:dzds} are two coupled ordinary differential equations along each column. $\rho$
+and $\chi$ come from the equation-of-state table described next.
 
-\section{Why no externally supplied reference pressure is needed}
-On a height grid the pressure needs a prescribed value somewhere (an anchor), because a height coordinate says nothing
-about how much gas there is: the same temperature profile is equally hydrostatic at any pressure level. Optical depth is
-different: $\tau$ measures the mass above a point, and hydrostatic equilibrium says that the pressure is the weight of
-that mass. Once $T(\tau)$ and the opacity of the gas are known, the pressure follows, and no reference value has to be
-supplied from outside.
+\input{common/eos.tex}
 
-This does not mean the result is free of assumptions. Three modelling choices enter instead: the closure at the top of the
-column (next section), the treatment of sharp temperature jumps (Sect.~8) and, for the heights, the alignment of the
-columns (Sect.~9). And the result is only as good as the opacity: if the $\tau$ scale of the input was computed with a
-different opacity, the pressures differ in proportion.
+\section{The boundary conditions}\label{sec:bc}
+\subsection{Why no reference pressure is needed}\label{sec:noPref}
+On a geometric height grid the hydrostatic equation $du/dz=-g\bar\mu m_{\rm u}/(k_BT)$ does not contain the pressure itself
+when $\bar\mu$ is constant: if $P(z)$ is a solution, so is $c\,P(z)$ for any constant $c$. A height scale says nothing about
+how much gas there is, and a reference pressure must be prescribed somewhere. On an optical-depth grid the situation is
+different. The coordinate $\tau$ already counts the opacity-weighted mass (Eq.~\ref{eq:taumass}), and Eq.~\eqref{eq:hsetau}
+has a natural starting point: at $\tau=0$ there is no gas above, so $P=0$. Integrating,
+\begin{equation}
+P(\tau)=\int_0^{\tau}\frac{g}{\kappa}\,d\tau' .\label{eq:Pint}
+\end{equation}
+Once $T(\tau)$ and the opacity law $\kappa(T,P)$ are known, the pressure follows; no value has to be supplied from outside.
+Equivalently, Eq.~\eqref{eq:hsetau} is not invariant under $P\to cP$, because $\kappa$ depends on $P$ (the H$^-$ opacity
+grows with the electron density).
 
-\section{The top of the column}
-The integration needs a starting value at the top level $\tau_1$ (here $10^{-8}$). Above it we assume $\kappa$ stays
-constant at its value $\kappa_1$ and that the pressure vanishes at $\tau=0$. Then the equation integrates to
-\[
-P_1=\frac{g\,\tau_1}{\kappa_1(T_1,P_1)} .
-\]
-Because $\kappa_1$ itself depends on $P_1$, this is solved by iteration (guess $P_1$, compute $\kappa_1$, update $P_1$,
-repeat). An error in this assumption matters only near the top: deeper down the pressure is dominated by the gas added
-below $\tau_1$. Roughly, its relative weight is $\tau_1/\tau$, i.e.\ $10^{-8}$ at $\tau=1$.
+\subsection{What replaces it: the top closure}
+The grid does not start at $\tau=0$ but at $\tau_1=10^{-8}$. Above the top level we assume that $\kappa$ keeps its value
+$\kappa_1$ and that $P(\tau=0)=0$. Equation~\eqref{eq:Pint} then gives
+\begin{equation}
+P_1=\frac{g\,\tau_1}{\kappa(T_1,P_1)}=\frac{g\,\tau_1\,\rho(T_1,P_1)}{\chi(T_1,P_1)} .\label{eq:top}
+\end{equation}
+$P_1$ appears on both sides, because $\kappa$ depends on $P$. It is found by a damped fixed-point iteration in $u$: start
+from $u=\ln(100)$, compute $u_{\rm new}=\ln(g\tau_1\rho/\chi)$ at the current $u$, set $u\leftarrow\tfrac12(u+u_{\rm new})$,
+and repeat until the change is below $10^{-10}$ (at most 200 times). The damping avoids oscillation.
 
-\section{Heights from the opacity}
-A $\tau$ level has a height only once we know how thick each layer is. From $d\tau=-\chi\,dz$:
-\[
-\boxed{\;\frac{dz}{d\ln\tau}=-\frac{\tau}{\chi}\;}
-\]
-Where the gas is opaque (large $\chi$), a step in $\ln\tau$ is a thin layer; where it is transparent, the same step is a
-thick layer. $z$ is integrated alongside $\ln P$. This fixes the heights in each column only \emph{up to an additive
-constant}: we know the distance between the levels, not where the column sits (Sect.~9).
+How much does this assumption matter? At depth $\tau$ the pressure is $P_1$ plus the weight of the gas between $\tau_1$ and
+$\tau$. If $\kappa$ were constant, $P_1/P(\tau)=\tau_1/\tau$, i.e.\ $10^{-8}$ at $\tau=1$. Any reasonable error in $\kappa$
+above the top therefore affects only the uppermost few levels. The result is free of an external pressure, but it depends
+on three modelling choices instead: this top closure, the treatment of sharp temperature jumps (Sect.~\ref{sec:cap}) and,
+for the heights, the alignment of the columns (Sect.~\ref{sec:align}). It is also only as good as the opacity: if the
+$\tau$ scale of the input was computed with a different opacity, the pressures differ in proportion.
 
-\section{Between grid levels: hot gas over cool gas}
-The grid has 10 levels per factor of ten in $\tau$. Between two levels $\ln T$ is assumed to vary linearly with
-$\ln\tau$, and the integration takes small steps so that $\ln P$ changes by at most 0.05 per step.
+\subsection{The height: a constant of integration per column}
+Equation~\eqref{eq:dzds} fixes the \emph{distances} between the levels of a column, not where the column sits. Each column
+is first integrated with $z=0$ at the top level and then shifted so that $z=0$ at $\log_{10}\tau=0$. Its absolute height is
+fixed afterwards by the alignment rule of Sect.~\ref{sec:align}. So the reference that this mode needs is a reference
+\emph{height}, not a reference pressure.
 
-The opacity at 500\,nm comes mainly from the negative hydrogen ion H$^-$, which needs free electrons, and both rise very
-steeply with temperature. So cool gas is far more transparent than hot gas. Suppose a hot layer (8000\,K) lies directly on
-a cool one (4000\,K) within one grid interval. With the linear interpolation, a whole tenth of a decade in $\tau$ is then
-filled with nearly transparent gas. By $dP/d\tau=g/\kappa$, collecting that much optical depth from transparent gas requires a
-huge amount of mass, and the pressure jumps by orders of magnitude within the interval. We regard this as mainly a
-consequence of representing a sharp temperature change by smooth interpolation on a coarse grid, though the true
-structure between two grid levels is not known. The code therefore limits the rise of $\ln P$ to 5 per 0.1\,dex in $\tau$
-(\code{cap\_per\_dex} = 50 per dex), a limit well above the rises of ordinary stratifications.
+\section{Assumptions}\label{sec:assume}
+\begin{enumerate}[label=\textbf{A\arabic*.},leftmargin=2.2em]
+\item \textbf{Static gas, vertical balance only.} Each column is hydrostatic on its own; velocities and the horizontal force
+balance between columns are ignored.
+\item \textbf{No Lorentz force in the column balance.} The field enters only the alignment, through its magnetic pressure;
+its tension is ignored.
+\item \textbf{Consistent opacity.} The input $\tau_{500}$ scale is assumed to be the continuum optical depth at 500\,nm along
+the vertical computed with the same LTE equation of state and opacity as the table.
+\item \textbf{Top closure:} $\kappa$ constant above the top level and $P(\tau=0)=0$ (Eq.~\ref{eq:top}).
+\item \textbf{Temperature between levels:} $\ln T$ varies linearly with $\ln\tau$ inside each interval.
+\item \textbf{Limited pressure rise} of at most $c_{\rm max}\Delta\ell$ in $\ln P$ per interval (Sect.~\ref{sec:cap}).
+\item \textbf{Alignment:} at one common height all columns have the same total pressure $P+B^2/2\mu_0$; below the deepest
+level the total pressure is extrapolated with the gas-pressure scale height (Sect.~\ref{sec:align}).
+\item \textbf{Gauge:} the mean height of $\tau_{500}=1$ is zero.
+\item \textbf{Constant, vertical gravity} and plane-parallel geometry.
+\item \textbf{Field attached to the $\tau$ levels:} the given field values stay on their levels wherever those end up in
+space; nothing makes them divergence-free there.
+\end{enumerate}
 
-Where the limit acts, the column is \emph{not} hydrostatic in that interval: the pressure is set to the limited value,
-and the integration of that interval stops there, so the rest of its geometric thickness is not added to the heights
-below (a known shortcoming of the present code). In the intervals below, the hydrostatic integration continues from the
-limited pressure; whether the pressure then comes back to what an exact integration would give depends on the column. The
-number of limited intervals is reported with every run, and results in those columns should be treated with care.
+\section{Numerical integration of a column}\label{sec:num}
+\subsection{Temperature inside an interval}
+Between levels $k$ and $k+1$ ($s_k=\ell_k\ln10$, $s_{k+1}=\ell_{k+1}\ln10$),
+\begin{equation}
+X(s)=X_k+(X_{k+1}-X_k)\,\frac{s-s_k}{s_{k+1}-s_k} .
+\end{equation}
 
-\section{Where the columns sit: total-pressure alignment}
+\subsection{Heun's method with adaptive substeps}
+Write Eqs.~\eqref{eq:duds}--\eqref{eq:dzds} as $du/ds=f(s,u)$, $dz/ds=h(s,u)$. The integration runs downward, from $s_k$ to
+$s_{k+1}$, in substeps of length $\delta$. One substep from $(s,u,z)$ is Heun's predictor--corrector method (the
+trapezoidal rule with an Euler predictor):
+\begin{equation}
+\begin{aligned}
+&f_1=f(s,u),\quad h_1=h(s,u),\qquad \delta=\min\!\left(s_{k+1}-s,\ \frac{0.05}{|f_1|}\right),\\
+&\tilde u=u+\delta f_1\ \ \text{(predictor)},\qquad f_2=f(s+\delta,\tilde u),\quad h_2=h(s+\delta,\tilde u),\\
+&u\leftarrow u+\tfrac{\delta}{2}(f_1+f_2),\qquad z\leftarrow z+\tfrac{\delta}{2}(h_1+h_2),\qquad s\leftarrow s+\delta .
+\end{aligned}\label{eq:heun}
+\end{equation}
+The substep length is chosen so that $\ln P$ changes by at most about 0.05 per substep (a 5\,\% change in pressure), so
+intervals where the pressure rises steeply receive many substeps. The method is second-order accurate: the error falls with
+the square of the substep length.
+
+\subsection{Hot gas over cool gas: the limit on the pressure rise}\label{sec:cap}
+The 500\,nm opacity rises very steeply with temperature (Sect.~\ref{sec:eos}), so cool gas is far more transparent than hot
+gas. Suppose that within one grid interval a hot layer (8000\,K) lies directly on a cool one (4000\,K). With the linear
+interpolation of $\ln T$, a whole tenth of a decade in $\tau$ is then filled with nearly transparent gas. By
+Eq.~\eqref{eq:hsetau}, collecting that much optical depth from transparent gas requires an enormous mass, and the pressure
+rises by many orders of magnitude within the interval. We regard this as mainly a consequence of representing a sharp
+temperature change by smooth interpolation on a coarse grid, although the true structure between two levels is unknown.
+Two limits therefore apply within each interval:
+\begin{itemize}
+\item $\ln P$ may rise by at most $c_{\rm max}\,\Delta\ell=50\times0.1=5$ across the interval (a factor of about 150 in
+pressure), well above the rises of ordinary stratifications;
+\item $\ln P$ may not exceed the upper edge of the table minus 1, and the slope must remain finite.
+\end{itemize}
+If a substep would violate either, the pressure at the lower level is set to the limited value
+$u_{k+1}=\min(u_k+c_{\rm max}\Delta\ell,\ u_{\max})$, and the integration of that interval stops there. In such an interval
+the column is \emph{not} hydrostatic, and the part of its geometric thickness that was not yet integrated is not added to the
+heights below (a known shortcoming). Below it, the hydrostatic integration continues from the limited pressure. The number
+of limited intervals is reported; results in those columns should be treated with care.
+
+\subsection{The result of a column}
+After the last interval each column has $u_k$ and $z_k$ on all levels, with $z_1=0$. The heights are shifted so that $z=0$ at
+$\ell=0$, the value at $\ell=0$ being interpolated linearly in $\ell$ (or extrapolated from the end interval). If any level
+of any column ends with a non-finite pressure (outside the table), the run stops with an error.
+
+\section{Where the columns sit: total-pressure alignment}\label{sec:align}
 \subsection{Magnetic pressure}
-In each column we now know $P$, $\rho$ and the layer thicknesses, but not the height of the column as a whole. The mode
-fixes it with a physical argument that involves the magnetic field. The force a magnetic field exerts on the gas, the
-Lorentz force, can be rewritten with a vector identity as
-\[
-\J\times\B=\frac{(\nabla\times\B)\times\B}{\mu_0}=-\nabla\!\left(\frac{B^2}{2\mu_0}\right)+\frac{(\B\cdot\nabla)\B}{\mu_0}.
-\]
-The first term acts like an additional pressure, the \textbf{magnetic pressure} $B^2/2\mu_0$; the second is a tension
-along curved field lines.
+After Sect.~\ref{sec:num} every column has a correct internal structure but an arbitrary vertical position. To place the
+columns relative to each other we use the horizontal force balance in its simplest form. The magnetic (Lorentz) force can be
+rewritten with a vector identity:
+\begin{equation}
+\J\times\B=\frac{(\nabla\times\B)\times\B}{\mu_0}
+=-\nabla\!\left(\frac{B^2}{2\mu_0}\right)+\frac{(\B\cdot\nabla)\B}{\mu_0}.
+\end{equation}
+The first term acts like an additional pressure, the \textbf{magnetic pressure} $B^2/2\mu_0$; the second is a tension along
+curved field lines.
 
 \subsection{The alignment rule}
-If the field is nearly vertical and only weakly curved, its tension is small and the horizontal force balance between
-neighbouring columns reduces to equal \emph{total} pressure, $P+B^2/2\mu_0$, at the same height (a higher total pressure
-would push the neighbour aside). The mode uses this as an \textbf{approximate} alignment rule, applied at a single height
-and ignoring the tension: it takes as reference the median, over all columns, of the total pressure on the deepest $\tau$
-level, and shifts every column vertically so that its total pressure reaches the reference at one and the same height
-(interpolating $\ln(P+B^2/2\mu_0)$ linearly between levels). A column whose deepest level has a total pressure below the
-reference is extended downward, assuming that $\ln(P+B^2/2\mu_0)$ continues to rise with the \emph{gas} pressure scale height
-of that level, which is a further approximation. With \code{align = "none"} the columns are not aligned at all (each has
-$z=0$ at $\tau=1$).
+If the field is nearly vertical and weakly curved, its tension is small, and the horizontal force balance between
+neighbouring columns at the same height reduces to equal total pressure:
+\begin{equation}
+\frac{\partial}{\partial x}\left(P+\frac{B^2}{2\mu_0}\right)=\frac{\partial}{\partial y}\left(P+\frac{B^2}{2\mu_0}\right)=0
+\qquad\text{(tension neglected)} .
+\end{equation}
+A column with a higher total pressure would push its neighbour aside. The mode imposes this at \emph{one} height only:
+\begin{enumerate}
+\item In every column compute $\ln P_{\rm tot,k}=\ln\!\big(P_k+B_k^2/2\mu_0\big)$ on all levels.
+\item The reference is the median over all columns of the total pressure on the deepest level,
+$P_{\rm tot}^{\rm ref}=\operatorname{median}_{i,j}P_{{\rm tot},N_\tau}$.
+\item In each column find the height $z_r$ at which $P_{\rm tot}=P_{\rm tot}^{\rm ref}$: go up from the deepest level to the
+first interval in which $\ln P_{\rm tot}$ drops below $\ln P_{\rm tot}^{\rm ref}$, and interpolate linearly in $z$ between its
+two levels.
+\item For a column whose deepest total pressure is already below the reference, the crossing lies below the grid. It is
+extrapolated with the gas-pressure scale height of the deepest level,
+$z_r=z_{N_\tau}-\big(\ln P_{\rm tot}^{\rm ref}-\ln P_{{\rm tot},N_\tau}\big)\,H_{N_\tau}$ with $H=P/(\rho g)$. This is an
+approximation (the total pressure does not fall with exactly the gas scale height); the number of such columns is reported.
+\item Shift the column: $z_k\leftarrow z_k-z_r$. Now $P_{\rm tot}=P_{\rm tot}^{\rm ref}$ at $z=0$ in every column.
+\end{enumerate}
+With \code{align = "none"} this step is skipped and every column keeps $z=0$ at $\tau_{500}=1$.
 
 \subsection{Consequence: the Wilson depression}
-Under this rule a column with a strong field carries part of the load by magnetic pressure, so it needs less gas pressure
-at the reference height. Less gas means a lower density, a lower opacity and a longer path to reach $\tau=1$: its
-$\tau=1$ surface tends to lie deeper. This is the Wilson depression seen in sunspots near the limb. It is an expected
-tendency, not a guarantee: the outcome for a given column also depends on its temperature structure and on the
+Under this rule, a column with a strong field carries part of the total pressure as magnetic pressure, so it needs less gas
+pressure at the reference height. Less gas pressure means lower density and lower opacity, so light escapes from deeper:
+its $\tau$ surfaces lie lower. This is the \textbf{Wilson depression} seen in sunspots observed near the limb. It is an
+expected tendency, not a guarantee: the outcome for a given column also depends on its temperature structure and on the
 approximations above.
 
 \subsection{The gauge}
-Finally all columns are shifted together so that the average height of $\tau=1$ is zero. This is only a choice of origin,
-with no physical content.
+Finally all columns are shifted together by the same amount so that the mean over all columns of the height of
+$\tau_{500}=1$ is zero. This is only a choice of origin.
 
-\section{What the result means}
+\section{Iteration and acceptance criteria}
+The mode contains no global iteration. Its convergence criteria are local:
 \begin{itemize}
-\item Every column is hydrostatic along $\tau$, apart from the intervals where the pressure rise was limited (Sect.~8):
-there the pressure is not the weight of the gas above, and the heights below miss part of a layer.
-\item The heights follow from the opacity; their absolute value comes from the alignment (an approximation) and the gauge
-(a convention), not from a measurement. The field enters only through the alignment, via its magnetic pressure.
-\item The field values are taken as given on the $\tau$ levels wherever those levels end up in space; nothing makes the field
-divergence-free at its new positions.
-\item The columns are not in horizontal force balance with each other, and the tension of the field is ignored. Adding
-both is the purpose of \code{mhs-poisson-ltau}, which starts from this result.
+\item the top pressure: change of $u$ below $10^{-10}$ in the fixed-point iteration of Eq.~\eqref{eq:top};
+\item the substep length: change of $\ln P$ at most 0.05 per Heun substep;
+\item the pressure rise limit and the table edge (Sect.~\ref{sec:cap}), counted and reported.
 \end{itemize}
+Every column is independent until the alignment, which needs one global number (the median reference total pressure)
+and the gauge, which needs one global mean.
+
+\section{Three dimensions: what the result does and does not satisfy}
+\begin{itemize}
+\item \textbf{Vertical:} every column obeys $dP/d\tau=g/\kappa$ (hydrostatic equilibrium), except in limited intervals.
+\item \textbf{Horizontal:} the total pressure of all columns is equal at $z=0$ only. At other heights neighbouring columns
+generally have different total pressures, so a horizontal force remains; the field's tension is not included at all. This
+mode is therefore not a three-dimensional equilibrium. Imposing horizontal force balance at all heights, together with the
+full Lorentz force, requires moving the $\tau$ surfaces in height and adjusting the pressure in a coupled way, which is what
+the mode \code{mhs-poisson-ltau} does starting from this result.
+\item \textbf{The field:} the given $\B$ values stay on their $\tau$ levels. Because the levels move to new heights, the field
+as it ends up in space need not satisfy $\nabla\cdot\B=0$; this mode does not use derivatives of $\B$ and is not affected,
+but any later use of the field should keep it in mind.
+\end{itemize}
+
+\section{Summary of the algorithm}
+\begin{enumerate}
+\item Read $\ell_k$, $x$, $y$, $T$, $\B$; load the equation-of-state table.
+\item For every column independently: find $P_1=g\tau_1\rho/\chi$ by damped fixed-point iteration; integrate $du/ds=g\tau
+q/\chi$ and $dz/ds=-\tau/\chi$ downward with Heun substeps ($\Delta\ln P\le0.05$), $\ln T$ linear in $\ln\tau$, limiting the
+rise of $\ln P$ to $c_{\rm max}\Delta\ell$ per interval; shift so that $z=0$ at $\tau=1$.
+\item Compute the median total pressure on the deepest level; shift every column so that its total pressure equals it at
+$z=0$ (extrapolating below the grid where needed).
+\item Shift all columns so that the mean height of $\tau_{500}=1$ is zero.
+\item Evaluate $\rho$ from the table; write $z$, $P$, $\rho$, $T$, $\B$ and $z(\tau_{500}=1)$.
+\end{enumerate}
 \end{document}

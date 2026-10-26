@@ -1,152 +1,369 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{mhs-poisson-ltau: magnetohydrostatic correction on an optical-depth grid}{The physics of \code{run.mode = "mhs-poisson-ltau"}, explained step by step (B.Sc.\ level). HSEMHS.}
+\doctitle{mhs-poisson-ltau: magnetohydrostatic correction on an optical-depth grid}{Physics and method of \code{run.mode = "mhs-poisson-ltau"} in HSEMHS. A self-contained description.}
 
-\section{The question}
-An inversion gives the temperature $T$ and the magnetic field $\B$ on surfaces of constant optical depth $\tau_{500}$. The
-mode \code{column-hse-ltau} turns this into pressures, densities and heights by treating every pixel column as an isolated
-hydrostatic column. Here we go one step further, as \code{mhs-poisson-z} does on a height grid: we also require the
-columns to be in \textbf{horizontal force balance with each other} and include the \textbf{Lorentz force} of the given
-field. $T$ and $\B$ on the $\tau$ surfaces stay fixed. What is found is the pressure on every $\tau$ surface and, at the same
-time, the geometric height of every $\tau$ surface in every column. On a $\tau$ grid these two cannot be separated: the
-geometry is part of the answer.
+\begin{abstract}
+\noindent An inversion of solar spectra gives the temperature and the magnetic field on surfaces of constant optical depth.
+This mode computes the gas pressure on every optical-depth surface \emph{and} the geometric height of every surface in every
+pixel column such that pressure, gravity and the Lorentz force of the given field balance as well as possible in all three
+directions. On an optical-depth grid the two cannot be separated: the heights of the surfaces follow from the opacity, which
+depends on the pressure. We derive the vertical and horizontal force balance on tilted optical-depth surfaces, the Lorentz
+force in these curvilinear coordinates, and the least-squares objective; we then describe the Gauss--Newton
+(Levenberg--Marquardt) iteration with its exact linearisation, the preconditioner, the step control and the stopping rule.
+We discuss what fixes the pressure level (no external reference pressure is used), what fixes the heights, and which
+quantities remain undetermined. All assumptions are listed.
+\end{abstract}
 
-\section{The quantities}
-\begin{tabular}{>{$}l<{$} p{11.3cm} l}
+\section{Introduction}
+A spectral line inversion describes the atmosphere in each pixel as a function of the continuum optical depth at 500\,nm,
+$\tau_{500}$: it gives $T$ and $\B$ at, e.g., $\log_{10}\tau_{500}=-8.0,-7.9,\dots,+1.4$. The simplest way to give such an
+atmosphere a pressure and a geometry is to put every pixel column into hydrostatic equilibrium on its own (the mode
+\code{column-hse-ltau}). The columns are then not in horizontal force balance with each other, and the Lorentz force of the
+field is ignored. This mode goes further, in the spirit of a magnetohydrostatic ``Poisson step'' on a geometric grid: $T$ and
+$\B$ on the $\tau$ surfaces stay fixed, and we look for the pressure on every $\tau$ surface and the height of every $\tau$
+surface in every column that together balance the forces best.
+
+\textbf{Input:} the $\log_{10}\tau_{500}$ levels; the horizontal coordinates $x$, $y$ (periodic box); $T$, $B_x$, $B_y$, $B_z$
+on every level of every column; the gravity $g$. \textbf{Output:} on the same $\tau$ levels, $P$, $\rho$ and the height $z$;
+the height of $\tau_{500}=1$ per column. $T$ and $\B$ are copied unchanged.
+
+\section{Notation}
+\begin{tabularx}{\linewidth}{>{$}l<{$} Y l l}
 \toprule
-\text{Symbol} & Meaning & Unit \\ \midrule
-\tau & optical depth at 500\,nm; the levels are equally spaced in $\log_{10}\tau$ & -- \\
-T,\ \B & temperature and field on the $\tau$ levels, given, fixed & K, T \\
-P,\ u & gas pressure on the $\tau$ levels; $u=\ln P$ & Pa, -- \\
-\rho,\ \chi & density and 500\,nm extinction, both functions of $(T,P)$ from the equation of state & kg\,m$^{-3}$, m$^{-1}$ \\
-z(x,y,\tau) & height of a $\tau$ level at the horizontal position $(x,y)$ & m \\
-\tau_c,\ c & the cut level (default $\log_{10}\tau_c=-4$) and its height in each column & --, m \\
-\J,\ \Lv & current $\nabla\times\B/\mu_0$ and Lorentz force $\J\times\B$, in physical space & A\,m$^{-2}$, N\,m$^{-3}$ \\
-g,\ \mu_0 & gravity 274; vacuum permeability $4\pi\times10^{-7}$ & m\,s$^{-2}$, T\,m\,A$^{-1}$ \\
+\text{Symbol} & Meaning & Unit & Role \\ \midrule
+x,\ y & horizontal coordinates, periodic; $x_i$, $y_j$, spacing $\Delta x$, $\Delta y$ & m & given \\
+\tau,\ \ell & optical depth at 500\,nm; $\ell=\log_{10}\tau$ & -- & coordinate \\
+\ell_k & levels $k=1\dots N_\tau$, increasing (top first), $\Delta\ell=0.1$ & -- & given \\
+s & $\ln\tau=\ell\ln10$; $\Delta s_k=s_{k+1}-s_k$ & -- & coordinate \\
+T,\ \B & temperature and magnetic field on the levels & K, T & given, fixed \\
+P,\ u & gas pressure on the levels; $u=\ln(P/1\,{\rm Pa})$ & Pa, -- & unknown below the cut \\
+z_{ijk} & height of level $k$ in column $(i,j)$ (upward) & m & derived from $u$ and $c$ \\
+k_c,\ \ell_{\rm cut} & cut level: the level nearest to $\ell_{\rm cut}$ (\code{logtau\_cut}, default $-4$) & -- & parameter \\
+c_{ij} & height of the cut level in column $(i,j)$ & m & unknown \\
+n & number of solved levels, $n=N_\tau-k_c+1$ & -- & derived \\
+\rho,\ \chi & density and 500\,nm extinction, $\rho(T,P)$, $\chi(T,P)$ & kg\,m$^{-3}$, m$^{-1}$ & derived \\
+q,\ a & $q=\rho/P$; $a=\tau/\chi$ (thickness per unit $\ln\tau$) & s$^2$\,m$^{-2}$, m & derived \\
+\chi' & $\partial\ln\chi/\partial\ln P$ at fixed $T$ & -- & derived \\
+\J,\ \Lv & current $\nabla\times\B/\mu_0$ and Lorentz force $\J\times\B$ in physical space & A\,m$^{-2}$, N\,m$^{-3}$ & derived from $\B$ and $z$ \\
+W & $(\rho g-L_z)/P=g\,q-L_ze^{-u}$: effective weight per unit pressure & m$^{-1}$ & derived \\
+\F,\ \R & net force per volume; relative residual $\F/P$ & N\,m$^{-3}$, m$^{-1}$ & residual \\
+\bar H_k,\ \overline{\Delta z}_k & layer medians of the scale height $P/(\rho g)$ and of the layer thickness in the starting state & m & fixed weights \\
+\Phi & objective (weighted sum of squared residuals) & & minimised \\
+\mu_{\rm LM} & Levenberg--Marquardt damping & -- & iteration \\
+g,\ \mu_0 & gravity 274; vacuum permeability $4\pi\times10^{-7}$ & m\,s$^{-2}$, T\,m\,A$^{-1}$ & constants \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 
-\section{The force balance}
+\section{The force balance}\label{sec:force}
 A static gas has zero net force per unit volume:
-\[
+\begin{equation}
 \F=-\nabla P+\J\times\B-\rho g\,\zh=0 ,\qquad
-\J\times\B=-\nabla\!\left(\frac{B^2}{2\mu_0}\right)+\frac{(\B\cdot\nabla)\B}{\mu_0}.
-\]
-The Lorentz force is a magnetic pressure plus a tension along curved field lines. As explained for \code{mhs-poisson-z},
-with the field fixed this balance can in general not be satisfied exactly (the tension of a given field does not hold up the
-buoyancy of a given temperature structure), so we look for the pressure that balances the forces \emph{as well as
-possible}. The new difficulty here is that all derivatives in $\F$ are in physical space, at fixed height, whereas our data
-live on $\tau$ surfaces.
+\J=\frac{\nabla\times\B}{\mu_0},\qquad
+\J\times\B=-\nabla\!\left(\frac{B^2}{2\mu_0}\right)+\frac{(\B\cdot\nabla)\B}{\mu_0}.\label{eq:F}
+\end{equation}
+The Lorentz force is a magnetic pressure plus a tension along curved field lines. With the field fixed this balance can in
+general not be satisfied exactly. Taking the curl of Eq.~\eqref{eq:F} removes the pressure and leaves
+$\nabla\times(\J\times\B)=g\,(\partial_y\rho,-\partial_x\rho,0)$: only the tension of the field can hold up horizontal
+density differences, and a field taken from an inversion has no reason to have exactly the right tension. We therefore look
+for the state that balances the forces \emph{as well as possible} (Sect.~\ref{sec:obj}).
 
-\section{Heights follow from the pressure}
-Going down by $dz$ adds the optical depth $d\tau=-\chi\,dz$, so in each column
-\[
-\frac{dz}{d\ln\tau}=-\frac{\tau}{\chi(T,P)},\qquad
-z_k=c+\sum_{m=k_c}^{k-1}\Delta z_m,\quad \Delta z_m=-\int_{\ln\tau_m}^{\ln\tau_{m+1}}\frac{\tau}{\chi}\,d\ln\tau .
-\]
-The height of a level is the height $c$ of the cut level plus the thicknesses of the layers in between, and each thickness is
-set by the opacity, which depends on the pressure. Two consequences:
-\begin{itemize}
-\item \emph{A change of pressure at one level moves every level below it}: higher pressure, more opacity, thinner layer, and
-everything below shifts up.
-\item The unknowns are the pressures on the $\tau$ levels and one height $c$ per column; all other heights follow.
-\end{itemize}
-Above the cut ($\log\tau<-4$) the column is kept hydrostatic in $\tau$, exactly as in \code{column-hse-ltau}, and moves up
-and down rigidly with $c$.
+The new difficulty here is that all derivatives in $\F$ are taken in physical space, at fixed height, whereas the data live
+on $\tau$ surfaces whose heights are themselves unknown.
 
-\section{Vertical balance along $\tau$}
-The vertical component of $\F=0$ is $dP/dz=-(\rho g-L_z)$: the pressure difference across a slab carries its weight minus
-whatever the vertical Lorentz force carries. Divide by $dz=-d\tau/\chi$ and multiply by $\tau/P$:
-\[
-\boxed{\;\frac{d\ln P}{d\ln\tau}=\frac{(\rho g-L_z)\,\tau}{\chi\,P}\;}
-\]
-Without the field this is the hydrostatic equation of \code{column-hse-ltau}. An upward Lorentz force ($L_z>0$) carries
-part of the weight, so the pressure needs to rise less steeply with optical depth.
+\section{Optical depth, heights and mass}\label{sec:geom}
+\subsection{Heights follow from the opacity}
+Going down by $dz$ adds the optical depth $d\tau=-\chi\,dz$. With $s=\ln\tau$,
+\begin{equation}
+\frac{dz}{ds}=-\frac{\tau}{\chi(T,P)}=-a ,\qquad
+z_{k+1}=z_k-\int_{s_k}^{s_{k+1}}a\,ds\approx z_k-\frac{\Delta s_k}{2}\,(a_k+a_{k+1}) .\label{eq:height}
+\end{equation}
+The height of a level is the height of the level above it minus the thickness of the layer in between, and the thickness is
+set by the opacity, which depends on the pressure. In a column, the heights below the cut level $k_c$ are therefore
+\begin{equation}
+\boxed{\;z_{k_c}=c,\qquad z_k=c-\sum_{m=k_c}^{k-1}\frac{\Delta s_m}{2}\,(a_m+a_{m+1}),\quad k>k_c\;}\label{eq:zsum}
+\end{equation}
+Two consequences: \emph{a change of pressure at one level moves every level below it} (higher pressure, more opacity, a
+thinner layer, everything below shifts up); and the unknowns of a column can be taken to be the pressures on its levels plus
+one height $c$. All other heights follow. Equation~\eqref{eq:zsum} is a cumulative sum: a lower-triangular linear operator
+acting down the column.
 
-\section{Horizontal balance on tilted surfaces}
+\subsection{Optical depth measures mass}
+Since $\chi=\kappa\rho$ with $\kappa$ the extinction per unit mass and $dm=-\rho\,dz$ the mass added going down,
+$d\tau=\kappa\,dm$: optical depth is column mass weighted by the opacity. This is why, unlike on a geometric grid, the
+pressure on a $\tau$ grid needs no external reference value (Sect.~\ref{sec:level}).
+
+\input{common/eos.tex}
+
+\section{\texorpdfstring{Vertical balance along $\tau$}{Vertical balance along tau}}\label{sec:vert}
+The vertical component of Eq.~\eqref{eq:F} is $\partial P/\partial z=-(\rho g-L_z)$: the pressure difference across a slab
+carries its weight minus what the vertical Lorentz force carries. Divide by $dz=-a\,ds$ and by $P$:
+\begin{equation}
+\boxed{\;\frac{d\ln P}{d\ln\tau}=\frac{(\rho g-L_z)\,\tau}{\chi\,P}=W\,a\;},\qquad W\equiv\frac{\rho g-L_z}{P}=g\,q-L_z\,e^{-u}.
+\label{eq:vert}
+\end{equation}
+Without the field this is the hydrostatic equation in optical depth, $dP/d\tau=g/\kappa$. An upward Lorentz force
+($L_z>0$) carries part of the weight, so the pressure rises less steeply with optical depth.
+
+\section{Horizontal balance on tilted surfaces}\label{sec:horiz}
 A $\tau$ surface is generally not flat: its height $z(x,y,\tau)$ varies across the box. Consider the pressure along such a
-surface, $\tilde P(x,\tau)=P(x,z(x,\tau))$. By the chain rule, moving along $x$ on the surface changes it by
-\[
+surface, $\tilde P(x,\tau)=P\big(x,z(x,\tau)\big)$. By the chain rule,
+\begin{equation}
 \left.\frac{\partial P}{\partial x}\right|_\tau=\left.\frac{\partial P}{\partial x}\right|_z+\frac{\partial P}{\partial z}\left.\frac{\partial z}{\partial x}\right|_\tau .
-\]
-The physical force needs $\partial P/\partial x$ at fixed height, so we solve for it and use the vertical balance
+\end{equation}
+The physical force needs $\partial P/\partial x$ at fixed height. Solving for it and using the vertical balance
 $\partial P/\partial z=-(\rho g-L_z)$:
-\[
-\boxed{\;F_x=-\left.\frac{\partial P}{\partial x}\right|_\tau-(\rho g-L_z)\left.\frac{\partial z}{\partial x}\right|_\tau+L_x\;}
-\]
-and the same for $y$. The middle term has a simple meaning. If a $\tau$ surface slopes, comparing pressures along it means
-comparing points at different heights, and the weight of the gas between them must be subtracted. On a tilted surface part of
-the weight acts sideways. Horizontal balance therefore ties together the pressures \emph{and} the heights of
-neighbouring columns: a pressure difference along a $\tau$ surface can be balanced by a tilt of the surface.
+\begin{equation}
+\boxed{\;F_x=-\left.\frac{\partial P}{\partial x}\right|_\tau-(\rho g-L_z)\left.\frac{\partial z}{\partial x}\right|_\tau+L_x,\qquad
+F_y=-\left.\frac{\partial P}{\partial y}\right|_\tau-(\rho g-L_z)\left.\frac{\partial z}{\partial y}\right|_\tau+L_y\;}\label{eq:horiz}
+\end{equation}
+The middle term has a simple meaning. If a $\tau$ surface slopes, comparing pressures along it means comparing points at
+different heights, and the weight of the gas between them must be subtracted: on a tilted surface part of the weight acts
+sideways. Horizontal balance therefore ties together the pressures \emph{and} the heights of neighbouring columns: a pressure
+difference along a $\tau$ surface can be balanced by a tilt of the surface.
 
-\section{The Lorentz force on a $\tau$ grid}
-$\J=\nabla\times\B/\mu_0$ also needs derivatives in physical space. With the field given on the $\tau$ levels, the same chain
-rule gives, for any field component $f$,
-\[
-\frac{\partial f}{\partial z}=\frac{df/d\ln\tau}{dz/d\ln\tau},\qquad
-\left.\frac{\partial f}{\partial x}\right|_z=\left.\frac{\partial f}{\partial x}\right|_\tau-\left.\frac{\partial z}{\partial x}\right|_\tau\frac{\partial f}{\partial z}.
-\]
-So even though the field values on the $\tau$ levels are fixed, the currents and the Lorentz force depend on where the levels
-lie: if two levels move apart, the vertical gradients of the field between them become smaller, and so do the currents
-they imply. The solver accounts for this dependence.
+\section{\texorpdfstring{The Lorentz force on a $\tau$ grid}{The Lorentz force on a tau grid}}\label{sec:lorentz}
+$\J=\nabla\times\B/\mu_0$ needs derivatives in physical space. With the field given on the $\tau$ levels, the same chain rule
+gives, for any field component $f$,
+\begin{equation}
+\frac{\partial f}{\partial z}=\frac{\partial f/\partial s}{\partial z/\partial s},\qquad
+\left.\frac{\partial f}{\partial x}\right|_z=\left.\frac{\partial f}{\partial x}\right|_\tau-\left.\frac{\partial z}{\partial x}\right|_\tau\frac{\partial f}{\partial z},\qquad
+\left.\frac{\partial f}{\partial y}\right|_z=\left.\frac{\partial f}{\partial y}\right|_\tau-\left.\frac{\partial z}{\partial y}\right|_\tau\frac{\partial f}{\partial z}.
+\label{eq:curvi}
+\end{equation}
+Then $\J=\mu_0^{-1}(\partial_yB_z-\partial_zB_y,\ \partial_zB_x-\partial_xB_z,\ \partial_xB_y-\partial_yB_x)$ and
+$\Lv=\J\times\B$. So even though the field values on the $\tau$ levels are fixed, the currents and the Lorentz force depend on
+where the levels lie: if two levels move apart, the vertical gradients of the field between them become smaller, and so do the
+currents they imply. The Lorentz force is therefore recomputed whenever the heights change, and the solver takes its
+dependence on the heights into account (Sect.~\ref{sec:lin}).
 
-\section{The quantity minimised}
-As on the height grid, the forces are divided by the pressure (a relative imbalance, so that lowering the pressure is not
-rewarded) and weighted so that each layer counts in units of the weight of its own gas:
-\[
-R_x=\frac{F_x}{P},\quad R_y=\frac{F_y}{P},\quad R_z=\Delta\ln P-\int\frac{(\rho g-L_z)\tau}{\chi P}\,d\ln\tau,
-\qquad
-\Phi=\sum_{\text{levels}}w\,\bar H^2\big(R_x^2+R_y^2\big)+\sum_{\text{intervals}}\frac{\bar H^2}{\Delta\bar z}R_z^2 .
-\]
-$\bar H$ is the typical scale height $P/(\rho g)$ of a level and $w$, $\Delta\bar z$ its typical thickness, so that
-$\bar H R\approx F/(\rho g)$ and $\Phi$ approximates a volume integral of the squared imbalance in units of the weight.
-$\Phi$ is minimised over the pressures below the cut and the column heights $c$ (least squares: three equations per point,
-one pressure unknown per point and one height per column, no exact solution).
+\section{The quantity minimised}\label{sec:obj}
+\subsection{Relative residuals}
+As on a geometric grid, the forces are divided by the pressure, so that lowering the pressure is not rewarded:
+\begin{equation}
+R_x=\frac{F_x}{P}=-\left.\frac{\partial u}{\partial x}\right|_\tau-W\left.\frac{\partial z}{\partial x}\right|_\tau+L_xe^{-u},\qquad
+R_y=\frac{F_y}{P}\ \text{(likewise)},\qquad
+R_z=\Delta u-\int W\,a\,ds .\label{eq:R}
+\end{equation}
+$R_x$, $R_y$ are evaluated on every solved level; $R_z$ is the vertical balance~\eqref{eq:vert} integrated over one level
+interval, so it is the misfit of $\ln P$ across the interval.
+
+\subsection{Least squares}
+At every point there are three equations; per column the unknowns are $n-1$ pressures and one height (Sect.~\ref{sec:unk}).
+There are more equations than unknowns and, by Sect.~\ref{sec:force}, no exact solution. The pressure and heights are
+therefore those that minimise
+\begin{equation}
+\boxed{\;\Phi=\sum_{i,j}\left[\sum_{k=k_c}^{N_\tau}\overline{\Delta z}_k\,\bar H_k^2\big(R_{x,ijk}^2+R_{y,ijk}^2\big)
++\sum_{k=k_c}^{N_\tau-1}\frac{\bar H_k\bar H_{k+1}}{\overline{\Delta z}_{k+1/2}}\,R_{z,ij,k+1/2}^2\right]\;}\label{eq:Phi}
+\end{equation}
+$\bar H_k$ is the median over the box of the scale height $P/(\rho g)$ on level $k$ and $\overline{\Delta z}_{k+1/2}$ the
+median thickness of interval $k$, both from the starting state and fixed during the solve; $\overline{\Delta z}_k$ is the mean
+of the two adjacent interval thicknesses (half the single one at the end levels). Since $\bar H R_x\approx F_x/(\rho g)$ and
+$\bar H R_z/\overline{\Delta z}\approx F_z/(\rho g)$, $\Phi$ approximates a volume integral (per unit area) of the squared
+imbalance in units of the weight of the gas, so that the dense deep layers do not swamp the upper ones.
+
+\section{The unknowns and what fixes the pressure level}\label{sec:unk}
+\subsection{Unknowns}
+In every column the solve determines
+\begin{itemize}
+\item the height $c_{ij}$ of the cut level $k_c$ (the level nearest to $\log_{10}\tau=-4$), and
+\item $u_{ijk}=\ln P$ on the levels $k=k_c+1,\dots,N_\tau$ below the cut.
+\end{itemize}
+All heights below the cut follow from Eq.~\eqref{eq:zsum}. The total is $n$ unknowns per column against $3n-1$ residuals.
+
+\subsection{Above the cut}
+Above the cut the field is strong compared with the thin gas (low plasma $\beta$), and a field taken from an inversion is far
+from force-free there. Balancing its Lorentz force by the pressure would require enormous pressure gradients that would
+propagate down into the photosphere. Above the cut ($\log_{10}\tau<-4$) the levels are therefore not solved: their pressures and
+their distances to the cut level stay those of the starting state, which is hydrostatic in $\tau$, and the whole upper part of a
+column moves rigidly up and down with $c$.
+
+\subsection{The pressure level}\label{sec:level}
+This mode uses \textbf{no external reference pressure}, neither at the bottom nor anywhere else. The pressure on the cut level
+is not an unknown either: it keeps its value from the starting state. That value comes from integrating the hydrostatic
+equation in $\tau$, $dP/d\tau=g/\kappa$, from the top of the grid, where $P_1=g\tau_1/\kappa_1$ (the gas above the top level
+assumed to have the opacity $\kappa_1$ and zero pressure at $\tau=0$). Because $\tau$ measures opacity-weighted mass, this fixes
+the pressure without any outside information: at the cut level the pressure is the weight of the gas that produces the optical
+depth $10^{-4}$. Below the cut the vertical residual $R_z$ links each pressure to the one above it, starting from this fixed
+value; the pressures below are thus set by the force balance and the $\tau$ scale. The price is that the result depends on the
+opacity: if the $\tau$ scale of the input was computed with a different opacity, the pressures differ in proportion.
+
+\subsection{The starting state}
+The iteration starts from the column-hydrostatic solution in $\tau$: each column integrated from the top with
+$d\ln P/d\ln\tau=g\tau\rho/(\chi P)$ and $dz/d\ln\tau=-\tau/\chi$ (Heun substeps, $\Delta\ln P\le0.05$; the rise of $\ln P$
+limited to 5 per 0.1 dex against an interpolation artefact of hot-over-cool layers), aligned so that the total pressure
+$P+B^2/2\mu_0$ is the same in all columns at one height, and gauged so that the mean height of $\tau=1$ is zero. From this
+state come the fixed upper levels, the cut-level pressures, the weights of $\Phi$, and the first guess of $u$ and $c$.
+
+\section{Assumptions}\label{sec:assume}
+\begin{enumerate}[label=\textbf{A\arabic*.},leftmargin=2.2em]
+\item \textbf{Static gas:} velocities neglected.
+\item \textbf{$T$ and $\B$ fixed on the $\tau$ levels.} The field values travel with their levels; the Lorentz force is computed
+from them at the current heights.
+\item \textbf{Best compromise, not equilibrium:} the solution minimises Eq.~\eqref{eq:Phi}.
+\item \textbf{Pressure level from the $\tau$ scale:} the pressure on the cut level is that of the column-hydrostatic solution
+(top closure $P_1=g\tau_1/\kappa_1$); no external reference pressure.
+\item \textbf{Fixed upper atmosphere:} above $\log_{10}\tau=-4$ the columns are $\tau$-hydrostatic and rigid.
+\item \textbf{Consistent opacity:} the input $\tau$ scale is the vertical 500\,nm continuum optical depth of the same LTE
+equation of state and opacity as the table.
+\item \textbf{Horizontally periodic box}, uniform horizontal spacing.
+\item \textbf{Weights} from the starting state, fixed.
+\item \textbf{LTE ideal gas; constant vertical gravity}; plane-parallel geometry.
+\item \textbf{No condition on $\nabla\cdot\B$:} nothing enforces $\nabla\cdot\B=0$ for the field at its new positions.
+\end{enumerate}
+
+\section{The discrete problem}\label{sec:disc}
+For each column $(i,j)$ and solved level $k=k_c\dots N_\tau$:
+\begin{enumerate}
+\item \textbf{State:} $q_{ijk}=\rho/P$, $\ln\chi_{ijk}$ and $a_{ijk}=\exp(s_k-\ln\chi_{ijk})$ from the table at
+$(\ln T_{ijk},u_{ijk})$.
+\item \textbf{Heights:} $z_{ij,k_c}=c_{ij}$; levels above the cut at $c_{ij}$ plus their fixed offsets; levels below by
+Eq.~\eqref{eq:zsum}.
+\item \textbf{Field derivatives} on all levels: along the column
+$(\partial_zf)_{ijk}=(f_{ij,k-1}-f_{ij,k+1})/(z_{ij,k-1}-z_{ij,k+1})$ (one-sided at the top and bottom levels); on the $\tau$
+surface centred periodic differences, $(\partial_xf)|_\tau=(f_{i+1,jk}-f_{i-1,jk})/(2\Delta x)$; then Eq.~\eqref{eq:curvi}
+with the surface slopes $(\partial_xz)|_\tau$, $(\partial_yz)|_\tau$ computed the same way. Then $\J$, $\Lv$.
+\item \textbf{Residuals:} with $W_{ijk}=g\,q_{ijk}-(L_z)_{ijk}e^{-u_{ijk}}$,
+\begin{align}
+(R_x)_{ijk}&=-\frac{u_{i+1,jk}-u_{i-1,jk}}{2\Delta x}-W_{ijk}\,\frac{z_{i+1,jk}-z_{i-1,jk}}{2\Delta x}+(L_x)_{ijk}e^{-u_{ijk}},\\
+(R_z)_{ij,k+1/2}&=u_{ij,k+1}-u_{ijk}-\frac{\Delta s_k}{2}\big(W_{ijk}a_{ijk}+W_{ij,k+1}a_{ij,k+1}\big),
+\end{align}
+and $R_y$ like $R_x$. The vertical residual is the trapezoidal integral of Eq.~\eqref{eq:vert} over the interval, the same
+rule that gives the heights in Eq.~\eqref{eq:zsum}.
+\end{enumerate}
+
+\section{The iteration}\label{sec:iter}
+\subsection{Gauss--Newton}
+$\Phi$ depends non-linearly on the unknowns $v=(c,u)$ through the equation of state, the opacity in the heights, and the field
+derivatives. Each step replaces the residual vector by its linear approximation, $\R(v+\delta v)\approx\R+\mathsf J\delta v$, and
+minimises the resulting quadratic (Gauss--Newton, the least-squares form of Newton's method). Setting its gradient to zero gives
+the normal equations
+\begin{equation}
+\boxed{\;\big(\mathsf J^{\!\top}\mathsf W\mathsf J+\mathsf E+\mu_{\rm LM}\,\mathsf D\big)\,\delta v=-\mathsf J^{\!\top}\mathsf W\,\R\;}
+\label{eq:normal}
+\end{equation}
+with $\mathsf W$ the diagonal matrix of the weights of $\Phi$. $\mathsf E=10^{-2}\mathsf D$ is a small fixed damping and
+$\mathsf D$ is diagonal: $\kappa_1^2\,\overline{\Delta z}_k\bar H_k^2$ for a pressure unknown and
+$\kappa_1^2\sum_k\overline{\Delta z}_k\bar H_k^2\overline W_k^{\,2}$ for a column height, with $\kappa_1=2\pi/(N_x\Delta x)$ the
+smallest horizontal wavenumber and $\overline W_k$ the layer median of $W$; this is one per cent of the horizontal stiffness of
+the longest wave. The damping matters in particular for the uniform shift of all columns, which changes no residual
+(Sect.~\ref{sec:det}).
+
+\subsection{The exact linearisation}\label{sec:lin}
+$\mathsf J$ is the exact derivative of the discrete residuals; it is never stored, only applied to vectors. Its ingredients are:
+\begin{enumerate}
+\item \textbf{Equation of state:} $\partial q/\partial u=q(\partial\ln\rho/\partial\ln P-1)$ from the table derivative, and
+$\chi'=\partial\ln\chi/\partial\ln P$ by a central difference ($\pm10^{-4}$ in $u$). Hence
+$\partial W/\partial u=g\,\partial q/\partial u+L_ze^{-u}$ and $\partial(Wa)/\partial u=a\,\partial W/\partial u-W\,a\,\chi'$.
+\item \textbf{Heights:} from Eq.~\eqref{eq:zsum}, $\delta a=-a\chi'\delta u$, so
+\begin{equation}
+\delta z_{k_c}=\delta c,\qquad \delta z_{k+1}=\delta z_k+\frac{\Delta s_k}{2}\big(a_k\chi'_k\,\delta u_k+a_{k+1}\chi'_{k+1}\,\delta u_{k+1}\big),
+\end{equation}
+a cumulative sum down the column (with $\delta u_{k_c}=0$), and $\delta z=\delta c$ above the cut.
+\item \textbf{Lorentz force through the heights:} a change of the heights changes the vertical spacing,
+$\zeta_k=(\delta z_{k-1}-\delta z_{k+1})/(z_{k-1}-z_{k+1})$, which changes $\partial_zf$ by $-\zeta_k\,\partial_zf$; and it
+changes the slopes by $\partial_x\delta z$, $\partial_y\delta z$, which changes $\partial_xf|_z$ by
+$-(\partial_x\delta z)\,\partial_zf-(\partial_xz)\,\delta(\partial_zf)$. The resulting $\delta\Lv$ is linear in $\zeta$,
+$\partial_x\delta z$ and $\partial_y\delta z$ and enters all three residuals ($R_x$, $R_y$ directly and through $W$; $R_z$
+through $W$).
+\item \textbf{Direct terms:} $-\partial_x\delta u$, $-W\,\partial_x\delta z$, $-(\partial_xz)\,\partial W/\partial u\,\delta u$
+and $-L_xe^{-u}\delta u$ in $R_x$ (likewise $R_y$); $\delta u_{k+1}-\delta u_k-\tfrac{\Delta s}{2}\sum\partial(Wa)/\partial u\,\delta
+u$ in $R_z$.
+\end{enumerate}
+Its transpose $\mathsf J^{\!\top}$ is applied by reversing each step (the cumulative sum becomes a sum from the bottom up). Both
+have been checked against finite differences of the residuals.
+
+\subsection{Solving the linear system}
+Equation~\eqref{eq:normal} is symmetric and positive definite and is solved by the preconditioned conjugate-gradient method
+(only matrix--vector products are needed), from $\delta v=0$, to a relative residual of $10^{-3}$ or at most 80 iterations.
+
+\subsection{The preconditioner}
+In a horizontally periodic box any function is a sum of horizontal waves, and a centred difference acts on a wave
+$(k_x,k_y)$ as multiplication by $i\sin(k_x\Delta x)/\Delta x$. If all coefficients were the same throughout each level, the
+operator would act on each wave separately as an $n\times n$ matrix
+\begin{equation}
+\mathsf A+\sigma^2\mathsf B,\qquad \sigma^2=\frac{\sin^2(k_x\Delta x)}{\Delta x^2}+\frac{\sin^2(k_y\Delta y)}{\Delta y^2},
+\end{equation}
+where $\mathsf A=\mathsf G_z^{\!\top}\mathsf W_z\mathsf G_z+\mathsf E+\mu_{\rm LM}\mathsf D$ comes from the vertical residuals
+($\mathsf G_z$ the vertical Jacobian of one column) and $\mathsf B=\mathsf G_h^{\!\top}\mathsf W_h\mathsf G_h$ from the horizontal
+ones, $\mathsf G_h=-\mathsf I_u-\overline W\,\mathsf S$ with $\mathsf S$ the cumulative height operator of item 2 above. The
+preconditioner builds $\mathsf A$ and $\mathsf B$ from the layer medians of $a\chi'$, $\partial(Wa)/\partial u$ and $W$ (the
+Lorentz-through-height and local Lorentz terms are left out). Rather than factorising $\mathsf A+\sigma^2\mathsf B$ for each of
+the $N_xN_y$ waves, it is diagonalised once: with the Cholesky factor $\mathsf A=\mathsf L\mathsf L^{\!\top}$ and the eigenvectors
+$\mathsf V$ and eigenvalues $\lambda_m\ge0$ of $\mathsf L^{-1}\mathsf B\mathsf L^{-\top}$, the matrix
+$\mathsf Q=\mathsf V^{\!\top}\mathsf L^{-1}$ satisfies $\mathsf Q\mathsf A\mathsf Q^{\!\top}=\mathsf I$ and $\mathsf Q\mathsf
+B\mathsf Q^{\!\top}=\mathrm{diag}(\lambda)$, so
+\begin{equation}
+(\mathsf A+\sigma^2\mathsf B)^{-1}=\mathsf Q^{\!\top}\,\mathrm{diag}\!\left(\frac{1}{1+\sigma^2\lambda_m}\right)\mathsf Q
+\end{equation}
+for every wave at once. Applying the preconditioner costs a horizontal Fourier transform, two products with the small matrix
+$\mathsf Q$, and an inverse transform.
+
+\subsection{Step control: Levenberg--Marquardt}
+A pure Gauss--Newton step can be too ambitious where the problem is strongly non-linear. Three safeguards keep it reliable:
+\begin{enumerate}
+\item \textbf{Whole-step scaling.} With $s_{\rm c}=\min\big(1,\ 2/\max|\delta u|,\ 300\,{\rm km}/\max|\delta c|\big)$, the
+first trial is $\alpha=s_{\rm c}$: no pressure changes by more than a factor $e^2$ and no column moves by more than 300\,km
+(\code{dc\_cap\_m}). Scaling the whole step keeps its direction, which is a descent direction of $\Phi$; clamping individual
+components would not guarantee that.
+\item \textbf{Backtracking:} $\alpha=s_{\rm c},s_{\rm c}/2,s_{\rm c}/4,s_{\rm c}/8$; the first trial that lowers $\Phi$ and
+stays inside the equation-of-state table is accepted.
+\item \textbf{Damping:} if none of the four trials is accepted, the damping is raised, $\mu_{\rm LM}\leftarrow\max(4\mu_{\rm
+LM},1)$, and the step recomputed (at most 8 times). Large $\mu_{\rm LM}$ turns the step from the Gauss--Newton direction
+toward the direction of steepest descent with a short length. After an accepted step $\mu_{\rm LM}$ is divided by 3 if the
+full, unscaled step was taken ($\alpha=1$), kept if $\alpha\ge s_{\rm c}/2$, doubled otherwise, and set to 0 once below
+$10^{-3}$. It starts at \code{lm\_mu0} = 0 (pure Gauss--Newton).
+\end{enumerate}
+
+\subsection{Stopping rule}
+After each accepted step the relative decrease $\Delta\Phi/\Phi=(\Phi_{\rm old}-\Phi_{\rm new})/\Phi_{\rm old}$ is computed. The
+iteration stops when
+\begin{itemize}
+\item $\Delta\Phi/\Phi<\code{rtol}=10^{-4}$ on \code{n\_consec} = 3 consecutive steps (converged); or
+\item the number of steps reaches \code{max\_steps} (100); or
+\item no step is accepted even with the largest damping.
+\end{itemize}
+The criterion is on the objective only. A single small decrease is not enough, because $\Phi$ is nearly flat along the
+heights of a few strong-field columns (Sect.~\ref{sec:det}) and an isolated small step can occur long before the minimum. The
+largest height change of each step and the percentiles of $z(\tau=1)$ are logged but not used to stop.
+
+\subsection{After the iteration}
+All columns are shifted together so that the mean height of $\tau_{500}=1$ is zero (the gauge), and $\rho$ is evaluated on all
+levels.
+
+\section{What is determined, and what is not}\label{sec:det}
+\begin{itemize}
+\item \textbf{The global height.} Moving all columns up or down together changes no residual: the forces depend only on
+differences and slopes of the heights. This offset is fixed by the gauge, a convention, not a measurement.
+\item \textbf{The relative heights} of the columns are determined by the horizontal balance through the tilt term of
+Eq.~\eqref{eq:horiz}, not by the alignment of the starting state, which serves only as the first guess. A few strong-field
+columns are weakly constrained: their heights can change noticeably while $\Phi$ barely changes.
+\item \textbf{The pressure level} comes from the $\tau$ scale (Sect.~\ref{sec:level}).
+\item \textbf{Above the cut} nothing is solved; the levels keep the hydrostatic structure of the starting state.
+\item \textbf{The magnetic field is not made consistent with the new geometry.} The field values on the $\tau$ levels are kept
+while the levels move in space; $\nabla\cdot\B=0$ is not enforced for the field at its new positions. The Lorentz force is
+computed from the field as it lies.
+\end{itemize}
 
 \section{What decides the heights: the Wilson depression}
-Consider a column with a strong, nearly vertical field among weak-field neighbours. Its magnetic pressure $B^2/2\mu_0$
-pushes outward on the neighbours, so at the same height it can hold its own against them with less gas pressure. Less gas
-pressure means lower density and lower opacity, so light escapes from deeper: the $\tau$ surfaces of this column lie
-lower. Horizontal balance favours exactly this through the tilt term of Sect.~6. The depression of strong-field regions,
-seen in sunspots near the limb as the \textbf{Wilson depression}, is therefore expected to come out of the force balance
-rather than being put in by hand, although for a given column the result also depends on its temperature structure and on
-how well the compromise balances the forces there. Conversely, hot granules have a high opacity, and their $\tau$ surfaces
-tend to lie higher.
+Consider a column with a strong, nearly vertical field among weak-field neighbours. Its magnetic pressure $B^2/2\mu_0$ pushes
+outward on the neighbours, so at the same height it can hold its own against them with less gas pressure. Less gas pressure
+means lower density and lower opacity, so light escapes from deeper: the $\tau$ surfaces of this column lie lower. Horizontal
+balance favours exactly this through the tilt term of Eq.~\eqref{eq:horiz}. The depression of strong-field regions, seen in
+sunspots near the limb as the \textbf{Wilson depression}, is therefore expected to come out of the force balance rather than
+being put in by hand, although for a given column the result also depends on its temperature structure and on how well the
+compromise balances the forces there. Conversely, hot granules have a high opacity, and their $\tau$ surfaces tend to lie
+higher.
 
-\section{What is determined, and what is not}
-\begin{itemize}
-\item \textbf{The global height.} All columns can be moved up or down together without changing any force. This offset is
-fixed at the end by setting the average height of $\tau=1$ to zero, a convention, not a measurement.
-\item \textbf{Above the cut} ($\log\tau<-4$ by default) the levels are not solved: their pressures and their distances to the
-cut level stay those of the hydrostatic columns in $\tau$, and the whole upper part moves rigidly with the cut level.
-\item \textbf{Below the cut} the pressures and the heights are determined only as well as the least-squares compromise
-determines them. A few strong-field columns are weakly constrained: their heights can change noticeably while $\Phi$
-barely changes.
-\item \textbf{The magnetic field is not made consistent with the new geometry.} The field values on the $\tau$ levels are kept,
-while the levels move in space. Nothing enforces $\nabla\cdot\B=0$ for the field at its new positions; the divergence-free
-construction of \code{full-mhs-z} (a field built as the curl of a potential on a fixed grid) does not carry over to a grid
-whose geometry is itself an unknown. The Lorentz force is simply computed from the field as it lies.
-\end{itemize}
-
-\section{How the minimum is found}
-$\Phi$ depends non-linearly on the unknowns (through the equation of state, the opacity in the heights and the field
-derivatives). Each step replaces the residuals by their linear approximation in the change of the unknowns (Gauss--Newton,
-the least-squares form of Newton's method) and solves the resulting linear least-squares problem. The linear problem
-contains the cumulative sum of Sect.~4 (a pressure change shifts all heights below it), a horizontal coupling between
-neighbouring columns (Sect.~6), and the vertical equation of Sect.~5. It is solved iteratively, guided by a fast approximate
-solution in horizontal Fourier modes, as on the height grid.
-
-A pure Gauss--Newton step can be too ambitious where the problem is strongly non-linear. Two safeguards keep it
-reliable. First, the step is scaled down as a whole if it would move any column by more than 300\,km or change any pressure
-by more than a factor $e^2$; scaling the whole step keeps its direction, which still lowers $\Phi$. Second, a step that does
-not lower $\Phi$ is retried with \textbf{damping} (Levenberg--Marquardt): a penalty on the size of the change, which turns
-the step gradually from the Gauss--Newton direction toward the direction of steepest descent. The iteration stops when
-$\Phi$ has stopped decreasing over several consecutive steps.
-
-\section{Summary}
-On a $\tau$ grid the force balance determines both the pressure on each $\tau$ surface and where the surfaces lie in space.
-Vertically the gas is hydrostatic along $\tau$ with the vertical Lorentz force carrying part of the weight; horizontally the
-columns balance each other across tilted surfaces; the heights follow from the opacity. As on the height grid, a fixed field
-cannot hold up every density contrast, so the balance is the best possible compromise, and above the cut the columns
-are only hydrostatic.
+\section{Summary of the algorithm}
+\begin{enumerate}
+\item Read $\ell_k$, $x$, $y$, $T$, $\B$. Compute the column-hydrostatic starting state in $\tau$ (top closure, Heun
+integration, limited pressure rise, total-pressure alignment, gauge).
+\item Choose the cut level nearest $\log_{10}\tau=-4$. Fix the levels above it relative to the cut level, and the cut-level
+pressure. Unknowns: $c$ per column and $\ln P$ below the cut.
+\item Compute the weights $\bar H_k$, $\overline{\Delta z}$ from the starting state; evaluate heights, $\Lv$, residuals and $\Phi$.
+\item Repeat: build and diagonalise the layer-median preconditioner; solve the damped normal equations by preconditioned CG;
+scale the step as a whole to the caps; backtrack; raise the damping if no trial lowers $\Phi$; accept and update the damping.
+Stop after three consecutive steps with $\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step is accepted.
+\item Gauge the mean height of $\tau_{500}=1$ to zero; compute $\rho$; write $z$, $P$, $\rho$, $T$, $\B$ and $z(\tau=1)$.
+\end{enumerate}
 \end{document}
