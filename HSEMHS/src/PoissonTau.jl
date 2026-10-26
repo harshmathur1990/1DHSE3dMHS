@@ -44,7 +44,8 @@ end
 Column on the τ grid, integrated down from the top: d ln P/d ln τ = g τ ρ/(χ P), dz/d ln τ = −τ/χ (z = 0 at log10 τ = 0).
 With P = g m (m the column mass) this is d ln m/d ln τ = τ/(κ m), κ = χ/ρ, and dz = −dm/ρ, so heights strictly decrease.
 The rise of ln P is not limited: below a hot-over-cool interface the low opacity of the cool layer genuinely requires
-a large column mass per unit τ. Returns true, or false if the pressure leaves the EOS table (or the EOS fails) in some
+a large column mass per unit τ. Steps are limited by the slope at both ends (Heun), so that rise is resolved rather than
+averaged over a whole level. Returns true, or false if the pressure leaves the EOS table (or the EOS fails) in some
 interval; then lnP and z are NaN from that level down and the column is reported as failed.
 """
 function hse_tau!(lnP, z, lT, lt, tab, g)
@@ -69,9 +70,17 @@ function hse_tau!(lnP, z, lT, lt, tab, g)
             sx = (x - a) / (b - a)
             f1, g1 = rhs(lT[k] + (lT[k+1] - lT[k]) * sx, x, l)
             isfinite(f1) || (@views lnP[k+1:end] .= NaN; z[k+1:end] .= NaN; z .= NaN; return false)
+            # The step must also be small for the slope at its end: across a hot-over-cool interval the slope can
+            # rise ~1000x within one 0.1 dex level (κ drops with T), and a step sized from f1 alone then averaged a
+            # huge f2 over the whole level (Δ ln P ≈ 21, P × 1e9 in one column of a 504² MURaM run).
             h = min(b - x, 0.05 / max(abs(f1), 1e-30))
-            sy = (x + h - a) / (b - a)
-            f2, g2 = rhs(lT[k] + (lT[k+1] - lT[k]) * sy, x + h, l + h * f1)
+            local f2, g2
+            while true
+                sy = (x + h - a) / (b - a)
+                f2, g2 = rhs(lT[k] + (lT[k+1] - lT[k]) * sy, x + h, l + h * f1)
+                (isfinite(f2) && h * abs(f2) > 0.1 && h > 1e-9 * (b - a)) || break
+                h /= 4
+            end
             ln = l + h / 2 * (f1 + f2)
             if !isfinite(f2) || ln > lPmax                         # left the EOS table: the column fails
                 @views lnP[k+1:end] .= NaN
