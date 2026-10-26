@@ -321,8 +321,9 @@ Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.
 * `HSEMHS/scripts/m5_bifrost/` – the full-MHS driver (`m5h_fullres.jl`, `bif_setup.jl`) and M5-era experiment and
   analysis scripts; `HSEMHS/scripts/poisson/` – the original Poisson scripts (history; the modes supersede them).
 * `HSEMHS/reports/` – gate reports and earlier write-ups; `docs/` – the current mode documents.
-* `design/` – specification, design reviews and the Codex brief/review history (historical; the code and `docs/` are
-  current).
+* `design/` – `DESIGN_HISTORY.md` (condensed history and decisions in force), `old/` (the original specification,
+  design reviews and Codex briefs/reviews, unchanged), and one folder per new design topic (`tau/`: viewing angle).
+  The code and `docs/` are current.
 * `wittman-eos/` – Wittmann EOS source and partition functions; `HSEMHS/deps/witt/` – the shim and build script.
 * Not in git: `IO/`, `HSEMHS/cache/`, `HSEMHS/out/`, built `libwitt`.
 
