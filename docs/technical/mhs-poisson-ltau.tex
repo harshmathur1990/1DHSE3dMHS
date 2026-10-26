@@ -1,12 +1,14 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{mhs-poisson-ltau: implementation}{Technical notes on \code{run.mode = "mhs-poisson-ltau"}. HSEMHS, 24 Oct 2026.}
+\doctitle{mhs-poisson-ltau: implementation}{Technical notes on \code{run.mode = "mhs-poisson-ltau"}. HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
 [mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/mhs-poisson-ltau.toml
 \end{verbatim}}
-Driver \code{run\_mhs\_poisson\_ltau} (\code{src/RunModes.jl}); solver \code{PoissonTau.solve\_tau}
+Driver \code{run\_mhs\_poisson\_ltau} (\code{src/RunModes.jl}): read, \code{prepare\_embedded(COMM\_WORLD,
+:mhs\_poisson\_ltau, \dots)}, \code{solve\_embedded!}, write, \code{free\_embedded!} (\code{src/Embedded.jl}); solver
+\code{PoissonTau.solve\_tau}
 (\code{src/PoissonTau.jl}); MPI layer \code{src/Slab.jl}; PCG and threaded vector updates from \code{PoissonZ}. Input and
 \code{[tau\_grid]} keys as \code{column-hse-ltau}; in addition:
 
@@ -23,9 +25,18 @@ Key & Default & Meaning \\ \midrule
 \end{tabularx}
 
 \section{Flow}
-\code{column\_hse\_tau} (aligned, gauged) gives $u=\ln P$ and $z_0$ on all levels; \code{solve\_tau} solves for $u$ on
-levels $k>k_c$ and $c=z_{k_c}$ per column, with $u_{k\le k_c}$ and $z_k-z_{k_c}$ ($k<k_c$) fixed; the heights are gauged
-(mean $z(\tau{=}1)=0$); output in the \code{column-hse-ltau} layout.
+\code{column\_hse\_tau} (aligned, gauged; the current column integrator without a cap on the rise of $\ln P$ and with the
+end-slope substep rule, see the \code{column-hse-ltau} notes) gives $u=\ln P$ and $z_0$ on all levels. If any column fails
+there (pressure outside the table), the solve is not attempted and the driver raises an error. \code{solve\_tau} solves
+for $u$ on levels $k>k_c$ and $c=z_{k_c}$ per column, with $u_{k\le k_c}$ and $z_k-z_{k_c}$ ($k<k_c$) fixed; a start state
+outside the table returns \code{reason = :eos\_out\_of\_envelope} (driver error) instead of throwing. Then \code{gauge!}
+(mean $z(\tau{=}1)=0$), \code{tau\_state!} ($\rho$, $n_e$, $\chi$ per node), \code{check\_fields!} (as in
+\code{column-hse-ltau}), output in the \code{column-hse-ltau} layout.
+
+Option checks in \code{prepare\_embedded}, identical on all ranks: \code{logtau\_cut} inside the axis; the cut level
+$k_c\ge2$ (the height stencil at $k_c$ uses level $k_c-1$); at least 3 solved levels; \code{max\_steps}, \code{n\_consec},
+\code{cg\_maxit} $\ge1$; \code{rtol} $>0$; $0<$ \code{cg\_tol} $<1$; \code{dc\_cap\_m} $>0$; \code{lm\_mu0} $\ge0$. The
+distributed FFT plan (\code{SlabFFT}) is built once in \code{prepare\_embedded} and reused by every solve.
 
 \section{State, heights and residuals (\code{evaluate!})}
 Nodes $m=1\ldots n_1$ are levels $k=k_c\ldots n_\tau$. The unknown vector per column has $n_1$ slots: slot 1 $=c$, slots
@@ -89,18 +100,30 @@ columns: $\Phi$ rose linearly with the step length.
 
 \textbf{Termination.} (a) $(\Phi_{\rm prev}-\Phi)/\Phi_{\rm prev}<$ \code{rtol} on \code{n\_consec} consecutive accepted
 steps (log line \code{converged: \dots}); (b) no damping level gives a decrease (\code{no decrease up to $\mu$ = \dots;
-stopping}); (c) \code{max\_steps} reached (no message). Stopping uses the objective only. Two earlier rules are gone: a
+stopping}); (c) \code{max\_steps} reached (no message). The reason (\code{:converged}, \code{:no\_descent}, \code{:max\_steps}) is
+returned in the status and written as the output attribute \code{stop\_reason}. Stopping uses the objective only. Two earlier rules are gone: a
 single small step (it stopped one run after 17 steps while strong-field columns still moved 80\,km per step), and a
 height shortcut (one small step plus $\max|\delta c|<100$\,m), removed on 24 Oct 2026 in line with the $\Phi$-only policy. The
 logged $\max|\delta c|$ is the largest change of a column's \emph{cut-level} height in the step, not the change of its
-$\tau=1$ height (which also depends on the changed layer thicknesses). The driver returns \code{converged}, exit 0, in all
-three cases: read the log (code follow-up: propagate the termination). A met rule does not certify small residuals.
+$\tau=1$ height (which also depends on the changed layer thicknesses). The file driver still returns \code{converged}, exit 0, in all
+three cases: read \code{stop\_reason} or the log (code follow-up: propagate the termination into the exit status). A met
+rule does not certify small residuals.
+
+\textbf{Stationarity diagnostic.} After the iteration, at the returned state and with $\mu=0$, one more system
+$(J^\top WJ+E)\,\delta=-J^\top W\R$ is solved by PCG (diagnostic only; $u$, $z$ unchanged); logged as
+\code{stationarity: Gauss--Newton decrement \dots} and written as \code{gn\_decrement} $=\delta\cdot(-J^\top W\R)/\Phi$, the
+relative decrease a further undamped step would predict (0 at a stationary point); $\|J^\top W\R\|$ and the final $\mu$ are in
+the embedded status. Option \code{rms\_atol} (embedded API only, default 0) accepts a start with $\sqrt{\Phi_0/W}\le$
+\code{rms\_atol} in zero steps.
 
 \section{Parallelisation}
 $x$ slabs; halo exchange in $x$ for every $D_x$ (heights, $u$, $\B$, and in the Jacobian); global sums; exact global
 medians for the weights and the preconditioner (bisection on order-preserving integer keys); the distributed FFT
-(rfft in $y$, \code{Alltoallv} transpose, FFT in $x$) and GEMMs on the local $k_y$ slab. Threads in all node loops; BLAS is raised to \code{min(32, nthreads)} for the solve and
-reset to 1 afterwards; FFTW plans are single-threaded, applied from Julia threads.
+(rfft in $y$, \code{Alltoallv} transpose, FFT in $x$) and GEMMs on the local $k_y$ slab. Threads in all node loops; the standalone driver raises BLAS to \code{min(32, nthreads)} around the solve and resets it to
+1 (the embedded API leaves BLAS to the caller); FFTW plans are single-threaded, applied from Julia threads. The solve is
+\emph{step-path sensitive}: on a $24\times18$ crop the same one-rank solve changes by O(1) in a few strong-field column heights
+between 1 and 4 BLAS threads (different accepted LM steps), while $\Phi/\Phi_0$ agrees ($8.473\times10^{-3}$ vs
+$8.474\times10^{-3}$).
 
 The field values on the $\tau$ levels are used unchanged at the new heights; no discrete $\nabla\cdot\B=0$ is imposed (the
 staggered construction of \code{full-mhs-z} needs a fixed geometry). Above the cut the levels stay at their column-HSE
@@ -108,7 +131,13 @@ pressures and relative heights and move rigidly with $c$; the global height offs
 
 \section{Verification and performance}
 \begin{itemize}
-\item $96^2$ magnetic crop (manual checks, no automated test), ranks $\times$ threads $1\times8$, $1\times32$, $4\times8$,
+\item Automated tests: \code{test\_embedded.jl} (stored standalone outputs on two windows of the production input,
+$24\times18$ and $11\times12$ columns, reproduced to $\le10^{-12}$; reason in \{converged, max\_steps, no\_descent\}; finite,
+non-negative GN decrement; a balanced start accepted in zero steps; 1 vs 30 steps gives a larger decrement after 1);
+\code{mpi/mpi\_embedded.jl}: on the converged $11\times12$ window (5 steps) 2, 3, 4 ranks agree with one rank to
+$\le9\times10^{-11}$ (asserted $10^{-9}$); on the $24\times18$ window (24 steps) the differences are O(1) in a few heights
+(step-path sensitivity, above) and only recorded.
+\item $96^2$ magnetic crop (manual), ranks $\times$ threads $1\times8$, $1\times32$, $4\times8$,
 consecutive-step rule: 37 steps each; $z(\tau{=}1)$ differences median 1\,m, 99th percentile 12--24\,m, max 150\,m
 (weakly determined strong-field columns). Agreement to rounding only; identical trajectories across layouts are not
 promised. After the removal of the height shortcut (commit 813a3af) the $1\times32$ run again took 37 steps.
@@ -118,12 +147,14 @@ some columns were still moving.
 \item Full cube ($504\times504\times95$, 54 solved $\ln P$ levels + 1 height per column, $1.4\times10^7$ unknowns), with the
 superseded single-step rule: one node, 96 threads, 17 steps, 14\,min, 11\,GB (commit b96bb4e); 8 ranks on 4 nodes, 8.3\,min,
 3.1\,GB per rank, same summary statistics (commit 13666b7, log \code{out/modes/mhs-poisson-ltau.log} in the cluster
-worktree \code{MHS\_modes}). The current rule has not yet been run on the full cube. PCG reaches its
+worktree \code{MHS\_modes}). These runs predate the removal of the $\ln P$ cap in the starting state; the current code has not been run on the full
+cube. PCG reaches its
 80-iteration cap in every step (relative residual $10^{-2}$--$2\times10^{-1}$): the next speed-up is a better preconditioner.
 \end{itemize}
 
 \section{Result on the production cube}
-$z(\tau{=}1)$ relative to the cube mean, median [5\,\%, 95\,\%] in km, by $|\B|$ at $\tau=1$ (fixed-point = the superseded scheme):
+$z(\tau{=}1)$ relative to the cube mean, median [5\,\%, 95\,\%] in km, by $|\B|$ at $\tau=1$ (fixed-point = the superseded scheme;
+24 Oct 2026, starting state still with the $\ln P$ cap, single-step stop rule):
 \begin{center}\small
 \begin{tabular}{lccc}
 \toprule

@@ -194,8 +194,8 @@ tolerance of $10^{-6}$ in $u$). The bottom is used because there, deep below the
 least across a horizontal plane.
 \item During the solve each step is penalised for changing the \textbf{mean of $u$ over the bottom plane}
 (Sect.~\ref{sec:normal}). The pattern of $u$ on the bottom plane is free to change, so the horizontal forces there can be
-balanced; only its mean is held near the starting value $\ln P_{\rm ref}$. This is a penalty, not an exact constraint, and the
-limit on the size of each step can shift it slightly.
+balanced. The penalty acts on each step's change only, not on $\Phi$: it slows the drift of the mean away from $\ln P_{\rm
+ref}$ but does not hold it, so over many steps the mean can move noticeably, most where the solve has not converged.
 \end{enumerate}
 
 \section{\texorpdfstring{The low-$\beta$ problem and the cut at $z_{\rm cut}$}{The low-beta problem and the cut at z\_cut}}\label{sec:cut}
@@ -220,7 +220,8 @@ where we stop trusting the given field to be in equilibrium.
 not exist (Sect.~\ref{sec:helm}).
 \item \textbf{Weights} $\bar H_k$ from the starting state, fixed during the solve.
 \item \textbf{Pressure level:} equal $P_{\rm ref}$ at the bottom of every column in the starting state; afterwards the mean
-of $\ln P$ over the bottom plane held by a per-step penalty (Sect.~\ref{sec:level}).
+of $\ln P$ over the bottom plane damped by a per-step penalty, which slows but does not prevent its drift
+(Sect.~\ref{sec:level}).
 \item \textbf{Horizontally periodic box}; no condition is imposed at the top and bottom of the solved region other than those
 implied by the residuals there (the natural boundary conditions of the least-squares problem).
 \item \textbf{Hydrostatic above $z_{\rm cut}$:} no Lorentz force and no horizontal balance there.
@@ -399,8 +400,8 @@ gravity and the given Lorentz force: mostly their gradient part, and through the
 It is a minimum of $\Phi$, not an exact equilibrium. The remaining imbalance, the buoyancy of the given temperature
 structure that the given field cannot hold up, would require the field (or the temperature) to change.
 \item Above $z_{\rm cut}$ the atmosphere is column-hydrostatic, not magnetohydrostatic.
-\item The pressure level rests on $P_{\rm ref}$ at the bottom of the starting state and on the anchor penalty on the mean of
-the bottom plane.
+\item The pressure level rests on $P_{\rm ref}$ at the bottom of the starting state; the anchor penalty damps, but does not
+prevent, a drift of the bottom-plane mean during the solve.
 \end{itemize}
 
 \section{Summary of the algorithm}

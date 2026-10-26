@@ -296,8 +296,10 @@ The current stopping rule (Φ-only, 3 consecutive) has been run only on 96² cro
 
 **Code follow-ups (not changed by the documentation work):** propagate the Poisson solvers' termination (converged / no
 decrease / step limit) into the exit status, and the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping should also be lowered after a
-full *scaled* step (`α == sc`, currently only `α == 1`); validate strictly increasing, uniform x, y and log τ in the τ
-reader; automated tests for the slab layer and the Poisson modes.
+full *scaled* step (`α == sc`, currently only `α == 1`); make the file drivers act on the embedded validity flag (an
+invalid result other than an EOS failure in the τ column stage is still written with exit 0); convert units of T and B
+in the τ reader. (Axis checks — strictly increasing log τ, uniform x, y — and tests of the slab layer and the four
+fixed-B modes now exist through the embedded API.)
 
 ## Documentation
 

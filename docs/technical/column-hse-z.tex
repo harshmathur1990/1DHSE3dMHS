@@ -1,6 +1,6 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-z: implementation}{Technical notes on \code{run.mode = "column-hse-z"} (alias \code{column\_hse}). HSEMHS, 24 Oct 2026.}
+\doctitle{column-hse-z: implementation}{Technical notes on \code{run.mode = "column-hse-z"} (alias \code{column\_hse}). HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
@@ -46,8 +46,10 @@ table, status-returning).
 \item \code{rk4\_adaptive}: the interval is run with $n$ and $2n$ substeps; while $|u_{2n}-u_n|>$ \code{rk\_tol} the
 count is doubled up to \code{n\_sub\_max}. Column flags record refinement (\code{COL\_RK\_REFINED}), tolerance not met,
 and EOS envelope exits (outputs NaN for that column).
-\item At the nodes, \code{state} gives $\ln\rho$, $\ln n_e$, $\ln\chi_{500}$; $P_e=n_ek_BT$, $n_{\rm H}=\rho/m_{\rm H,mix}$,
-$\bar\mu$, column mass (RK4 co-integrated and trapezoid).
+\item At the nodes, \code{column\_state!} (one \code{state} call per node) gives $\ln\rho$, $\ln n_e$, $\ln\chi_{500}$,
+the EOS flags, $\tau_{500}$ and $z(\tau{=}1)$; the driver adds $P_e=n_ek_BT$, $n_{\rm H}=\rho/m_{\rm H,mix}$, $\bar\mu$ and
+the column mass (RK4 co-integrated and trapezoid). \code{hse\_column!} and \code{column\_state!} are shared with the
+embedded slab path (below), so both run identical arithmetic.
 \item \code{tau\_column!} (\code{Tau.jl}): top-first trapezoid of $\chi$; \code{exp\_tail} closure
 $\tau_{\rm top}=\chi_1H_\chi$ if $\chi_2>\chi_1$ and $0<H_\chi<H_{\max}$, else half cell; method per column.
 \code{z\_tau1}: crossing of $\log\tau=0$, linear in $\log\tau$.
@@ -65,6 +67,16 @@ diagnostic needs one halo exchange.
 (bitwise)''). Measured: 1 vs 4 ranks identical on a $96^2$ crop.
 \item Layer quantiles for the diagnostics tables gather each layer to rank 0 (\code{gather\_layer}).
 \end{itemize}
+
+\section{Embedded API}
+The file driver keeps the 2-D block decomposition and its full diagnostics. For callers that own MPI the same columns are
+available in memory: \code{prepare\_embedded(comm, :column\_hse\_z; axis = z, x, y, eos, g,
+column = ColumnZOptions(anchor, P\_ref, \dots))}, \code{solve\_embedded!(ws, lnT)}, \code{free\_embedded!(ws)}, on $x$ slabs
+in (vertical, $y$, $x$) order. \code{ColumnZOptions} mirrors \code{[column\_hse]} and \code{[tau]}; \code{P\_ref} must be a
+resolved number (\code{"from\_input"} is a file-driver feature). The result has $\ln P$, $P$, $\rho$, $n_e$,
+$\chi_{500}$, $\tau_{500}$, $z(\tau{=}1)$ and the EOS flags (no column mass, $P_e$, $\bar\mu$ or residual diagnostics); a
+column leaving the table gives the status \code{:eos\_out\_of\_envelope} rather than an exception. The slab path reproduces
+\code{column\_hse} bitwise and is bitwise independent of the rank count (2, 3, 4 ranks tested).
 
 \section{Output}
 HDF5 without parallel HDF5: \code{create\_output} on rank 0, then \code{write\_fields} writes the ranks' hyperslabs in a
@@ -85,6 +97,8 @@ iterative convergence question; check \code{column\_status} (refinement, toleran
 
 \section{Verification and performance}
 \begin{itemize}
+\item \code{test\_embedded.jl}, \code{mpi/mpi\_embedded.jl}: slab path against stored \code{column\_hse} outputs on two
+windows of the production input ($\le10^{-12}$; bitwise in the comparison script) and across 1--4 ranks (bitwise).
 \item Gate 2 (\code{test/test\_gate2.jl}): isothermal ideal gas to $10^{-12}$; $\ln T$-linear ideal gas against the
 analytic solution, fourth order under substep halving; $\tau$ closure and second order; Wittmann table on Bifrost
 columns; bitwise thread/rank invariance.
@@ -99,5 +113,6 @@ the iterative modes.
 \section{Code map}
 \code{src/RunColumnHSE.jl} (driver, diagnostics tables, metadata), \code{src/ColumnHSE.jl} (integrator, residual),
 \code{src/Tau.jl}, \code{src/IOInput.jl}, \code{src/IOOutput.jl}, \code{src/Parallel.jl}, \code{src/Fields.jl},
-\code{src/eos/Table.jl} (table interpolation), \code{config/modes/column-hse-z.toml}.
+\code{src/eos/Table.jl} (table interpolation), \code{src/Embedded.jl} (in-memory API), \code{config/modes/column-hse-z.toml}.
+\code{scripts/run.jl} sets BLAS to one thread; loading HSEMHS no longer changes any thread setting.
 \end{document}

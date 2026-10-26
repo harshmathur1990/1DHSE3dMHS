@@ -1,13 +1,16 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-ltau: implementation}{Technical notes on \code{run.mode = "column-hse-ltau"}. HSEMHS, 24 Oct 2026.}
+\doctitle{column-hse-ltau: implementation}{Technical notes on \code{run.mode = "column-hse-ltau"}. HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
 [mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/column-hse-ltau.toml
 \end{verbatim}}
-Driver \code{run\_column\_hse\_ltau} (\code{src/RunModes.jl}); physics in \code{src/PoissonTau.jl}; MPI layer in
-\code{src/Slab.jl}.
+Driver \code{run\_column\_hse\_ltau} (\code{src/RunModes.jl}): read the file, \code{prepare\_embedded(COMM\_WORLD,
+:column\_hse\_ltau, \dots)}, \code{solve\_embedded!}, write the file, \code{free\_embedded!}. Physics in
+\code{src/PoissonTau.jl} (\code{hse\_tau!}, \code{align\_ptot!}, \code{gauge!}, \code{column\_hse\_tau}); the in-memory
+API in \code{src/Embedded.jl}; MPI layer in \code{src/Slab.jl}. The same computation is available without files through the
+embedded API (Sect.~\ref{sec:api}).
 
 \begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
 \toprule
@@ -16,81 +19,116 @@ Key & Default & Meaning \\ \midrule
 \code{input.x}, \code{input.y} & \code{x}, \code{y} & names of the coordinate datasets \\
 \code{physics.g} & \code{"from\_input"} & number, or the file attribute \code{gravity\_m\_s2} (error if absent) \\
 \code{eos.table\_file} & \code{cache/}\allowbreak\code{eos\_table\_fullz.h5} & EOS and opacity table \\
-\code{tau\_grid.cap\_per\_dex} & 50 & largest rise of $\ln P$ per dex in $\tau$ \\
 \code{tau\_grid.align} & \code{ptot} & \code{ptot}: equal $P+B^2/2\mu_0$ at one height; \code{none}: $z(\tau{=}1)=0$ per column \\
 \code{run.output}, \code{run.overwrite} & required, false & output file \\
 \bottomrule
 \end{tabularx}
+The key \code{tau\_grid.cap\_per\_dex} no longer exists (removed in c8bf91e); a configuration that still sets it is rejected as
+an unknown key.
 
-\section{Input layout}
+\section{Input layout and checks}
 \code{IO/input-mhs-ltau.nc}: \code{log10tau500} ($n_\tau$, increasing: top level first), \code{x} ($N_x$), \code{y} ($N_y$),
-\code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z} with h5py shape $(x,y,\tau)$, i.e.\ Julia $(\tau,y,x)$. Each rank
-reads only its $x$ hyperslab \code{f[name][:, :, i0:i1]}. The reader also accepts the \code{make\_tau\_input.py} test
-layout (\code{logtau500}, \code{x\_m}, \code{y\_m}, \code{T}, \code{Bx}\dots, h5py $(\tau,y,x)$).
-
-What \code{read\_tau\_input} actually does:
+\code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z} with h5py shape $(x,y,\tau)$, i.e.\ Julia $(\tau,y,x)$. The driver
+first reads the coordinates (\code{tau\_coords}) on every rank, then each rank reads only its $x$ hyperslab
+(\code{read\_tau\_input}). The reader also accepts the \code{make\_tau\_input.py} test layout (\code{logtau500}, \code{x\_m},
+\code{y\_m}, \code{T}, \code{Bx}\dots, h5py $(\tau,y,x)$).
 \begin{itemize}
 \item \textbf{Units:} a \code{units} attribute on \code{x}, \code{y} is converted (m, km, cm, Mm); \code{temperature} and the field
 are read \emph{as is}, assumed to be K and T. A field stored in G is not converted.
 \item \textbf{Names:} only the coordinate names are configurable (\code{input.x}, \code{input.y}); \code{temperature},
-\code{B\_x}, \code{B\_y}, \code{B\_z} and \code{log10tau500} are fixed. The other \code{[input]} keys (\code{temperature},
-\code{bx}\dots, \code{z}, \code{crop\_z\_m}, \code{resample}) are not used by this mode.
-\item \textbf{Checks:} missing \code{x}/\code{y} and length mismatches are \code{invalid\_input}; $\log\tau$ must be
-non-decreasing (\code{issorted}, not strictly increasing); $\Delta x,\Delta y$ are taken from the first spacing and must be
-positive. Uniform, strictly increasing coordinates and strictly increasing $\log\tau$ are \emph{assumed}, not verified.
+\code{B\_x}, \code{B\_y}, \code{B\_z} and \code{log10tau500} are fixed. The other \code{[input]} keys are not used.
+\item \textbf{Checks} (\code{prepare\_embedded}, agreed on all ranks before any collective step): at least 3 levels,
+$\log\tau$ finite and \emph{strictly} increasing; $x$, $y$ finite, strictly increasing and uniform to $10^{-9}$ relative;
+$g$ finite and positive; \code{align} valid; at least 2 $x$ columns per rank ($\lfloor N_x/R\rfloor\ge2$). In
+\code{solve\_embedded!}: slab shapes and finiteness of $\ln T$ and $\B$ ($\B$ required for \code{align = "ptot"}). Any
+failure is an \code{InvalidInput} raised identically on every rank.
 \end{itemize}
 
 \section{Algorithm}
 \begin{enumerate}
 \item \code{hse\_tau!} per column, top down. Top: fixed point $\ln P\leftarrow\frac12\ln P+\frac12\ln(g\tau_1\rho/\chi)$
-from $P=100$\,Pa to $10^{-10}$. Between levels $a=\ln\tau_k$, $b=\ln\tau_{k+1}$: Heun (explicit trapezoid) substeps of
-$(\ln P,z)$ with $f=g\tau\rho/(\chi P)$, $g_z=-\tau/\chi$ and $\ln T$ linear in $\ln\tau$; step $h=\min(b-x,\,0.05/|f|)$.
-Cap: if $\ln P$ would exceed $\ln P_k+$\code{cap\_per\_dex}$(\log\tau_{k+1}-\log\tau_k)$, or the table edge
-(\code{tab.Y[end]} $-1$), or $f$ is not finite, the level gets the capped value, the interval is counted, and the substep
-loop \emph{breaks}: the height is left at the last completed substep, so the remaining geometric thickness of that
-interval is not added and all levels below sit too high by that amount (code follow-up). Only the total count is
-reported (log line and the attribute \code{capped\_intervals}); which columns and levels were capped is not stored. $z$ is
-shifted so that $z(\log\tau=0)=0$ (linear in $\log\tau$, \code{interp\_lt}).
+from $P=100$\,Pa until the change is below $10^{-10}$ (at most 200 iterations); a non-finite result fails the column.
+\item Between levels $a=\ln\tau_k$, $b=\ln\tau_{k+1}$: Heun (explicit trapezoid) substeps of $(\ln P,z)$ with
+$f=g\tau\rho/(\chi P)$, $g_z=-\tau/\chi$, $\ln T$ linear in $\ln\tau$. Substep: $h=\min(b-x,\,0.05/|f_1|)$; evaluate $f_2$ at
+$x+h$ with the Euler predictor; while $h|f_2|>0.1$ (and $h>10^{-9}(b-a)$), $h\leftarrow h/4$ and re-evaluate. Then
+$\ln P\mathrel{+}=\frac h2(f_1+f_2)$, $z\mathrel{+}=\frac h2(g_{z1}+g_{z2})$. The end-slope condition (b73c863) resolves
+hot-over-cool levels: with the start slope alone, one step covered a whole 0.1-dex level across which the slope grows
+${\sim}10^3$-fold, giving $\Delta\ln P\approx21$ ($P\times10^9$) in some columns of a $504^2$ MURaM run.
+\item \textbf{No cap on the rise of $\ln P$} (c8bf91e). The former \code{cap\_per\_dex} limit (50 per dex) also stopped the
+substep loop without advancing $z$, which left adjacent levels at the same height (1683 columns of
+\code{IO/input-mhs-ltau.nc}). Since $P=gm$ and $dz=-dm/\rho$, heights now strictly decrease.
+\item \textbf{Failure:} if $f_1$ or $f_2$ is non-finite or the new $\ln P$ exceeds \code{tab.Y[end]}$-1$, the column's $\ln P$
+from that level down and all its $z$ are set to NaN and \code{hse\_tau!} returns \code{false}. \code{column\_hse\_tau} counts
+failed columns and non-finite levels globally; if there are any it skips the alignment and gauge (they would spread the
+NaNs), the status becomes \code{:eos\_out\_of\_envelope}, and the file driver raises an error (non-zero exit, no output).
+\item $z$ is shifted so that $z(\log\tau=0)=0$ (linear in $\log\tau$, \code{interp\_lt}, extrapolated from the end
+segments).
 \item \code{align\_ptot!}: reference $\ln(P+B^2/2\mu_0)$ = global median over the bottom level (exact distributed median);
-per column the height where the total pressure crosses it (linear in $\ln P_t$ between levels, or, below the bottom,
-$z_{\rm bot}-\Delta\ln P_t\,/(g\rho/P)_{\rm bot}$: the \emph{gas} pressure scale height applied to the total pressure, an
-approximation), subtracted. The tension of the field is ignored.
+per column the height where the total pressure crosses it, going up from the bottom (linear in $z$ between levels in
+$\ln P_t$), or, below the bottom, $z_{\rm bot}-\Delta\ln P_t\,/(g\rho/P)_{\rm bot}$: the \emph{gas} pressure scale height
+applied to the total pressure, an approximation. The column is shifted by that height. The tension is ignored.
 \item \code{gauge!}: subtract the global mean of $z(\log\tau=0)$.
-\item $\rho$ from the EOS at every node; output.
+\item \code{tau\_state!}: $\rho$, $n_e$, $\chi_{500}$ and the EOS flags from one table call per node; $z(\tau{=}1)$.
+\item \code{check\_fields!}: EOS flags clean, all fields finite, $P,\rho,\chi>0$, $z$ strictly decreasing and $\tau$ strictly
+increasing down every column. The first failed check becomes the status reason (\code{:nonfinite}, \code{:nonpositive},
+\code{:folded}). Note: the file driver errors only on \code{:eos\_out\_of\_envelope}; a result failing a later check is
+still written and the run exits 0 (code follow-up). On \code{IO/input-mhs-ltau.nc}: 0 failed, 0 folded columns.
 \end{enumerate}
-Any non-finite $\ln P$ after the integration stops the run (``left the EOS table''). Otherwise the run exits 0. The
-field values are carried unchanged to the new heights; nothing enforces $\nabla\cdot\B=0$ in physical space.
+The field values are carried unchanged to the new heights; nothing enforces $\nabla\cdot\B=0$ in physical space.
 
-\section{MPI layer (\code{Slab.jl})}
+\section{MPI layer (\code{Slab.jl}, \code{Parallel.jl})}
 Shared with the two Poisson modes.
 \begin{itemize}
-\item \code{slab\_par}: \code{init\_parallel}$(N_x,N_y,n;\ p_x=R,\ p_y=1)$: each rank owns a contiguous range of $x$
-columns and all of $y$ (at least two columns per rank). Arrays are $(k,j,i)$ = (vertical, $y$, $x$), columns contiguous.
+\item \code{slab\_par(comm, NX, NY, n)} $\to$ \code{init\_parallel(comm, \dots; px = R, py = 1)}: each rank owns a contiguous
+range of $x$ columns (\code{block\_range}) and all of $y$. The parent communicator is \emph{duplicated} (\code{Comm\_dup})
+and the Cartesian communicator built from the duplicate, so HSEMHS messages cannot match the caller's; both are owned by
+the \code{ParCtx} and released by \code{free\_parallel!}. The standalone \code{slab\_par(NX, NY, n)} initialises MPI if
+needed and uses \code{COMM\_WORLD}. Arrays are $(k,j,i)$ = (vertical, $y$, $x$), columns contiguous.
 \item Reductions: \code{gsum}, \code{gdot}, \code{gnorm}, \code{gmax}, \code{gcount} (Allreduce).
 \item \code{gquantiles}/\code{gmedians}: \emph{exact} global order statistics without gathering. Each Float64 is mapped
-to an order-preserving Int64 key (sign bit set: flip the magnitude bits); per set the $k$-th smallest key is found by
-bisection on the key range, one Allreduce of the per-set counts per round (at most 64 rounds), all sets at once. Type-7
-quantiles as \code{Statistics.quantile}. Non-finite values are skipped.
+to an order-preserving Int64 key; per set the $k$-th smallest key is found by bisection on the key range, one Allreduce of
+the per-set counts per round (at most 64 rounds), all sets at once. Type-7 quantiles as \code{Statistics.quantile}.
 \item \code{coop\_write}: rank 0 creates every dataset at its global size (Julia $(x,\dots)$, h5py $(\dots,x)$) and the
 attributes, then the ranks write their $x$ hyperslabs in turn between barriers (no parallel HDF5).
-\item The column integration has no communication: column results are bitwise identical for any rank count; the
-alignment and gauge use global reductions (median exact; mean to rounding).
+\item The column integration has no communication; the alignment and gauge use global reductions (median exact, mean to
+rounding), so results agree across rank counts to rounding (measured $\le3\times10^{-12}$ relative, Sect.~\ref{sec:ver}).
 \end{itemize}
-Threads: owned columns in a threaded loop over $x$.
+Threads: owned columns in a threaded loop over $x$. \code{scripts/run.jl} sets BLAS to one thread (HSEMHS itself no
+longer touches BLAS or FFTW threads on load).
+
+\section{Embedded API}\label{sec:api}
+For callers that own MPI (e.g.\ an inversion code): \code{ws = prepare\_embedded(comm, :column\_hse\_ltau; axis = log10tau,
+x, y, eos, g, column = ColumnTauOptions(align = "ptot"))}, then \code{res = solve\_embedded!(ws, lnT, Bx, By, Bz)} per
+evaluation and finally \code{free\_embedded!(ws)}; all three are collective. Arrays are the rank's $x$ slab in (vertical,
+$y$, $x$) order; rank $r$ owns \code{slab\_range(NX, R, r)}. The result (\code{EquilibriumResult}) holds \code{lnP},
+\code{Pgas}, \code{rho}, \code{ne}, \code{chi500}, \code{tau500}, \code{logtau500}, \code{z} (aligned, gauged),
+\code{z\_tau1}, \code{eos\_flags}, in workspace buffers overwritten by the next solve (\code{snapshot} copies). The status
+(\code{EquilibriumStatus}, identical on all ranks) carries \code{valid}, \code{reason}, \code{counts}, \code{messages} and
+\code{stats} (\code{columns\_failed}, \code{align\_total\_pressure\_Pa}, \code{align\_extrapolated\_columns}). Nothing in the
+API initialises MPI, uses \code{COMM\_WORLD}, sets threads, prints or touches files (except loading a table given as a
+path).
 
 \section{Output}
 \code{/tau\_grid/\{logtau500, z\_m, Pgas, rho, T, Bx, By, Bz, z\_tau1\_m\}} and \code{/coords/\{x\_m, y\_m\}}; arrays Julia
 $(x,y,\tau)$, h5py $(\tau,y,x)$. Attributes: \code{mode}, \code{input}, \code{eos\_table}, \code{g}, \code{align},
-\code{cap\_per\_dex}, \code{capped\_intervals}, \code{mpi\_ranks}, \code{threads}, \code{units}.
+\code{mpi\_ranks}, \code{threads}, \code{units} (\code{cap\_per\_dex} and \code{capped\_intervals} are gone).
 
-\section{Verification and performance}
+\section{Verification and performance}\label{sec:ver}
 \begin{itemize}
-\item $96^2$ crop: 1 and 4 ranks give identical pressures; heights agree to $2\times10^{-10}$\,m (the gauge mean).
-\item Full cube against the original script (\code{scripts/poisson/poisson\_tau.jl}, \code{MHS\_TAU\_ITERS=0}, one
-rank): identical pressures, heights within 0.13\,mm.
-\item Full cube ($504\times504\times95$), 24 Oct 2026, commit 13666b7 (spacing then given by \code{input.dx\_m}, same
-value), 8 ranks $\times$ 32 threads on 4 nodes: 95\,s wall (most of it start-up and I/O), 1.9\,GB per rank; 2585 capped
-intervals. Log \code{out/modes/column-hse-ltau.log} in the cluster worktree \code{MHS\_modes} (not in git).
-\item The slab layer and this mode have no automated tests; the checks above were manual.
+\item Tests (in \code{test/runtests.jl}): \code{test\_embedded.jl} compares the embedded result with stored standalone outputs
+on two windows of the production input ($24\times18$, $11\times12$ columns) to $\le10^{-12}$ and checks layout, option and
+input validation, the out-of-envelope status and the field checker; \code{mpi/mpi\_embedded.jl} on 2, 3, 4 ranks: relative
+differences to one rank $\le3\times10^{-12}$ (asserted $10^{-11}$), plus collective-failure cases.
+\item \code{test\_tau\_height.jl}: an 8400\,K over 3000\,K level integrated on the 0.1-dex grid matches the same column on a
+10$\times$ finer grid to 0.05 in $\ln P$, with photospheric pressure ($<10^5$\,Pa) at the bottom.
+\item The rewiring through the embedded API reproduced the pre-refactor driver outputs bitwise; the cap removal and the
+end-slope rule then changed the columns that had been capped or under-resolved (the reference outputs were regenerated
+in b73c863).
+\item On the $504^2$ MURaM run with the end-slope rule (from the commit record): max $P$ $9.7\times10^8\to9.4\times10^4$\,Pa,
+0 columns above $10^6$\,Pa, 0 failed columns; $\ln P$ agrees with a 10$\times$ tighter step limit to $4\times10^{-3}$ (median)
+and 0.05 (max) per column.
+\item Full production cube timing (24 Oct, 13666b7, still with the cap): 8 ranks $\times$ 32 threads on 4 nodes, 95\,s wall,
+mostly start-up and I/O. The current code has not been timed on the full cube; the end-slope rule adds substeps only in
+the steep intervals.
 \end{itemize}
 \end{document}

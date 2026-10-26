@@ -1,13 +1,15 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{mhs-poisson-z: implementation}{Technical notes on \code{run.mode = "mhs-poisson-z"}. HSEMHS, 24 Oct 2026.}
+\doctitle{mhs-poisson-z: implementation}{Technical notes on \code{run.mode = "mhs-poisson-z"}. HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
 [mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/mhs-poisson-z.toml
 \end{verbatim}}
-Driver \code{run\_mhs\_poisson\_z} (\code{src/RunModes.jl}), solver \code{module PoissonZ} (\code{src/PoissonZ.jl}),
-MPI layer \code{src/Slab.jl}. The input and the \code{[column\_hse]}, \code{[tau]} keys are those of
+Driver \code{run\_mhs\_poisson\_z} (\code{src/RunModes.jl}): read, \code{prepare\_embedded(COMM\_WORLD,
+:mhs\_poisson\_z, \dots)}, \code{solve\_embedded!}, write, \code{free\_embedded!} (\code{src/Embedded.jl}); solver
+\code{module PoissonZ} (\code{src/PoissonZ.jl}); MPI layer \code{src/Slab.jl}. The same solve is available in memory through
+the embedded API (\code{PoissonZOptions}; see the \code{column-hse-ltau} notes for the protocol). The input and the \code{[column\_hse]}, \code{[tau]} keys are those of
 \code{column-hse-z}; in addition:
 
 \begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
@@ -23,15 +25,20 @@ Key & Default & Meaning \\ \midrule
 
 \section{Flow}
 \begin{enumerate}
-\item \code{open\_input}, \code{slab\_par} ($x$ slabs), \code{read\_field} of $T$; \code{column\_hse} (the
-\code{column-hse-z} integrator) on the same decomposition gives $P_0$.
+\item \code{open\_input}; \code{prepare\_embedded} checks the axes ($z$ strictly decreasing, $x$, $y$ uniform to
+$10^{-9}$), the options (a cut below the grid or leaving fewer than 3 solved levels is \code{InvalidInput}) and $\ge2$ $x$
+columns per rank on all ranks, then builds the $x$-slab context and the \code{SlabFFT} plan once. \code{read\_field} of
+$T$, $\B$ on the slab; \code{column\_z!}: the \code{column-hse-z} kernels (\code{hse\_column!}, \code{column\_state!})
+per slab column give $P_0$, bitwise equal to \code{column\_hse} on 2-D blocks. If any column leaves the EOS table the
+status becomes \code{:eos\_out\_of\_envelope} and the Poisson step is skipped.
 \item $\B$ read; all fields converted to $(z,y,x)$ slab arrays; \code{PoissonZ.lorentz}: $\J=\nabla\times\B/\mu_0$ with
 centred periodic $x,y$ differences (halo exchange in $x$) and \code{np.gradient}-type $z$ differences, $\Lv=\J\times\B$
 at cell centres, fixed.
 \item \code{solve\_pressure}: Gauss--Newton on the layers $z\le z_{\rm cut}$ (below).
 \item Above $z_{\rm cut}$: per column, trapezoidal hydrostatic step upward, $u_k-u_{k+1}+\tfrac{\Delta z\,g}{2}(q_k+q_{k+1})=0$
 ($q=\rho/P$), solved by Newton with $\partial q/\partial u=q(\partial\ln\rho/\partial\ln P-1)$.
-\item \code{tau\_columns}: $\rho$, $\chi_{500}$, $\tau_{500}$ (\code{exp\_tail}), $z(\tau{=}1)$; cooperative output.
+\item \code{height\_state!}: $\rho$, $n_e$, $\chi_{500}$, EOS flags, $\tau_{500}$ (\code{exp\_tail}), $z(\tau{=}1)$; validity
+checks; cooperative output.
 \end{enumerate}
 
 \section{Discretisation and objective}
@@ -51,18 +58,31 @@ Normal equations $(J^\top WJ+E+A)\,\delta u=-J^\top W\R$, matrix free (\code{Aop
 \begin{itemize}
 \item $E=10^{-2}\kappa^2w\bar H^2$ damps the modes centred differences cannot see (checkerboard), $\kappa=2\pi/L_x$;
 \item anchor $A=A_{\rm anc}\,\mathbf c\mathbf c^\top$, $\mathbf c$ the indicator of the bottom plane, a rank-one
-\emph{penalty} on the bottom-plane mean of $\delta u$, $A_{\rm anc}=$ \code{anchor\_w}$\cdot w_{f,n-1}/h_{n-1}^2/\sum c$. It
-keeps that mean near its starting value but does not fix it exactly, and the element-wise clamp below can shift it further
-(unlike \code{full-mhs-z}, whose gauge is an exact reparameterisation).
+\emph{penalty} on the bottom-plane mean of $\delta u$, $A_{\rm anc}=$ \code{anchor\_w}$\cdot w_{f,n-1}/h_{n-1}^2/\sum c$. It acts
+on each step's increment only ($\Phi$ has no anchor term), so it damps the change of that mean per step but does not hold it:
+measured drift of the bottom-plane mean $\ln P$ from the start $+0.34$ on an unconverged $24\times18$ window (30 steps),
+$2.5\times10^{-4}$ on a converged $11\times12$ window. Unlike the gauge of \code{full-mhs-z}, it is not an exact
+reparameterisation. Decision of 24 Oct 2026: this is the intended behaviour.
 \end{itemize}
 Step: PCG to \code{cg\_tol} or \code{cg\_maxit}; $|\delta u|\le2$ per node (clamp); backtracking on $\Phi$ (halving, up to
 12 times, with the EOS status checked).
 
 \textbf{Termination.} The iteration ends when (a) the relative decrease $(\Phi_{\rm prev}-\Phi)/\Phi_{\rm prev}$ of accepted
 steps is below \code{rtol} on \code{n\_consec} consecutive steps (log line \code{converged: \dots}); (b) no halving gives a
-decrease (\code{no decrease along the step \dots; stopping}); or (c) \code{max\_steps} is reached (no message). The driver
-returns \code{converged}, i.e.\ exit 0, in all three cases: \textbf{exit 0 is not evidence of convergence}; read the log
-(code follow-up: propagate the termination into the status). Even case (a) does not certify a small force residual.
+decrease (\code{no decrease along the step \dots; stopping}); or (c) \code{max\_steps} is reached (no message). The reason is returned in the status and written as the output attribute
+\code{stop\_reason}. The driver still returns \code{converged}, i.e.\ exit 0, in all three cases: \textbf{exit 0 is not
+evidence of convergence}; read \code{stop\_reason} (code follow-up: propagate the termination into the exit status). Even
+case (a) does not certify a small force residual.
+
+\textbf{Stationarity diagnostic.} After the iteration one more system $(J^\top WJ+E+A)\,\delta=-J^\top W\R$ is solved at the
+returned state (diagnostic only): \code{gn\_decrement} $=\delta\cdot(-J^\top W\R)/\Phi$, the relative decrease a further
+step would predict, logged and written as an attribute; $\|J^\top W\R\|$ is in the embedded status. \code{rms\_atol}
+(embedded API only, default 0) accepts an already balanced start in zero steps.
+
+\textbf{Validity.} The continuation above $z_{\rm cut}$ is checked for non-finite pressures (\code{:continuation\_failed});
+then \code{check\_fields!} (EOS flags, finiteness, $P,\rho,\chi>0$, $\tau$ strictly increasing downward). The file driver
+does not act on the validity flag: an invalid result (including a skipped Poisson step after a column-HSE failure) is
+written and the run exits 0 (code follow-up).
 
 \section{Preconditioner}
 The Laplacian part with layer-median coefficients: in horizontal Fourier space, mode $(k_x,k_y)$ with
@@ -88,7 +108,9 @@ broadcasts and masked indexing were serial bottlenecks: the anchor's \code{v[anc
 \item Reproducibility: medians and quantiles are exact global order statistics, but sums and dot products are
 reduced in a rank-dependent order, so results agree only to rounding, and an iterative solver can amplify that along its
 path; identical trajectories for different rank or thread counts are not promised. Measured (manual, not an automated
-test): $96^2$ crop, 1 vs 4 ranks, $|\Delta\ln P|\le1.5\times10^{-6}$.
+test): $96^2$ crop, 1 vs 4 ranks, $|\Delta\ln P|\le1.5\times10^{-6}$. Automated (\code{mpi/mpi\_embedded.jl}): converged
+$11\times12$ window, 2, 3, 4 ranks vs 1 rank $\le1.7\times10^{-12}$ relative (asserted $10^{-9}$); unconverged $24\times18$ window
+(30 steps) up to $8.8\times10^{-6}$, recorded.
 \item Threads: Julia threads in every loop; BLAS stays at 1 thread; FFTW plans single-threaded, applied from Julia
 threads.
 \end{itemize}
@@ -101,6 +123,9 @@ MHS checkpoint layout (read by \code{force\_split.py}, \code{m5h\_isotau*.py}):
 
 \section{Verification and performance}
 \begin{itemize}
+\item \code{test\_embedded.jl}: stored standalone outputs (pre-refactor drivers, \code{b2401a3}) on two windows of the
+production input reproduced to $\le10^{-12}$; the rewired file driver reproduced them bitwise. Reason, GN decrement, zero-step
+acceptance of a balanced start and the out-of-envelope status are tested.
 \item Against the original script (\code{scripts/poisson/poisson\_step.jl} on the same column-HSE file, $96^2$ crop):
 $|\Delta\ln P|\le5.8\times10^{-6}$.
 \item Full cube ($504\times504\times177$, $z_{\rm cut}=1$\,Mm, 77 solved layers from $-0.49$ to 0.98\,Mm), 24 Oct 2026,
