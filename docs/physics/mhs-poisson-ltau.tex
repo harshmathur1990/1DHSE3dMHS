@@ -189,8 +189,10 @@ opacity: if the $\tau$ scale of the input was computed with a different opacity,
 
 \subsection{The starting state}
 The iteration starts from the column-hydrostatic solution in $\tau$: each column integrated from the top with
-$d\ln P/d\ln\tau=g\tau\rho/(\chi P)$ and $dz/d\ln\tau=-\tau/\chi$ (Heun substeps, $\Delta\ln P\le0.05$; the rise of $\ln P$
-limited to 5 per 0.1 dex against an interpolation artefact of hot-over-cool layers), aligned so that the total pressure
+$d\ln P/d\ln\tau=g\tau\rho/(\chi P)$ and $dz/d\ln\tau=-\tau/\chi$ (Heun substeps sized so that $\ln P$ changes by
+at most about 0.05--0.1 per substep at the slopes of both ends, which resolves the steep but genuine pressure rise below
+hot-over-cool interfaces; a column whose pressure leaves the equation-of-state table fails, and then no solve is
+attempted), aligned so that the total pressure
 $P+B^2/2\mu_0$ is the same in all columns at one height, and gauged so that the mean height of $\tau=1$ is zero. From this
 state come the fixed upper levels, the cut-level pressures, the weights of $\Phi$, and the first guess of $u$ and $c$.
 
@@ -322,13 +324,20 @@ iteration stops when
 \item the number of steps reaches \code{max\_steps} (100); or
 \item no step is accepted even with the largest damping.
 \end{itemize}
+The stopping rule is on relative decreases of $\Phi$, which does not by itself prove that a minimum has been reached. As a
+diagnostic, one further undamped Gauss--Newton step is computed at the returned state (but not taken), and its predicted
+relative decrease of $\Phi$, the \textbf{Gauss--Newton decrement} $-\delta v^{\top}\mathsf J^{\top}\mathsf W\R/\Phi$, is
+reported together with the gradient norm $\|\mathsf J^{\top}\mathsf W\R\|$ and the stop reason (converged, step limit,
+or no descent). A small decrement means that the linear model sees little left to gain.
 The criterion is on the objective only. A single small decrease is not enough, because $\Phi$ is nearly flat along the
 heights of a few strong-field columns (Sect.~\ref{sec:det}) and an isolated small step can occur long before the minimum. The
 largest height change of each step and the percentiles of $z(\tau=1)$ are logged but not used to stop.
 
 \subsection{After the iteration}
-All columns are shifted together so that the mean height of $\tau_{500}=1$ is zero (the gauge), and $\rho$ is evaluated on all
-levels.
+All columns are shifted together so that the mean height of $\tau_{500}=1$ is zero (the gauge), and $\rho$ and $\chi$ are
+evaluated on all levels. The returned fields are then checked: every state inside the table, all values finite, $P$, $\rho$,
+$\chi$ positive, and the heights strictly decreasing with depth in every column (no folded column). The first failed check,
+if any, is reported.
 
 \section{What is determined, and what is not}\label{sec:det}
 \begin{itemize}
@@ -357,13 +366,14 @@ higher.
 \section{Summary of the algorithm}
 \begin{enumerate}
 \item Read $\ell_k$, $x$, $y$, $T$, $\B$. Compute the column-hydrostatic starting state in $\tau$ (top closure, Heun
-integration, limited pressure rise, total-pressure alignment, gauge).
+integration with substeps resolving steep pressure rises, total-pressure alignment, gauge).
 \item Choose the cut level nearest $\log_{10}\tau=-4$. Fix the levels above it relative to the cut level, and the cut-level
 pressure. Unknowns: $c$ per column and $\ln P$ below the cut.
 \item Compute the weights $\bar H_k$, $\overline{\Delta z}$ from the starting state; evaluate heights, $\Lv$, residuals and $\Phi$.
 \item Repeat: build and diagonalise the layer-median preconditioner; solve the damped normal equations by preconditioned CG;
 scale the step as a whole to the caps; backtrack; raise the damping if no trial lowers $\Phi$; accept and update the damping.
-Stop after three consecutive steps with $\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step is accepted.
-\item Gauge the mean height of $\tau_{500}=1$ to zero; compute $\rho$; write $z$, $P$, $\rho$, $T$, $\B$ and $z(\tau=1)$.
+Stop after three consecutive steps with $\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step is accepted; report
+the Gauss--Newton decrement at the result.
+\item Gauge the mean height of $\tau_{500}=1$ to zero; compute $\rho$; check the fields; write $z$, $P$, $\rho$, $T$, $\B$ and $z(\tau=1)$.
 \end{enumerate}
 \end{document}

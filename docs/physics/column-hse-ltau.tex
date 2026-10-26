@@ -8,9 +8,9 @@ optical depth, not at geometric heights. This mode turns such an atmosphere into
 computes the gas pressure and the density on each optical-depth level and the geometric height at which the level lies,
 assuming that each column is in hydrostatic equilibrium on its own. We derive the hydrostatic equation in optical depth,
 show why it needs no externally supplied reference pressure and what replaces it, describe the closure at the top of the
-column, the numerical integration, the safeguard against interpolation artefacts at sharp temperature jumps, and the rule
-that places the columns relative to each other in height by equalising the total (gas plus magnetic) pressure. All
-assumptions are listed.
+column, the numerical integration (including the steep pressure rise below hot-over-cool interfaces), and the rule that
+places the columns relative to each other in height by equalising the total (gas plus magnetic) pressure. All assumptions
+are listed.
 \end{abstract}
 
 \section{Introduction}
@@ -45,7 +45,6 @@ m & column mass above a point per unit area & kg\,m$^{-2}$ & derived \\
 H & pressure scale height $P/(\rho g)$ & m & derived \\
 P_{\rm tot} & total pressure $P+B^2/(2\mu_0)$ & Pa & derived \\
 P_{\rm tot}^{\rm ref} & reference total pressure used to align the columns & Pa & derived \\
-c_{\rm max} & largest allowed rise of $\ln P$ per decade of $\tau$ (\code{cap\_per\_dex}, default 50) & -- & parameter \\
 g & gravitational acceleration, 274 & m\,s$^{-2}$ & parameter \\
 \mu_0 & vacuum permeability $4\pi\times10^{-7}$ & T\,m\,A$^{-1}$ & constant \\
 \bottomrule
@@ -119,8 +118,9 @@ and repeat until the change is below $10^{-10}$ (at most 200 times). The damping
 How much does this assumption matter? At depth $\tau$ the pressure is $P_1$ plus the weight of the gas between $\tau_1$ and
 $\tau$. If $\kappa$ were constant, $P_1/P(\tau)=\tau_1/\tau$, i.e.\ $10^{-8}$ at $\tau=1$. Any reasonable error in $\kappa$
 above the top therefore affects only the uppermost few levels. The result is free of an external pressure, but it depends
-on three modelling choices instead: this top closure, the treatment of sharp temperature jumps (Sect.~\ref{sec:cap}) and,
-for the heights, the alignment of the columns (Sect.~\ref{sec:align}). It is also only as good as the opacity: if the
+on modelling choices instead: this top closure, the interpolation of the temperature between levels (which matters most
+at sharp temperature jumps, Sect.~\ref{sec:cap}) and, for the heights, the alignment of the columns
+(Sect.~\ref{sec:align}). It is also only as good as the opacity: if the
 $\tau$ scale of the input was computed with a different opacity, the pressures differ in proportion.
 
 \subsection{The height: a constant of integration per column}
@@ -138,8 +138,8 @@ its tension is ignored.
 \item \textbf{Consistent opacity.} The input $\tau_{500}$ scale is assumed to be the continuum optical depth at 500\,nm along
 the vertical computed with the same LTE equation of state and opacity as the table.
 \item \textbf{Top closure:} $\kappa$ constant above the top level and $P(\tau=0)=0$ (Eq.~\ref{eq:top}).
-\item \textbf{Temperature between levels:} $\ln T$ varies linearly with $\ln\tau$ inside each interval.
-\item \textbf{Limited pressure rise} of at most $c_{\rm max}\Delta\ell$ in $\ln P$ per interval (Sect.~\ref{sec:cap}).
+\item \textbf{Temperature between levels:} $\ln T$ varies linearly with $\ln\tau$ inside each interval. Across a sharp
+temperature jump this choice determines how much mass the interval holds (Sect.~\ref{sec:cap}).
 \item \textbf{Alignment:} at one common height all columns have the same total pressure $P+B^2/2\mu_0$; below the deepest
 level the total pressure is extrapolated with the gas-pressure scale height (Sect.~\ref{sec:align}).
 \item \textbf{Gauge:} the mean height of $\tau_{500}=1$ is zero.
@@ -161,38 +161,47 @@ $s_{k+1}$, in substeps of length $\delta$. One substep from $(s,u,z)$ is Heun's 
 trapezoidal rule with an Euler predictor):
 \begin{equation}
 \begin{aligned}
-&f_1=f(s,u),\quad h_1=h(s,u),\qquad \delta=\min\!\left(s_{k+1}-s,\ \frac{0.05}{|f_1|}\right),\\
-&\tilde u=u+\delta f_1\ \ \text{(predictor)},\qquad f_2=f(s+\delta,\tilde u),\quad h_2=h(s+\delta,\tilde u),\\
+&f_1=f(s,u),\quad h_1=h(s,u),\qquad \tilde u=u+\delta f_1\ \ \text{(predictor)},\qquad f_2=f(s+\delta,\tilde u),\quad h_2=h(s+\delta,\tilde u),\\
 &u\leftarrow u+\tfrac{\delta}{2}(f_1+f_2),\qquad z\leftarrow z+\tfrac{\delta}{2}(h_1+h_2),\qquad s\leftarrow s+\delta .
 \end{aligned}\label{eq:heun}
 \end{equation}
-The substep length is chosen so that $\ln P$ changes by at most about 0.05 per substep (a 5\,\% change in pressure), so
-intervals where the pressure rises steeply receive many substeps. The method is second-order accurate: the error falls with
-the square of the substep length.
+The method is second-order accurate: the error falls with the square of the substep length. The substep length $\delta$ is
+chosen so that the slope is resolved at \emph{both} ends of the substep:
+\begin{enumerate}
+\item start from $\delta=\min\big(s_{k+1}-s,\ 0.05/|f_1|\big)$, so that $\ln P$ would change by at most 0.05 (a 5\,\% change
+in pressure) at the slope of the start;
+\item evaluate $f_2$ at the end; while $\delta\,|f_2|>0.1$, divide $\delta$ by 4 and evaluate again (down to $10^{-9}$ of the
+interval).
+\end{enumerate}
+The second condition matters where the slope grows rapidly within an interval (next subsection): a step sized from $f_1$
+alone would average a slope that is a thousand times larger at its end over a long step and overshoot the pressure by
+orders of magnitude. Intervals with a steep pressure rise therefore receive many short substeps.
 
-\subsection{Hot gas over cool gas: the limit on the pressure rise}\label{sec:cap}
+\subsection{Hot gas over cool gas}\label{sec:cap}
 The 500\,nm opacity rises very steeply with temperature (Sect.~\ref{sec:eos}), so cool gas is far more transparent than hot
 gas. Suppose that within one grid interval a hot layer (8000\,K) lies directly on a cool one (4000\,K). With the linear
-interpolation of $\ln T$, a whole tenth of a decade in $\tau$ is then filled with nearly transparent gas. By
-Eq.~\eqref{eq:hsetau}, collecting that much optical depth from transparent gas requires an enormous mass, and the pressure
-rises by many orders of magnitude within the interval. We regard this as mainly a consequence of representing a sharp
-temperature change by smooth interpolation on a coarse grid, although the true structure between two levels is unknown.
-Two limits therefore apply within each interval:
-\begin{itemize}
-\item $\ln P$ may rise by at most $c_{\rm max}\,\Delta\ell=50\times0.1=5$ across the interval (a factor of about 150 in
-pressure), well above the rises of ordinary stratifications;
-\item $\ln P$ may not exceed the upper edge of the table minus 1, and the slope must remain finite.
-\end{itemize}
-If a substep would violate either, the pressure at the lower level is set to the limited value
-$u_{k+1}=\min(u_k+c_{\rm max}\Delta\ell,\ u_{\max})$, and the integration of that interval stops there. In such an interval
-the column is \emph{not} hydrostatic, and the part of its geometric thickness that was not yet integrated is not added to the
-heights below (a known shortcoming). Below it, the hydrostatic integration continues from the limited pressure. The number
-of limited intervals is reported; results in those columns should be treated with care.
+interpolation of $\ln T$, part of that tenth of a decade in $\tau$ is filled with nearly transparent gas. With $P=g\,m$
+(the pressure is the weight of the column mass $m$ above), Eq.~\eqref{eq:hsetau} reads
+\begin{equation}
+\frac{d\ln m}{d\ln\tau}=\frac{\tau}{\kappa\,m}:
+\end{equation}
+collecting optical depth from transparent gas (small $\kappa$) genuinely requires a large column mass, and the pressure
+below a hot-over-cool interface rises steeply. The mode does not limit this rise: it is what hydrostatic equilibrium
+predicts for the given $T(\tau)$, and the step rule above resolves it. How large the rise comes out does depend on how the
+temperature is interpolated between the two levels, since the true structure between them is unknown.
+
+The heights stay well behaved: since $dz=-dm/\rho$ with $dm>0$ going down, the heights strictly decrease with depth, however
+steep the pressure rise.
+
+\subsection{Failure of a column}
+If the pressure leaves the equation-of-state table (it would exceed the upper edge of the table minus 1 in $\ln P$) or a
+slope becomes non-finite, the column is \emph{not} altered to make it fit: its pressures from that level down and all its
+heights are marked undefined, and the column is counted as failed. If any column fails, the run stops with an
+equation-of-state error, before the alignment (which would otherwise spread the undefined values to all columns).
 
 \subsection{The result of a column}
 After the last interval each column has $u_k$ and $z_k$ on all levels, with $z_1=0$. The heights are shifted so that $z=0$ at
-$\ell=0$, the value at $\ell=0$ being interpolated linearly in $\ell$ (or extrapolated from the end interval). If any level
-of any column ends with a non-finite pressure (outside the table), the run stops with an error.
+$\ell=0$, the value at $\ell=0$ being interpolated linearly in $\ell$ (or extrapolated from the end interval).
 
 \section{Where the columns sit: total-pressure alignment}\label{sec:align}
 \subsection{Magnetic pressure}
@@ -244,15 +253,19 @@ $\tau_{500}=1$ is zero. This is only a choice of origin.
 The mode contains no global iteration. Its convergence criteria are local:
 \begin{itemize}
 \item the top pressure: change of $u$ below $10^{-10}$ in the fixed-point iteration of Eq.~\eqref{eq:top};
-\item the substep length: change of $\ln P$ at most 0.05 per Heun substep;
-\item the pressure rise limit and the table edge (Sect.~\ref{sec:cap}), counted and reported.
+\item the substep length: $\ln P$ changes by at most about 0.05 at the slope of the start and 0.1 at the slope of the end of
+every Heun substep;
+\item every pressure stays inside the equation-of-state table; otherwise the column fails and the run stops
+(Sect.~\ref{sec:num}).
 \end{itemize}
 Every column is independent until the alignment, which needs one global number (the median reference total pressure)
-and the gauge, which needs one global mean.
+and the gauge, which needs one global mean. Finally the returned fields are checked: all values finite, $P$, $\rho$ and
+$\chi$ positive, every evaluated state inside the table, and in every column the heights strictly decreasing with depth.
+The first failed check, if any, is reported.
 
 \section{Three dimensions: what the result does and does not satisfy}
 \begin{itemize}
-\item \textbf{Vertical:} every column obeys $dP/d\tau=g/\kappa$ (hydrostatic equilibrium), except in limited intervals.
+\item \textbf{Vertical:} every column obeys $dP/d\tau=g/\kappa$ (hydrostatic equilibrium) to the accuracy of the integration.
 \item \textbf{Horizontal:} the total pressure of all columns is equal at $z=0$ only. At other heights neighbouring columns
 generally have different total pressures, so a horizontal force remains; the field's tension is not included at all. This
 mode is therefore not a three-dimensional equilibrium. Imposing horizontal force balance at all heights, together with the
@@ -267,8 +280,8 @@ but any later use of the field should keep it in mind.
 \begin{enumerate}
 \item Read $\ell_k$, $x$, $y$, $T$, $\B$; load the equation-of-state table.
 \item For every column independently: find $P_1=g\tau_1\rho/\chi$ by damped fixed-point iteration; integrate $du/ds=g\tau
-q/\chi$ and $dz/ds=-\tau/\chi$ downward with Heun substeps ($\Delta\ln P\le0.05$), $\ln T$ linear in $\ln\tau$, limiting the
-rise of $\ln P$ to $c_{\rm max}\Delta\ell$ per interval; shift so that $z=0$ at $\tau=1$.
+q/\chi$ and $dz/ds=-\tau/\chi$ downward with Heun substeps sized by the slope at both ends, $\ln T$ linear in $\ln\tau$; a column
+whose pressure leaves the table fails the run; shift so that $z=0$ at $\tau=1$.
 \item Compute the median total pressure on the deepest level; shift every column so that its total pressure equals it at
 $z=0$ (extrapolating below the grid where needed).
 \item Shift all columns so that the mean height of $\tau_{500}=1$ is zero.

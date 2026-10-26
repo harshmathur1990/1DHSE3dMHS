@@ -359,6 +359,12 @@ Requiring several consecutive small decreases avoids stopping on one accidentall
 three ended the iteration, together with $\Phi/\Phi_0$, the RMS of $|\R|\bar H$, the number of CG iterations, $\alpha$ and the
 number of capped components of every step.
 
+A small relative decrease does not by itself prove that a minimum has been reached. As a diagnostic, one further undamped
+Gauss--Newton step is computed at the returned state (but not taken), and its predicted relative decrease of $\Phi$, the
+\textbf{Gauss--Newton decrement} $-\delta u^{\top}\mathsf J^{\top}\mathsf W\R/\Phi$, is reported together with the gradient
+norm $\|\mathsf J^{\top}\mathsf W\R\|$ and the stop reason. A small decrement means that the linear model sees little left to
+gain.
+
 \section{\texorpdfstring{Above $z_{\rm cut}$}{Above z\_cut}}\label{sec:above}
 Above the solved region each column is integrated hydrostatically upward from the solved pressure at level $k_c$, with the
 trapezoidal rule on the grid levels:
@@ -366,7 +372,8 @@ trapezoidal rule on the grid levels:
 u_{k}-u_{k+1}+\frac{g\,(z_k-z_{k+1})}{2}\big(q(T_k,u_k)+q(T_{k+1},u_{k+1})\big)=0,\qquad k=k_c-1,\dots,1 .
 \end{equation}
 The equation is implicit in $u_k$ and is solved by Newton's method (at most 30 iterations, until $|\Delta u_k|<10^{-12}$). The
-result is a column-hydrostatic upper atmosphere whose pressure joins the solved one continuously at $z_{\rm cut}$.
+result is a column-hydrostatic upper atmosphere whose pressure joins the solved one continuously at $z_{\rm cut}$. If this
+continuation leaves the equation-of-state table anywhere, the result is marked invalid.
 
 \section{Optical depth}\label{sec:tau}
 With $P$ known everywhere, the table gives $\rho$ and the 500\,nm extinction $\chi_{500}$. The vertical optical depth
@@ -378,6 +385,12 @@ $\chi_{500}$ with the scale height $H_\chi=(z_1-z_2)/\ln(\chi_2/\chi_1)$ of the 
 (half a grid cell, $\tfrac12\chi_1(z_1-z_2)$, if $\chi$ does not decrease upward there or $H_\chi$ exceeds 5000\,km). The height
 of $\tau_{500}=1$ is interpolated linearly in $\log_{10}\tau$ between the bracketing levels. Since the opacity grows with
 density, any change of pressure moves it.
+
+\section{Validity checks}
+The solve is attempted only if every column of the starting state stayed inside the equation-of-state table. The returned
+fields are checked at the end: every state inside the table, all values finite, $P$, $\rho$ and $\chi_{500}$ positive, and
+$\tau_{500}$ strictly increasing downward in every column. The first failed check, if any, is reported with the number of
+points or columns concerned.
 
 \section{Three dimensions: what the result means}
 \begin{itemize}
@@ -398,8 +411,8 @@ of every column.
 \item On the levels $z\le z_{\rm cut}$: compute $\bar H_k$ and the weights; evaluate $\R$ and $\Phi$.
 \item Repeat: build the layer-median preconditioner; solve the normal equations by preconditioned CG; clamp the step to
 $|\delta u|\le2$; backtrack until $\Phi$ decreases; accept. Stop after three consecutive steps with
-$\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step lowers $\Phi$.
+$\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step lowers $\Phi$; report the Gauss--Newton decrement at the result.
 \item Integrate each column hydrostatically above $z_{\rm cut}$.
-\item Compute $\rho$, $\tau_{500}$ and $z(\tau_{500}=1)$; write the result.
+\item Compute $\rho$, $\tau_{500}$ and $z(\tau_{500}=1)$; check the fields; write the result.
 \end{enumerate}
 \end{document}
