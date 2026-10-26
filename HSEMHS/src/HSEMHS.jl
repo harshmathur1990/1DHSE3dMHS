@@ -6,7 +6,8 @@ Implements `HSE_MHS_FINAL_SPEC.md` following `HSE_MHS_IMPLEMENTATION.md`.
 
 Parallel model: MPI (2D horizontal process grid, full columns local, THREAD_FUNNELED)
 plus Julia threads inside each rank. Every run, including tests, goes through the MPI
-layer (E11); a single rank needs no `mpiexec`.
+layer (E11); a single rank needs no `mpiexec`. Embedding callers pass their own
+communicator to the in-memory API (`prepare_embedded`, Embedded.jl).
 """
 module HSEMHS
 
@@ -21,6 +22,7 @@ using Dates
 using Random
 using LinearAlgebra
 using Libdl
+using ProgressMeter: Progress, next!, finish!
 
 include("Constants.jl")
 include("Status.jl")
@@ -46,6 +48,7 @@ include("RunColumnHSE.jl")
 include("Slab.jl")
 include("PoissonZ.jl")
 include("PoissonTau.jl")
+include("Embedded.jl")
 include("RunModes.jl")
 include("Screening.jl")
 include("MHSResidual.jl")
@@ -60,8 +63,13 @@ include("MHSJointGN.jl")
 include("TauHeight.jl")
 include("Driver.jl")
 
-function __init__()
-    LinearAlgebra.BLAS.set_num_threads(1)
-end
+# The embedded API (Embedded.jl) for callers that own MPI and threading.
+export prepare_embedded, solve_embedded!, free_embedded!, snapshot, agree,
+       prepare_column_hse_z, prepare_column_hse_ltau, prepare_mhs_poisson_z, prepare_mhs_poisson_ltau,
+       ColumnZOptions, ColumnTauOptions, PoissonZOptions, PoissonTauOptions, option_errors,
+       EquilibriumStatus, EquilibriumResult, EmbeddedWorkspace, EMBEDDED_MODES, slab_range, init_parallel, free_parallel!
+
+# No __init__: loading HSEMHS changes no global state (BLAS and FFTW threads belong to the caller; the standalone entry
+# point scripts/run.jl sets BLAS to one thread itself).
 
 end # module

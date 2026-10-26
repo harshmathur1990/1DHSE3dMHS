@@ -74,3 +74,19 @@ end
     sm2 = H.tau1_summary(par, z0, f0)
     @test sm2.nvalid == par.NX * par.NY && sm2.min <= sm2.median <= sm2.max
 end
+
+@testset "tau-grid column HSE: a hot-over-cool level is resolved, not averaged" begin
+    # 8400 K over 3000 K within one 0.1 dex level: d ln P/d ln τ rises ~1000x across it. A step sized from the slope at
+    # the top alone averaged the bottom slope over the whole level (P × 1e9 in one column of a 504² MURaM run). The
+    # coarse-grid result must match the same column on a 10x finer grid (T linear in ln T in between, as integrated).
+    tab = H.load_table(joinpath(@__DIR__, "..", "cache", "eos_table_fullz.h5"))
+    lt = collect(-6.0:0.1:1.0); nt = length(lt)
+    # 6000 K above (low κ, so P at the hot level is high enough that its small slope takes the level in one step)
+    lT = log.([l <= -5.05 ? 6000.0 : l <= -4.95 ? 8400.0 : 2700.0 + 3000.0 * (l + 4.9) / 5.9 for l in lt])
+    fine = collect(-6.0:0.01:1.0); lTf = [H.PoissonTau.interp_lt(lT, lt, l) for l in fine]
+    lnP = zeros(nt); z = zeros(nt); lnPf = zeros(length(fine)); zf = zeros(length(fine))
+    @test H.PoissonTau.hse_tau!(lnP, z, lT, lt, tab, 274.0)
+    @test H.PoissonTau.hse_tau!(lnPf, zf, lTf, fine, tab, 274.0)
+    @test maximum(abs.(lnP .- lnPf[1:10:end])) < 0.05
+    @test exp(lnP[end]) < 1e5                                      # photospheric, not ~1e9 Pa
+end

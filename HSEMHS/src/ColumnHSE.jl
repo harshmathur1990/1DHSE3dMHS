@@ -140,6 +140,24 @@ function hse_column!(u::AbstractVector, m::AbstractVector, X::AbstractVector, z:
     return fl, nmax, ak
 end
 
+"""
+    column_state!(P, rho, ne, chi, tau, est, X, u, z, ak, eos, o) -> (tau_top_method, z_tau1)
+
+State of one integrated column (u = ln P from `hse_column!`, anchor node `ak`): P (exactly `o.P_ref` at the anchor
+node), ρ, nₑ and χ₅₀₀ [m⁻¹] from one `state` call per node on the EOS table, the EOS flags, τ₅₀₀ by `tau_column!` on z
+and z(τ = 1). Shared by `column_hse` (2-D blocks) and the embedded slab path, so both run identical arithmetic.
+"""
+function column_state!(P, rho, ne, chi, tau, est, X, u, z, ak, eos, o::HSEOpts)
+    @inbounds for k in eachindex(z)
+        lr, ln, lc, st = state(eos, X[k], u[k])
+        est[k] = st
+        P[k] = (k == ak) ? o.P_ref : exp(u[k])
+        rho[k] = exp(lr); ne[k] = exp(ln); chi[k] = exp(lc)
+    end
+    ttm = tau_column!(tau, chi, z; top = o.tau_top, H_max = o.H_max, mu = o.mu)
+    return ttm, z_tau1(tau, z)
+end
+
 """Output fields of column_hse (local blocks)."""
 struct ColumnHSEResult
     fields::Dict{String,Field}
@@ -180,6 +198,7 @@ function column_hse(par::ParCtx, grid::Grid, T::Field, eos, o::HSEOpts)
     nchunk = min(ncol, 8 * Threads.nthreads())
     Threads.@threads :static for ch in 1:nchunk
         Xc = zeros(NZ); u = zeros(NZ); m = zeros(NZ); chi = zeros(NZ); tau = zeros(NZ)
+        Pc = zeros(NZ); rc = zeros(NZ); nc = zeros(NZ); sc = zeros(UInt8, NZ)
         for c in ch:nchunk:ncol
             i = (c - 1) % b.nx + 1
             j = (c - 1) ÷ b.nx + 1
@@ -194,12 +213,11 @@ function column_hse(par::ParCtx, grid::Grid, T::Field, eos, o::HSEOpts)
                 continue                                     # outputs stay NaN
             end
             mtop = m[1]
+            ttm[i, j], zt1[i, j] = column_state!(Pc, rc, nc, chi, tau, sc, Xc, u, z, ak, eos, o)
             for k in 1:NZ
-                lr, ln, lc, st = state(eos, Xc[k], u[k])
-                est[i, j, k] = st
                 Tk = T[i, j, k]
-                P = (k == ak) ? o.P_ref : exp(u[k])
-                rho = exp(lr); ne = exp(ln)
+                P = Pc[k]; rho = rc[k]; ne = nc[k]
+                est[i, j, k] = sc[k]
                 F["Pgas"][i, j, k] = P
                 F["rho"][i, j, k] = rho
                 F["ne"][i, j, k] = ne
@@ -207,7 +225,6 @@ function column_hse(par::ParCtx, grid::Grid, T::Field, eos, o::HSEOpts)
                 F["nH_total"][i, j, k] = rho / mph
                 F["mu_bar"][i, j, k] = rho * K_B_WITT * Tk / (P * M_U_WITT)
                 F["colmass"][i, j, k] = m[k] - mtop
-                chi[k] = exp(lc)
                 F["chi500"][i, j, k] = chi[k]
             end
             acc = 0.0
@@ -216,12 +233,10 @@ function column_hse(par::ParCtx, grid::Grid, T::Field, eos, o::HSEOpts)
                 acc += 0.5 * (F["rho"][i, j, k] + F["rho"][i, j, k+1]) * (z[k] - z[k+1])
                 F["colmass_trap"][i, j, k+1] = acc
             end
-            ttm[i, j] = tau_column!(tau, chi, z; top = o.tau_top, H_max = o.H_max, mu = o.mu)
             for k in 1:NZ
                 F["tau500"][i, j, k] = tau[k]
                 F["logtau500"][i, j, k] = log10(tau[k])
             end
-            zt1[i, j] = z_tau1(tau, z)
         end
     end
     nfail = global_count(par, count(f -> f & COL_EOS_FAIL != 0, cst))

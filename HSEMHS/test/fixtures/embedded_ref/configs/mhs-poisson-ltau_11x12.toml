@@ -1,0 +1,17 @@
+[run]
+mode = "mhs-poisson-ltau"
+output = "test/fixtures/embedded_ref/mhs-poisson-ltau_11x12.h5"
+overwrite = true
+[input]
+file = "test/fixtures/embedded/ltau_11x12.h5"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+align = "ptot"
+[poisson]
+logtau_cut = -4.0
+max_steps = 30
+rtol = 1.0e-4
+dc_cap_m = 3.0e5

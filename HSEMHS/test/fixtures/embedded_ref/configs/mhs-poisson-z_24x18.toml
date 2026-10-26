@@ -1,0 +1,17 @@
+[run]
+mode = "mhs-poisson-z"
+output = "test/fixtures/embedded_ref/mhs-poisson-z_24x18.h5"
+overwrite = true
+[input]
+file = "test/fixtures/embedded/z_24x18.nc"
+[physics]
+g = "from_input"
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"
+[poisson]
+z_cut_m = 1.0e6
+max_steps = 30
+rtol = 1.0e-4

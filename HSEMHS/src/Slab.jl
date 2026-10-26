@@ -8,17 +8,32 @@
 module Slab
 
 using MPI, FFTW, LinearAlgebra, HDF5
+import ..HSEMHS as H
 import ..HSEMHS: ParCtx, init_parallel, ensure_mpi, rank0
 
-export slab_par, owned_x, sddx!, sddy!, gsum, gdot, gnorm, gmax, gmin, gcount, gquantiles, gmedians, SlabFFT,
+export slab_par, slab_check, owned_x, sddx!, sddy!, gsum, gdot, gnorm, gmax, gmin, gcount, gquantiles, gmedians, SlabFFT,
        fwd!, bwd!, coop_write, rprint
 
-"""Slab context for an NX × NY grid: every rank owns a contiguous range of x columns and all of y."""
+"""
+Message if an NX-column grid cannot be split into x slabs over `nr` ranks, else `nothing`. The smallest `block_range`
+slab is floor(NX/nr), so this is the exact condition for at least 2 columns per rank.
+"""
+slab_check(NX::Int, nr::Int) = NX ÷ nr >= 2 ? nothing : "$NX x columns cannot be split over $nr ranks (at least 2 per rank)"
+
+"""
+Slab context for an NX × NY grid on the parent communicator `comm`: every rank owns a contiguous range of x columns and
+all of y. The context owns a duplicate of `comm` (see `init_parallel`); release it with `free_parallel!`.
+"""
+function slab_par(comm::MPI.Comm, NX::Int, NY::Int, NZ::Int)
+    msg = slab_check(NX, MPI.Comm_size(comm))       # identical on every rank: no rank throws alone
+    msg === nothing || H.invalid(msg)
+    return init_parallel(comm, NX, NY, max(NZ, 3); px = MPI.Comm_size(comm), py = 1)
+end
+
+"""Standalone entry (file drivers): initialise MPI if needed and use `COMM_WORLD`."""
 function slab_par(NX::Int, NY::Int, NZ::Int)
     ensure_mpi()
-    nr = MPI.Comm_size(MPI.COMM_WORLD)
-    NX ÷ nr >= 2 || error("$NX x columns cannot be split over $nr ranks (at least 2 per rank)")
-    return init_parallel(NX, NY, max(NZ, 3); px = nr, py = 1)
+    return slab_par(MPI.COMM_WORLD, NX, NY, NZ)
 end
 
 """Global x indices owned by this rank."""

@@ -250,13 +250,20 @@ end
 
 Gauss–Newton Poisson step from the start pressure P0 (z, y, x slabs; z top first) with the Lorentz force fixed. Solves
 z ≤ zcut (the mean of ln P over the anchor cells, a Bool array like P0 or the bottom plane by default, stays that of
-P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u).
+P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u, reason, gn_decrement,
+grad_norm, cg_its, cg_rel, rms0, rms, phi0_zero, cont_bad): `reason` is :converged, :no_descent or :max_steps;
+`gn_decrement` the relative decrease of Φ predicted by one further Gauss–Newton step (a scale-free stationarity measure)
+and `grad_norm` = ‖Jᵀ W R‖ at the returned state; `cont_bad` the global number of non-finite pressures left by the
+hydrostatic continuation above zcut. The anchor and `ereg` terms act on the increment system only (they damp changes of
+the anchor-cell mean ln P per step; Φ has no anchor term). `S` reuses a cached SlabFFT; `rms_atol` > 0 accepts a start
+with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
 """
 function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
-                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing)
+                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing, S = nothing,
+                        rms_atol = 0.0, stationarity = true)
     nz, ny, nx = size(P0); NX = par.NX
     kc = findfirst(<=(zcut), z)
-    kc === nothing && error("z_cut = $zcut m lies below the grid")
+    kc === nothing && H.invalid("z_cut = $zcut m lies below the grid")
     R = kc:nz; n = length(R)
     zr = z[R]
     h = zr[1:end-1] .- zr[2:end]
@@ -286,7 +293,9 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
     nyh = ny ÷ 2 + 1
     sy2 = [sin(2π * (j - 1) / ny)^2 / dy^2 for j in 1:nyh]
     sx2 = [sin(2π * fftfreq(NX)[i])^2 / dx^2 for i in 1:NX]
-    pr = Prob(par, SlabFFT(par, n, ny), tab, g, n, ny, nx, NX, dx, dy, h, wc, wf, ereg, Aanc, anc, acnt, lT,
+    S === nothing && (S = SlabFFT(par, n, ny))
+    (S.nk, S.ny, S.nxl) == (n, ny, nx) || error("solve_pressure: cached SlabFFT has sizes $((S.nk, S.ny, S.nxl)), expected $((n, ny, nx))")
+    pr = Prob(par, S, tab, g, n, ny, nx, NX, dx, dy, h, wc, wf, ereg, Aanc, anc, acnt, lT,
               Lx[R, :, :], Ly[R, :, :], Lz[R, :, :], q, qd, ex,
               similar(u), similar(u), similar(u), similar(u), zeros(n - 1, ny, nx), sx2, sy2, zeros(n), zeros(n - 1))
 
@@ -296,6 +305,14 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
     logf(@sprintf("start: Φ %.6e, RMS |R| H̄ %.4e over %d layers (z %.3f … %.3f Mm)", Φ, sqrt(Φ / Wtot), n, zr[1] / 1e6, zr[end] / 1e6))
     δ = similar(u); rhs = similar(u); ut = similar(u); qt = similar(u); qdt = similar(u); ext = similar(u)
     steps = 0; nsmall = 0
+    reason = :max_steps
+    phi0_zero = Φ0 == 0
+    start_ok = phi0_zero || sqrt(Φ0 / Wtot) <= rms_atol
+    if start_ok
+        reason = :converged
+        logf("start state already within rms_atol: no steps")
+        maxouter = 0
+    end
     for outer in 1:maxouter
         t0 = time()
         setprec!(pr)
@@ -315,6 +332,7 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
         if !(Φt < Φ)
             resid!(pr, Rx, Ry, Rz, u, q, ex)
             logf(@sprintf("step %2d: no decrease along the step (CG %d its, rel %.1e); stopping", outer, its, rel))
+            reason = :no_descent
             break
         end
         rel_dec = (Φ - Φt) / Φ
@@ -322,7 +340,19 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
         logf(@sprintf("step %2d: Φ %.6e (Φ/Φ₀ %.3e, ΔΦ/Φ %.2e), RMS |R| H̄ %.4e | CG %d its (rel %.1e), α %.3g, capped %d, max|αδu| %.3f, %.1f s",
                      outer, Φ, Φ / Φ0, rel_dec, sqrt(Φ / Wtot), its, rel, α, ncap, α * gmax(par, maximum(abs, δ)), time() - t0))
         nsmall = rel_dec < rtol ? nsmall + 1 : 0
-        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps", rtol, nsmall)); break)
+        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps", rtol, nsmall));
+                               reason = :converged; break)
+    end
+    # stationarity at the returned u (Rx, Ry, Rz and q, qd, ex belong to it): undamped Gauss–Newton step and its predicted
+    # relative decrease. Diagnostics only: u is not changed.
+    gnd = start_ok ? 0.0 : NaN; gn = start_ok ? 0.0 : NaN; sits = 0; srel = start_ok ? 0.0 : NaN
+    if stationarity && !start_ok
+        setprec!(pr)
+        JtW!(pr, rhs, Rx, Ry, Rz); rhs .*= -1
+        gn = gnorm(par, rhs)
+        sits, srel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit)
+        gnd = gdot(par, δ, rhs) / Φ
+        logf(@sprintf("stationarity: Gauss–Newton decrement %.3e, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd, gn, sits, srel))
     end
 
     # ---- full column: solved region below z_cut, hydrostatic integration above it ----
@@ -343,7 +373,10 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
             end
         end
     end
-    return (P = Pfull, Φ0 = Φ0, Φ = Φ, steps = steps, kc = kc, u0 = u0, u = u)
+    cont_bad = gcount(par, count(!isfinite, @view Pfull[1:kc-1, :, :]))
+    return (P = Pfull, Φ0 = Φ0, Φ = Φ, steps = steps, kc = kc, u0 = u0, u = u, reason = reason, gn_decrement = gnd,
+            grad_norm = gn, cg_its = sits, cg_rel = srel, rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot),
+            phi0_zero = phi0_zero, cont_bad = cont_bad)
 end
 
 """ρ, τ₅₀₀ (exp_tail top closure) and z(τ₅₀₀ = 1) for every column of (ln T, P) on the height grid z (top first)."""
