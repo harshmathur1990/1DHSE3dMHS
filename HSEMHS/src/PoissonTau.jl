@@ -566,11 +566,13 @@ a scale-free stationarity measure), the gradient norm `grad_norm` = ‖Jᵀ W R�
 `cg_rel`), the final damping `lm_mu`, `rms0`/`rms` = √(Φ/W) and `phi0_zero`. `S` reuses a cached SlabFFT for these
 grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps. `mu` = cos θ
 (lt is τ along the line of sight) and `slant` = (t_x, t_y) of the inclined geometry ((0, 0): vertical columns).
+`on_step(s, u, z, info)` (diagnostics) is called after every accepted step with the state (z not yet gauged) and
+`info = (phi, pred, cg_its, cg_rel, alpha, seconds)`; `pred` is the step's predicted relative decrease δ·(−JᵀWR)/Φ.
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
                    cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
-                   rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0))
+                   rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing)
     nt, ny, nx = size(lT); NX = par.NX
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant)
     kc, n1 = pr.kc, pr.n1
@@ -611,11 +613,12 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     for s in 1:max_steps
         t0 = time()
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
-        accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0
+        accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0; pred = NaN
         for tries in 1:8
             pr.ereg = ereg0 .+ μ .* Dlm
             setprec!(pr)
             its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit)
+            pred = gdot(par, δ, rhs) / Φ
             mu_ = gmax(par, maximum(abs, @view δ[2:end, :, :])); mc = gmax(par, maximum(abs, @view δ[1, :, :]))
             sc = min(1.0, du_cap / mu_, dc_cap / mc)
             α = sc
@@ -641,8 +644,10 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         u .= ut; c .= ct; Φ = Φt; steps = s
         dzmax = α * gmax(par, maximum(abs, @view δ[1, :, :]))
         nsmall = dec < rtol ? nsmall + 1 : 0
-        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e), RMS %.4e | CG %d its (rel %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
-                      s, Φ / Φ0, dec, sqrt(Φ / Wtot), its, rel, α, μ, dzmax / 1e3, zq()..., time() - t0))
+        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e), RMS %.4e | CG %d its (rel %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
+                      s, Φ / Φ0, dec, pred, sqrt(Φ / Wtot), its, rel, α, μ, dzmax / 1e3, zq()..., time() - t0))
+        on_step === nothing || on_step(s, u, pr.z, (phi = Φ, pred = pred, cg_its = its, cg_rel = rel, alpha = α,
+                                                    seconds = time() - t0))
         nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps (last max|δc| %.1f m)", rtol, nsmall, dzmax));
                                reason = :converged; break)
     end
