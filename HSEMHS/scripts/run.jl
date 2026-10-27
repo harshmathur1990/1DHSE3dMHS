@@ -19,6 +19,11 @@ catch e
     MPI.Finalized() || MPI.Finalize()
     exit(4)
 end
+if cfg.run.mode == "full-mhs-z" && (cfg.view.mu != 1.0 || cfg.tau.mu != 1.0)   # τ there is vertical (TAU_MU = 1)
+    MPI.Comm_rank(MPI.COMM_WORLD) == 0 && println(stderr, "full-mhs-z takes no viewing angle (view.mu and tau.mu must be 1)")
+    MPI.Finalized() || MPI.Finalize()
+    exit(4)
+end
 code = if cfg.run.mode == "full-mhs-z"
     F = cfg.full_mhs
     ENV["MHS_INPUT"] = abspath(cfg.input.file)

@@ -26,8 +26,9 @@ function hse_opts_from_config(cfg::Config, spec::InputSpec, g)
         Float64(C.P_ref), "config"
     end
     T = cfg.tau
+    v = column_with_view(ColumnZOptions(P_ref = P_ref, mu = Float64(T.mu)), config_view(cfg))
     o = HSEOpts(anchor, P_ref, Float64(C.z_ref_m), g, C.n_sub, C.adapt, C.rk_tol, C.n_sub_max,
-                Symbol(T.top), Float64(T.H_max_m), Float64(T.mu))
+                Symbol(T.top), Float64(T.H_max_m), v.mu)
     return o, src
 end
 
@@ -51,6 +52,19 @@ function run_column_hse(cfg::Config)
     T = read_field(spec, par, I.temperature, :temperature; positive = true)
     logm("read temperature; EOS table $(cfg.eos.table_file) (T_sw = $(eos.T_sw) K)")
     res = column_hse(par, grid, T, eos, o)
+    vw = config_view(cfg); tsl = slant(vw)
+    if tsl != (0.0, 0.0) && res.status == converged          # τ along inclined rays (ViewTau.jl); z(τ=1) on footprints
+        b = par.block; F0 = res.fields
+        chi = [F0["chi500"][i, j, k] for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx]
+        tau = similar(chi); zt = zeros(b.ny, b.nx); tm = zeros(UInt8, b.ny, b.nx)
+        inclined_tau!(tau, zt, tm, par, chi, grid.z.s, spec.x[2] - spec.x[1], spec.y[2] - spec.y[1], o.mu, tsl;
+                      top = o.tau_top, H_max = o.H_max)
+        for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx
+            F0["tau500"][i, j, k] = tau[k, j, i]; F0["logtau500"][i, j, k] = log10(tau[k, j, i])
+        end
+        res.z_tau1 .= permutedims(zt); res.tau_top_method .= permutedims(tm)
+        logm(@sprintf("τ along inclined rays: μ %.4f, azimuth %.1f°, t = (%.4f, %.4f)", o.mu, vw.azimuth_deg, tsl...))
+    end
     logm("integrated: " * join(["$k = $v" for (k, v) in sort(collect(res.stats))], ", "))
     F = res.fields
     Rx, Ry, Rz = column_residual(par, ops, F["Pgas"], F["rho"], g)
@@ -95,8 +109,10 @@ function run_column_hse(cfg::Config)
                                                                          o.anchor == :top ? spec.z[1] : o.z_ref),
         "integrator" => Dict{String,Any}("scheme" => "RK4, ln T linear in z", "n_sub" => o.n_sub,
                                          "adapt" => o.adapt, "rk_tol" => o.rk_tol, "n_sub_max" => o.n_sub_max),
-        "tau" => Dict{String,Any}("convention" => o.mu == 1.0 ? "vertical" : "per_column",
+        "tau" => Dict{String,Any}("convention" => o.mu == 1.0 ? "vertical" : tsl != (0.0, 0.0) ? "inclined_rays" : "per_column",
                                   "top_method" => String(o.tau_top), "H_max_m" => o.H_max, "mu" => o.mu,
+                                  "azimuth_deg" => vw.azimuth_deg, "geometry" => String(vw.geometry),
+                                  "z_tau1" => tsl != (0.0, 0.0) ? "on ray footprints (x, y at z = 0)" : "per column",
                                   "wavelength_A" => WL500, "extinction" => "absorption + scattering (counted once)"),
         "eos" => Dict{String,Any}("table_file" => abspath(cfg.eos.table_file), "table_sha256" => table_sha256(eos),
                                   "T_sw" => eos.T_sw, "hot_branch" => eos.hot_branch,

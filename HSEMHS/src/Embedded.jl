@@ -3,7 +3,7 @@
 # or finalises MPI, touches COMM_WORLD, sets BLAS/FFTW threads, reads or writes files (except loading an EOS table when
 # given a path) or prints (logging goes to a caller-supplied `logf`).
 #
-#     ws  = prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson)   # collective, once
+#     ws  = prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson, view)   # collective, once
 #     res = solve_embedded!(ws, lnT, Bx, By, Bz)                                # collective, every evaluation
 #     free_embedded!(ws)                                                        # collective, releases communicators
 #
@@ -69,6 +69,53 @@ Base.@kwdef struct PoissonTauOptions
     lm_mu0::Float64 = 0.0
     rms_atol::Float64 = 0.0
 end
+
+"""
+Viewing angle (design/tau/VIEWING_ANGLE_DESIGN.md): `mu` = cos θ of the line of sight, `azimuth_deg` = φ from +x toward
++y, `geometry` :plane_parallel (vertical columns, τ along the line of sight = τ_vertical/μ) or :inclined (slanted rays
+x = ξ + t_x z, y = η + t_y z through each footprint (ξ, η), t = tan θ (cos φ, sin φ)). τ-mode inputs then hold one line
+of sight per footprint on a common log10 τ_LOS axis. The defaults (μ = 1) are the vertical view.
+"""
+Base.@kwdef struct ViewOptions
+    mu::Float64 = 1.0
+    azimuth_deg::Float64 = 0.0
+    geometry::Symbol = :plane_parallel     # :plane_parallel | :inclined
+end
+
+"""Slant vector (t_x, t_y) = tan θ (cos φ, sin φ) of the inclined geometry; (0, 0) for plane-parallel or μ = 1."""
+slant(v::ViewOptions) = v.geometry != :inclined || v.mu == 1.0 ? (0.0, 0.0) :
+                        (s = sqrt(1 - v.mu^2) / v.mu; (s * cosd(v.azimuth_deg), s * sind(v.azimuth_deg)))
+
+function option_errors(v::ViewOptions)
+    e = String[]
+    push_if!(e, isfinite(v.mu) && 0 < v.mu <= 1, "view mu must be in (0, 1], got $(v.mu)")
+    push_if!(e, isfinite(v.azimuth_deg), "view azimuth_deg must be finite")
+    push_if!(e, v.geometry in (:plane_parallel, :inclined), "view geometry must be :plane_parallel or :inclined, got :$(v.geometry)")
+    return e
+end
+
+"""Height-mode column options with the view's μ (a ColumnZOptions mu ≠ 1 must agree with a view mu ≠ 1)."""
+function column_with_view(o::ColumnZOptions, v::ViewOptions)
+    v.mu == 1.0 && return o
+    (o.mu == 1.0 || o.mu == v.mu) || invalid("column mu = $(o.mu) conflicts with view mu = $(v.mu); give one of them")
+    d = Dict{Symbol,Any}(f => getfield(o, f) for f in fieldnames(ColumnZOptions)); d[:mu] = v.mu
+    return ColumnZOptions(; d...)
+end
+
+"""ViewOptions from the [view] section (validated)."""
+function config_view(cfg::Config)
+    V = cfg.view
+    V.geometry in ("plane_parallel", "inclined") || invalid("view.geometry must be plane_parallel or inclined, got \"$(V.geometry)\"")
+    v = ViewOptions(mu = Float64(V.mu), azimuth_deg = Float64(V.azimuth_deg), geometry = Symbol(V.geometry))
+    e = option_errors(v)
+    isempty(e) || invalid(join(e, "; "))
+    return v
+end
+
+"""Attributes recording the viewing angle in output files."""
+view_attrs(v::ViewOptions) = Dict{String,Any}("view_mu" => v.mu, "view_azimuth_deg" => v.azimuth_deg,
+                                              "view_geometry" => String(v.geometry), "view_tx" => slant(v)[1],
+                                              "view_ty" => slant(v)[2])
 
 hse_opts(o::ColumnZOptions, g) = HSEOpts(o.anchor, o.P_ref, o.z_ref, g, o.n_sub, o.adapt, o.rk_tol, o.n_sub_max,
                                          o.tau_top, o.H_max, o.mu)
@@ -264,6 +311,7 @@ mutable struct EmbeddedWorkspace
     res::EquilibriumResult
     logf::Any
     progress::Bool
+    view::ViewOptions
 end
 
 height_mode(mode) = mode in (:column_hse_z, :mhs_poisson_z)
@@ -284,17 +332,20 @@ function uniform_spacing(name, v)
 end
 
 """
-    prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson=nothing, logf=s->nothing, progress=false) -> EmbeddedWorkspace
+    prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson=nothing, logf=s->nothing, progress=false,
+                     view=ViewOptions()) -> EmbeddedWorkspace
 
 Collective over `comm`. `mode` ∈ $(EMBEDDED_MODES). `axis` is the height axis z [m] (top first, decreasing) for the
 height modes or the log10 τ500 axis (increasing) for the τ modes; `x`, `y` are the global, uniform, increasing horizontal
 axes [m]; `eos` an EOSTable or the path of one (loaded once per rank); `g` [m s⁻²]; `column` a ColumnZOptions (height
 modes) or ColumnTauOptions (τ modes); `poisson` a PoissonZOptions / PoissonTauOptions for the Poisson modes. The slab
 context duplicates `comm`; release it with `free_embedded!`. `progress = true` (typically on one rank) shows a
-progress bar over this rank's columns during column HSE.
+progress bar over this rank's columns during column HSE. `view` (a ViewOptions) is the viewing angle, fixed for the
+workspace: in the τ modes the axis is then τ along the line of sight (plane-parallel or inclined geometry); in the height
+modes μ and the geometry only change the returned τ (τ_LOS at the grid points; z_tau1 on the ray footprints).
 """
 function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, column, poisson = nothing,
-                          logf = s -> nothing, progress::Bool = false)
+                          logf = s -> nothing, progress::Bool = false, view::ViewOptions = ViewOptions())
     # stage 1: local checks and the EOS table, agreed before any collective construction
     local_state = agree(comm, "prepare_embedded($mode)") do
         mode in EMBEDDED_MODES || invalid("mode must be one of $(EMBEDDED_MODES), got :$mode")
@@ -310,7 +361,10 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         end
         dx = uniform_spacing("x", xs); dy = uniform_spacing("y", ys)
         isfinite(g) && g > 0 || invalid("gravity g must be finite and positive, got $g")
-        errs = option_errors(column, ax)
+        verrs = option_errors(view)
+        isempty(verrs) || invalid(join(verrs, "; "))
+        col = height_mode(mode) && column isa ColumnZOptions ? column_with_view(column, view) : column
+        errs = option_errors(col, ax)
         if poisson_mode(mode)
             want = height_mode(mode) ? PoissonZOptions : PoissonTauOptions
             poisson isa want || invalid("mode :$mode takes poisson::$want")
@@ -323,9 +377,9 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         msg === nothing || invalid(msg)
         tab = eos isa EOSTable ? eos : eos isa AbstractString ? load_table(eos) :
               invalid("eos must be an EOSTable or a table path")
-        (ax, xs, ys, dx, dy, tab)
+        (ax, xs, ys, dx, dy, tab, col)
     end
-    ax, xs, ys, dx, dy, tab = local_state
+    ax, xs, ys, dx, dy, tab, col = local_state
     # stage 2: collective construction (all ranks reach this point together)
     par = slab_par(comm, length(xs), length(ys), length(ax))
     b = par.block
@@ -335,7 +389,8 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         fft = SlabFFT(par, n, length(ys))
     end
     res = EquilibriumResult(length(ax), length(ys), b.nx)
-    return EmbeddedWorkspace(mode, par, ax, xs, ys, dx, dy, tab, Float64(g), column, poisson, fft, res, logf, progress)
+    return EmbeddedWorkspace(mode, par, ax, xs, ys, dx, dy, tab, Float64(g), col, poisson, fft, res, logf, progress,
+                             view)
 end
 
 """Release the communicators of the workspace's slab context (collective). The workspace cannot be used afterwards."""
@@ -396,6 +451,8 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
         st.valid && poisson_ltau!(ws, lT, bx, by, bz, st)
     end
     st.valid && check_fields!(ws, st)
+    st.stats["view_mu"] = ws.view.mu; st.stats["view_azimuth_deg"] = ws.view.azimuth_deg
+    st.stats["view_geometry"] = String(ws.view.geometry)
     st.status = !st.valid ? eos_failure : st.reason == :converged ? converged :
                 st.reason == :max_steps ? max_iter : stalled
     st.seconds = time() - t0
@@ -455,6 +512,7 @@ function column_z!(ws::EmbeddedWorkspace, lT, st)
         res.z[k, j, i] = z[k]
     end
     nfail = gcount(par, count(f -> f & COL_EOS_FAIL != 0, cst))
+    nfail == 0 && inclined_state!(ws, ttm)
     st.stats["columns_eos_failed"] = nfail
     st.stats["columns_rk_refined"] = gcount(par, count(f -> f & COL_RK_REFINED != 0, cst))
     st.stats["columns_rk_tol_not_met"] = gcount(par, count(f -> f & COL_RK_TOL_NOT_MET != 0, cst))
@@ -485,6 +543,18 @@ function height_state!(ws::EmbeddedWorkspace, lT)
             res.z_tau1[j, i] = z_tau1(tc, z)
         end
     end
+    inclined_state!(ws, zeros(UInt8, ny, nx))
+end
+
+"""Height modes, inclined view: τ₅₀₀ along the slanted rays (ViewTau.jl) replaces the vertical-column τ; z_tau1 and the
+top-closure methods `ttm` are then those of the rays through each footprint. No-op for vertical columns."""
+function inclined_state!(ws::EmbeddedWorkspace, ttm)
+    t = slant(ws.view)
+    t == (0.0, 0.0) && return
+    res = ws.res; o = ws.column
+    inclined_tau!(res.tau500, res.z_tau1, ttm, ws.par, res.chi500, ws.axis, ws.dx, ws.dy, ws.view.mu, t;
+                  top = o.tau_top, H_max = o.H_max)
+    res.logtau500 .= log10.(res.tau500)
 end
 
 """Poisson step on the height grid from the column-HSE start in ws.res."""
@@ -528,7 +598,7 @@ end
 function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     res = ws.res; o = ws.column
     lnP, z, nfailed, Pt, nb, nbad = PoissonTau.column_hse_tau(ws.par, ws.axis, lT, bx, by, bz, ws.eos, ws.g;
-                                                              align = o.align, progress = ws.progress)
+                                                              align = o.align, progress = ws.progress, mu = ws.view.mu)
     res.lnP .= lnP; res.z .= z; res.Pgas .= exp.(lnP)
     st.stats["columns_failed"] = nfailed
     st.stats["align_total_pressure_Pa"] = Pt
@@ -550,7 +620,7 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
                                                         rtol = o.rtol, n_consec = o.n_consec, cg_maxit = o.cg_maxit,
                                                         cg_tol = o.cg_tol, dc_cap = o.dc_cap_m, du_cap = o.du_cap,
                                                         lm_mu0 = o.lm_mu0, logf = ws.logf, S = ws.fft,
-                                                        rms_atol = o.rms_atol)
+                                                        rms_atol = o.rms_atol, mu = ws.view.mu, slant = slant(ws.view))
     if info.reason == :eos_out_of_envelope
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
         return fail!(st, :eos_out_of_envelope, 1, "the τ-grid Poisson start state lies outside the EOS table")
@@ -577,10 +647,11 @@ function check_fields!(ws::EmbeddedWorkspace, st)
     nnp > 0 && return fail!(st, :nonpositive, nnp, "$nnp non-positive pressures, densities or opacities")
     nk, ny, nx = size(res.z)
     nfold = 0
+    vertical_tau = !height_mode(ws.mode) || slant(ws.view) == (0.0, 0.0)  # inclined: τ_LOS need not grow down a grid column
     @inbounds for i in 1:nx, j in 1:ny
         ok = true
         for k in 1:nk-1
-            (res.z[k+1, j, i] < res.z[k, j, i] && res.tau500[k+1, j, i] > res.tau500[k, j, i]) || (ok = false)
+            (res.z[k+1, j, i] < res.z[k, j, i] && (!vertical_tau || res.tau500[k+1, j, i] > res.tau500[k, j, i])) || (ok = false)
         end
         ok || (nfold += 1)
     end

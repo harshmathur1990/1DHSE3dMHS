@@ -39,14 +39,18 @@ function tau_setup(cfg, tag, mode::Symbol)
               PoissonTauOptions(logtau_cut = P.logtau_cut, max_steps = P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
                                 cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0) : nothing
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] %s: %s", time() - t0, tag, s)); flush(stdout))
+    vw = config_view(cfg)
+    cfg.tau.mu == 1.0 || invalid("tau.mu applies to the height modes only; τ modes take view.mu")
     ws = prepare_embedded(MPI.COMM_WORLD, mode; axis = lt, x = x, y = y, eos = tab, g = g, column = column,
-                          poisson = poisson, logf = logm0)
+                          poisson = poisson, logf = logm0, view = vw)
     par = ws.par
     logm(s) = rprint(par, @sprintf("[%7.1fs] %s: %s", time() - t0, tag, s))
     _, _, _, T, Bx, By, Bz = PoissonTau.read_tau_input(par, path; xname = cfg.input.x, yname = cfg.input.y)
     logm(@sprintf("input %s: %d levels log10 τ500 %.2f … %.2f, %d × %d columns, dx %.2f km, g %.2f; ranks %d (x slabs), threads %d",
                   path, nt, lt[1], lt[end], NX, NY, dx / 1e3, g, par.nranks, Threads.nthreads()))
-    return (; ws, par, logm, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = cfg.eos.table_file)
+    vw.mu == 1.0 || logm(@sprintf("view: μ %.4f (θ %.2f°), azimuth %.1f°, geometry %s; τ is along the line of sight",
+                                    vw.mu, acosd(vw.mu), vw.azimuth_deg, vw.geometry))
+    return (; ws, par, logm, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = cfg.eos.table_file, view = vw)
 end
 
 """log10 τ500, x and y [m] of a τ-grid input (both layouts of `PoissonTau.read_tau_input`)."""
@@ -77,6 +81,7 @@ function write_tau_grid(s, out, lt, z, lnP, attrs)
                          "g" => s.g, "mpi_ranks" => s.par.nranks, "threads" => Threads.nthreads(),
                          "units" => "SI: z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, τ), h5py (τ, y, x)")
     merge!(a, attrs)
+    merge!(a, view_attrs(s.view))
     coop_write(s.par, out, slabs, small, a)
     zq = gquantiles(s.par, z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3
     s.logm(@sprintf("z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km; wrote %s", zq..., out))
@@ -149,8 +154,9 @@ function run_mhs_poisson_z(cfg::Config)
     poisson = PoissonZOptions(z_cut_m = P.z_cut_m, max_steps = P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
                               anchor_w = P.anchor_w, cg_tol = P.cg_tol, cg_maxit = P.cg_maxit)
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] mhs-poisson-z: %s", time() - t0, s)); flush(stdout))
+    vw = config_view(cfg)
     ws = prepare_embedded(MPI.COMM_WORLD, :mhs_poisson_z; axis = spec.z, x = spec.x, y = spec.y, eos = eos, g = g,
-                          column = column, poisson = poisson, logf = logm0)
+                          column = column, poisson = poisson, logf = logm0, view = vw)
     par = ws.par; b = par.block
     logm(s) = rprint(par, @sprintf("[%7.1fs] mhs-poisson-z: %s", time() - t0, s))
     try
@@ -180,6 +186,7 @@ function run_mhs_poisson_z(cfg::Config)
                              "g" => g, "mpi_ranks" => par.nranks, "threads" => Threads.nthreads(),
                              "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement,
                              "units" => "SI: Pgas Pa, rho kg m-3, T K, B T, z m (top first); arrays Julia (x, y, z), h5py (z, y, x)")
+        merge!(a, view_attrs(vw))
         coop_write(par, out, slabs, small, a)
         logm("wrote $out")
     finally

@@ -15,6 +15,12 @@
 # (curvilinear derivatives); the Jacobian includes L's dependence on the heights. CG on the normal equations,
 # preconditioned per horizontal Fourier mode by the layer-median operator A + |k|² B, diagonalised once per step.
 # Arrays are (τ, y, x) slabs in x; every reduction is global (Slab.jl).
+#
+# Viewing angle (design/tau/VIEWING_ANGLE_DESIGN.md): the axis is τ along the line of sight, μ = cos θ. Heights use
+# dz = −μ τ/χ d ln τ in both geometries, and column HSE along the ray has d ln P/d ln τ = μ g τ ρ/(χ P). The inclined
+# geometry treats each column as a slanted ray x = ξ + t_x z, y = η + t_y z (t = tan θ (cos φ, sin φ)) at its footprint
+# (ξ, η): ∂_z|_(x,y) = ∂_ray − t·∇_h in the Lorentz force, and the column balance is the one along the ray,
+# W_n = g ρ/P − (L_z + t·L_h)/P in place of W. Plane-parallel (or μ = 1) has t = 0, i.e. the vertical-column code.
 module PoissonTau
 
 using MPI, FFTW, LinearAlgebra, Printf, HDF5
@@ -48,19 +54,19 @@ a large column mass per unit τ. Steps are limited by the slope at both ends (He
 averaged over a whole level. Returns true, or false if the pressure leaves the EOS table (or the EOS fails) in some
 interval; then lnP and z are NaN from that level down and the column is reported as failed.
 """
-function hse_tau!(lnP, z, lT, lt, tab, g)
+function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0)
     nt = length(lt)
     τ = exp.(LN10 .* lt)
     lp = log(1e2)
     for _ in 1:200                                                 # top: P = g τ ρ/χ (κ constant above the top level)
         q, χ = q_chi(tab, lT[1], lp)
-        new = log(g * τ[1] * q / χ) + lp
+        new = log(mu * g * τ[1] * q / χ) + lp
         abs(new - lp) < 1e-10 && break
         lp = 0.5 * lp + 0.5 * new
     end
     lnP[1] = lp
     lPmax = tab.Y[end] - 1.0
-    rhs(lTs, lτ, l) = (s = q_chi(tab, lTs, l); (g * exp(lτ) * s[1] / s[2], -exp(lτ) / s[2]))
+    rhs(lTs, lτ, l) = (s = q_chi(tab, lTs, l); (mu * g * exp(lτ) * s[1] / s[2], -mu * exp(lτ) / s[2]))
     z[1] = 0.0
     isfinite(lp) || (lnP .= NaN; z .= NaN; return false)
     for k in 1:nt-1
@@ -130,12 +136,12 @@ function gauge!(par, z, lt)
 end
 
 """
-Column HSE in τ for every owned column, aligned and gauged. Returns (lnP, z, nfailed, Pref_total, nbelow, nbad):
+Column HSE in τ for every owned column, aligned and gauged; `mu` = cos θ of the line of sight (τ is τ_LOS). Returns (lnP, z, nfailed, Pref_total, nbelow, nbad):
 nfailed is the global number of columns whose pressure left the EOS table, nbad the global number of non-finite ln P;
 when nbad > 0 the alignment and gauge are skipped (they would spread the NaNs) and every rank returns the same values,
 so callers decide collectively.
 """
-function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false)
+function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false, mu = 1.0)
     nt, ny, nx = size(lT)
     lnP = zeros(nt, ny, nx); z = zeros(nt, ny, nx)
     nfail = Threads.Atomic{Int}(0)
@@ -143,7 +149,8 @@ function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progres
                    enabled = progress)
     Threads.@threads for i in 1:nx
         for j in 1:ny
-            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g) || Threads.atomic_add!(nfail, 1)
+            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g; mu = mu) ||
+                Threads.atomic_add!(nfail, 1)
             next!(bar)
         end
     end
@@ -217,7 +224,10 @@ mutable struct TP
     px::Array{Float64,3}; pXx::Array{Float64,3}; pYx::Array{Float64,3}
     py::Array{Float64,3}; pXy::Array{Float64,3}; pYy::Array{Float64,3}
     zζ::Array{Float64,3}; zX::Array{Float64,3}; zY::Array{Float64,3}; zden::Array{Float64,3}
+    mu::Float64; tx::Float64; ty::Float64           # μ = cos θ; slant t (0, 0 unless inclined)
 end
+
+inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
 
 node(pr, m) = pr.kc + m - 1
 
@@ -236,17 +246,24 @@ function dzcol!(o, f, z)
     return o
 end
 
-"""J×B on the τ levels at heights z: ∂/∂z along the column, ∂/∂x|_z = ∂/∂x|_τ − ∂_x z|_τ ∂/∂z."""
+"""
+J×B on the τ levels at heights z: ∂_ray along the column, ∂/∂x|_z = ∂/∂x|_τ − ∂_x z|_τ ∂_ray, and
+∂/∂z|_(x,y) = ∂_ray − t·∇_h|_z (= ∂_ray for vertical columns). Returns the ray derivatives of Bx, By, Bz and ∂z/∂x|_τ,
+∂z/∂y|_τ for the Jacobian.
+"""
 function lorentz_tau!(pr::TP)
-    z = pr.z; par = pr.par
+    z = pr.z; par = pr.par; tx = pr.tx; ty = pr.ty; sl = inclined(pr)
     zx = sddx!(similar(z), z, pr.dx, par); zy = sddy!(similar(z), z, pr.dy)
-    d(B) = (fz = dzcol!(similar(B), B, z); fx = sddx!(similar(B), B, pr.dx, par); fy = sddy!(similar(B), B, pr.dy);
-            @. fx -= zx * fz; @. fy -= zy * fz; (fx, fy, fz))
-    Bxx, Bxy, Bxz = d(pr.Bx); Byx, Byy, Byz = d(pr.By); Bzx, Bzy, Bzz = d(pr.Bz)
+    function d(B)
+        fz = dzcol!(similar(B), B, z); fx = sddx!(similar(B), B, pr.dx, par); fy = sddy!(similar(B), B, pr.dy)
+        @. fx -= zx * fz; @. fy -= zy * fz
+        return fx, fy, sl ? (@. fz - tx * fx - ty * fy) : fz, fz
+    end
+    (Bxx, Bxy, Bxv, Bxz), (Byx, Byy, Byv, Byz), (Bzx, Bzy, Bzv, Bzz) = d(pr.Bx), d(pr.By), d(pr.Bz)
     Bx, By, Bz = pr.Bx, pr.By, pr.Bz
     Threads.@threads for idx in eachindex(z)
         @inbounds begin
-            Jx = (Bzy[idx] - Byz[idx]) / MU0; Jy = (Bxz[idx] - Bzx[idx]) / MU0; Jz = (Byx[idx] - Bxy[idx]) / MU0
+            Jx = (Bzy[idx] - Byv[idx]) / MU0; Jy = (Bxv[idx] - Bzx[idx]) / MU0; Jz = (Byx[idx] - Bxy[idx]) / MU0
             pr.Lx[idx] = Jy * Bz[idx] - Jz * By[idx]; pr.Ly[idx] = Jz * Bx[idx] - Jx * Bz[idx]
             pr.Lz[idx] = Jx * By[idx] - Jy * Bx[idx]
         end
@@ -268,7 +285,7 @@ function evaluate!(pr::TP, u, c)
                 _, _, cp, _ = H.state(pr.tab, lT, lp + ε); _, _, cm, _ = H.state(pr.tab, lT, lp - ε)
                 isfinite(r + c0 + cp + cm) || (Threads.atomic_add!(bad, 1); r = 0.0; dr = 1.0; c0 = cp = cm = 0.0)
                 pr.q[m, j, i] = exp(r - lp); ρu[m, j, i] = dr
-                a = exp(pr.lτ[k] - c0); pr.a[m, j, i] = a; pr.aχ[m, j, i] = a * (cp - cm) / (2ε)
+                a = pr.mu * exp(pr.lτ[k] - c0); pr.a[m, j, i] = a; pr.aχ[m, j, i] = a * (cp - cm) / (2ε)
             end
             pr.z[kc, j, i] = c[j, i]
             for k in 1:kc-1
@@ -282,17 +299,29 @@ function evaluate!(pr::TP, u, c)
     end
     gcount(pr.par, bad[]) > 0 && return Inf, 1
     Bxz, Byz, Bzz, zxf, zyf = lorentz_tau!(pr)
+    tx = pr.tx; ty = pr.ty; sl = inclined(pr)
     Threads.@threads for i in 1:nx
         @inbounds for j in 1:ny, m in 1:n1
             k = node(pr, m); e = exp(-u[k, j, i]); bx = pr.Bx[k, j, i]; by = pr.By[k, j, i]; bz = pr.Bz[k, j, i]
             xz = Bxz[k, j, i]; yz = Byz[k, j, i]; zz = Bzz[k, j, i]; sx = zxf[k, j, i]; sy = zyf[k, j, i]
             cr(a1, a2, a3) = (a2 * bz - a3 * by, a3 * bx - a1 * bz, a1 * by - a2 * bx)
-            Lζ = cr((sy * zz + yz) / MU0, (-xz - sx * zz) / MU0, (sx * yz - sy * xz) / MU0)
-            LX = cr(0.0, zz / MU0, -yz / MU0); LY = cr(-zz / MU0, 0.0, xz / MU0)
-            pr.px[m, j, i] = e * (Lζ[1] + sx * Lζ[3]); pr.pXx[m, j, i] = e * (LX[1] + sx * LX[3]); pr.pYx[m, j, i] = e * (LY[1] + sx * LY[3])
-            pr.py[m, j, i] = e * (Lζ[2] + sy * Lζ[3]); pr.pXy[m, j, i] = e * (LX[2] + sy * LX[3]); pr.pYy[m, j, i] = e * (LY[2] + sy * LY[3])
+            # δL per unit ζ (relative change of the column spacing), X = ∂_xδz, Y = ∂_yδz: δJ from δ(∂_x, ∂_y, ∂_z)B
+            # (inclined: ∂_z = (1 + t·∇z) ∂_ray − t·∂_h|_τ); the column balance uses the ray component n(L) = L_z + t·L_h
+            if sl
+                s = 1 + tx * sx + ty * sy
+                Lζ = cr((sy * zz + s * yz) / MU0, (-s * xz - sx * zz) / MU0, (sx * yz - sy * xz) / MU0)
+                LX = cr(-tx * yz / MU0, (tx * xz + zz) / MU0, -yz / MU0)
+                LY = cr((-zz - ty * yz) / MU0, ty * xz / MU0, xz / MU0)
+                nζ = Lζ[3] + tx * Lζ[1] + ty * Lζ[2]; nX = LX[3] + tx * LX[1] + ty * LX[2]; nY = LY[3] + tx * LY[1] + ty * LY[2]
+            else
+                Lζ = cr((sy * zz + yz) / MU0, (-xz - sx * zz) / MU0, (sx * yz - sy * xz) / MU0)
+                LX = cr(0.0, zz / MU0, -yz / MU0); LY = cr(-zz / MU0, 0.0, xz / MU0)
+                nζ = Lζ[3]; nX = LX[3]; nY = LY[3]
+            end
+            pr.px[m, j, i] = e * (Lζ[1] + sx * nζ); pr.pXx[m, j, i] = e * (LX[1] + sx * nX); pr.pYx[m, j, i] = e * (LY[1] + sx * nY)
+            pr.py[m, j, i] = e * (Lζ[2] + sy * nζ); pr.pXy[m, j, i] = e * (LX[2] + sy * nX); pr.pYy[m, j, i] = e * (LY[2] + sy * nY)
             ea = e * pr.a[m, j, i]
-            pr.zζ[m, j, i] = ea * Lζ[3]; pr.zX[m, j, i] = ea * LX[3]; pr.zY[m, j, i] = ea * LY[3]
+            pr.zζ[m, j, i] = ea * nζ; pr.zX[m, j, i] = ea * nX; pr.zY[m, j, i] = ea * nY
             pr.zden[m, j, i] = k < nt ? pr.z[k-1, j, i] - pr.z[k+1, j, i] : pr.z[nt-1, j, i] - pr.z[nt, j, i]
         end
     end
@@ -303,8 +332,9 @@ function evaluate!(pr::TP, u, c)
         @inbounds for j in 1:ny
             for m in 1:n1
                 k = node(pr, m); e = exp(-u[k, j, i]); q = pr.q[m, j, i]; a = pr.a[m, j, i]
-                W = g * q - pr.Lz[k, j, i] * e
-                dW = g * q * (ρu[m, j, i] - 1) + pr.Lz[k, j, i] * e
+                Ln = sl ? pr.Lz[k, j, i] + tx * pr.Lx[k, j, i] + ty * pr.Ly[k, j, i] : pr.Lz[k, j, i]
+                W = g * q - Ln * e
+                dW = g * q * (ρu[m, j, i] - 1) + Ln * e
                 pr.W[m, j, i] = W; pr.dw[m, j, i] = dW * a - W * pr.aχ[m, j, i]
                 pr.Rx[m, j, i] = -ux[m, j, i] - W * zx[m, j, i] + pr.Lx[k, j, i] * e
                 pr.Ry[m, j, i] = -uy[m, j, i] - W * zy[m, j, i] + pr.Ly[k, j, i] * e
@@ -496,24 +526,11 @@ function bands(pr::TP, lt, Hb, dzb)
 end
 
 """
-    solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut, max_steps, rtol, n_consec, cg_maxit,
-              dc_cap, lm_mu0, logf)
-
-Direct Poisson solve from the column HSE in τ (u = ln P, z0 aligned and gauged). Stops on the objective only: when the
-relative decrease (Φ_prev − Φ)/Φ_prev of accepted steps is below rtol on n_consec consecutive steps (a single small
-step is not enough: Φ is nearly flat along the heights of a few strong-field columns). Height changes are logged, not
-used for stopping.
-Returns (u, z, Φ0, Φ, steps, kc, info). `info` (a NamedTuple) carries the stopping `reason` (:converged, :no_descent,
-:max_steps, :eos_out_of_envelope for a start state outside the table, in which case u and z are the inputs), the
-Gauss–Newton decrement `gn_decrement` (the relative decrease of Φ a further undamped Gauss–Newton step would predict:
-a scale-free stationarity measure), the gradient norm `grad_norm` = ‖Jᵀ W R‖, the last linear solve (`cg_its`,
-`cg_rel`), the final damping `lm_mu`, `rms0`/`rms` = √(Φ/W) and `phi0_zero`. `S` reuses a cached SlabFFT for these
-grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
+Problem on the τ grid from the start heights z0 (the cut level from `logtau_cut`); returns (pr, c) with c the heights
+of the cut level. Weights and regularisation are set by `solve_tau`; `evaluate!`, `Jop!` and `JTop!` work on `pr`.
 """
-function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
-                   n_consec = 3, cg_maxit = 80,
-                   cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
-                   rms_atol = 0.0, stationarity = true)
+function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0, S = nothing, mu = 1.0,
+                  slant = (0.0, 0.0))
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
     zrel = z0[1:kc, :, :] .- z0[kc:kc, :, :]
@@ -529,7 +546,35 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     pr = TP(par, S, tab, g, nt, kc, n1, ny, nx, dx, dy, LN10 .* lt, diff(LN10 .* lt), lT, Bx, By, Bz, zrel, N3(),
             N3(), N3(), N3(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(),
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
-            zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx))
+            zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
+            Float64(mu), Float64(slant[1]), Float64(slant[2]))
+    return pr, c
+end
+
+"""
+    solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut, max_steps, rtol, n_consec, cg_maxit,
+              dc_cap, lm_mu0, logf, mu, slant)
+
+Direct Poisson solve from the column HSE in τ (u = ln P, z0 aligned and gauged). Stops on the objective only: when the
+relative decrease (Φ_prev − Φ)/Φ_prev of accepted steps is below rtol on n_consec consecutive steps (a single small
+step is not enough: Φ is nearly flat along the heights of a few strong-field columns). Height changes are logged, not
+used for stopping.
+Returns (u, z, Φ0, Φ, steps, kc, info). `info` (a NamedTuple) carries the stopping `reason` (:converged, :no_descent,
+:max_steps, :eos_out_of_envelope for a start state outside the table, in which case u and z are the inputs), the
+Gauss–Newton decrement `gn_decrement` (the relative decrease of Φ a further undamped Gauss–Newton step would predict:
+a scale-free stationarity measure), the gradient norm `grad_norm` = ‖Jᵀ W R‖, the last linear solve (`cg_its`,
+`cg_rel`), the final damping `lm_mu`, `rms0`/`rms` = √(Φ/W) and `phi0_zero`. `S` reuses a cached SlabFFT for these
+grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps. `mu` = cos θ
+(lt is τ along the line of sight) and `slant` = (t_x, t_y) of the inclined geometry ((0, 0): vertical columns).
+"""
+function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
+                   n_consec = 3, cg_maxit = 80,
+                   cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
+                   rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0))
+    nt, ny, nx = size(lT); NX = par.NX
+    pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant)
+    kc, n1 = pr.kc, pr.n1
+    Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
         info = (reason = :eos_out_of_envelope, gn_decrement = NaN, grad_norm = NaN, cg_its = 0, cg_rel = NaN,

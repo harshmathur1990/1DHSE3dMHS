@@ -53,7 +53,12 @@ const CONFIG_SCHEMA = [
     "tau" => [
         "top" => "exp_tail",
         "H_max_m" => 5.0e6,
-        "mu" => 1.0,
+        "mu" => 1.0,                   # deprecated alias of view.mu (height modes, plane-parallel)
+    ],
+    "view" => [                      # viewing angle (design/tau/VIEWING_ANGLE_DESIGN.md); not for full-mhs-z
+        "mu" => 1.0,                   # cos θ of the line of sight, 0 < mu ≤ 1
+        "azimuth_deg" => 0.0,          # φ, from +x toward +y (used by geometry = "inclined")
+        "geometry" => "plane_parallel",# plane_parallel | inclined (τ modes; height modes: plane_parallel only)
     ],
     "mhs" => [
         "anchor_plane" => "bottom",
@@ -240,8 +245,9 @@ function config_hash(cfg::Config)
     io = IOBuffer()
     for (sec, entries) in CONFIG_SCHEMA
         nt = cfg.sections[sec]
-        for (k, _) in entries
+        for (k, default) in entries
             "$sec.$k" in excl && continue
+            sec == "view" && getfield(nt, Symbol(k)) == default && continue   # hashes of configs without [view] unchanged
             print(io, sec, ".", k, "=", repr(getfield(nt, Symbol(k))), "\n")
         end
     end

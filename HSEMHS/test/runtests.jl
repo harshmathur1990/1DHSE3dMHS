@@ -37,6 +37,7 @@ include("test_gateC_staggered.jl")
 include("test_face_bounds.jl")
 include("test_tau_height.jl")
 include("test_embedded.jl")
+include("test_view.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks
 @testset "MPI ranks" begin
@@ -53,6 +54,14 @@ include("test_embedded.jl")
             @test ok
         end
         escript = joinpath(@__DIR__, "mpi", "mpi_embedded.jl")
+        vscript = joinpath(@__DIR__, "mpi", "mpi_view.jl")
+        for n in (2, 3, 4)
+            ok = MPI.mpiexec() do exe
+                success(pipeline(`$exe -n $n $(Base.julia_cmd()) --project=$proj -t 2 $vscript`;
+                                 stdout = stdout, stderr = stderr))
+            end
+            @test ok
+        end
         for n in (2, 3, 4)
             ok = MPI.mpiexec() do exe
                 success(pipeline(`$exe -n $n $(Base.julia_cmd()) --project=$proj -t 2 $escript`;

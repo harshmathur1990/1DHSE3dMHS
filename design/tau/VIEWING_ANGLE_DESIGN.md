@@ -332,3 +332,4 @@ decision.
 | Date | Decision | By |
 |---|---|---|
 | 26 Oct 2026 | Inclination and azimuth; one angle per box; periodic; `full-mhs-z` out of scope; μ from config and the API; branch `viewing-angle`; design first | User |
+| 26 Oct 2026 | Decisions 1–6 above accepted. Both τ modes offer `plane_parallel` and `inclined` (3-D) geometry, selected by `[view] geometry` in the config and by the `view` argument of the embedding API (FFNO3D). Go-ahead for P1–P4 | User |

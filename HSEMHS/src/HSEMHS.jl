@@ -46,6 +46,7 @@ include("Tau.jl")
 include("ColumnHSE.jl")
 include("RunColumnHSE.jl")
 include("Slab.jl")
+include("ViewTau.jl")
 include("PoissonZ.jl")
 include("PoissonTau.jl")
 include("Embedded.jl")
@@ -66,7 +67,7 @@ include("Driver.jl")
 # The embedded API (Embedded.jl) for callers that own MPI and threading.
 export prepare_embedded, solve_embedded!, free_embedded!, snapshot, agree,
        prepare_column_hse_z, prepare_column_hse_ltau, prepare_mhs_poisson_z, prepare_mhs_poisson_ltau,
-       ColumnZOptions, ColumnTauOptions, PoissonZOptions, PoissonTauOptions, option_errors,
+       ColumnZOptions, ColumnTauOptions, PoissonZOptions, PoissonTauOptions, ViewOptions, option_errors,
        EquilibriumStatus, EquilibriumResult, EmbeddedWorkspace, EMBEDDED_MODES, slab_range, init_parallel, free_parallel!
 
 # No __init__: loading HSEMHS changes no global state (BLAS and FFTW threads belong to the caller; the standalone entry
