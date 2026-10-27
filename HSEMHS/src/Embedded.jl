@@ -56,10 +56,17 @@ Base.@kwdef struct PoissonZOptions
     rms_atol::Float64 = 0.0
 end
 
-"""Gauss–Newton solve on the τ grid (`[poisson]`)."""
+"""
+Gauss–Newton solve on the τ grid (`[poisson]`). `stop = :gn` (default) stops when the predicted relative decrease of a
+Gauss–Newton step is below `gn_tol` on `gn_consec` consecutive steps; `stop = :phi` is the earlier rule (ΔΦ/Φ < rtol on
+n_consec consecutive steps). `max_steps` bounds the solve in both cases.
+"""
 Base.@kwdef struct PoissonTauOptions
     logtau_cut::Float64 = -4.0
-    max_steps::Int = 100
+    max_steps::Int = 25
+    stop::Symbol = :gn                # :gn | :phi
+    gn_tol::Float64 = 1e-3
+    gn_consec::Int = 2
     rtol::Float64 = 1e-4
     n_consec::Int = 3
     cg_tol::Float64 = 1e-3
@@ -177,6 +184,9 @@ end
 function option_errors(o::PoissonTauOptions, lt::AbstractVector)
     e = solver_errors(String[], o)
     push_if!(e, o.dc_cap_m > 0 && o.du_cap > 0, "poisson dc_cap_m and du_cap must be positive")
+    push_if!(e, o.stop in (:gn, :phi), "poisson stop must be :gn or :phi, got :$(o.stop)")
+    push_if!(e, 0 < o.gn_tol < 1, "poisson gn_tol must be in (0, 1)")
+    push_if!(e, o.gn_consec >= 1, "poisson gn_consec must be ≥ 1")
     push_if!(e, o.lm_mu0 >= 0, "poisson lm_mu0 must be ≥ 0")
     push_if!(e, lt[1] <= o.logtau_cut <= lt[end], "logtau_cut = $(o.logtau_cut) is outside the axis [$(lt[1]), $(lt[end])]")
     kc, n = cut_levels(o, lt)
@@ -618,6 +628,7 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     u, z, Φ0, Φ, steps, kc, info = PoissonTau.solve_tau(par, ws.eos, ws.g, lt, lT, bx, by, bz, copy(res.lnP), res.z,
                                                         ws.dx, ws.dy; logtau_cut = o.logtau_cut, max_steps = o.max_steps,
                                                         rtol = o.rtol, n_consec = o.n_consec, cg_maxit = o.cg_maxit,
+                                                        stop = o.stop, gn_tol = o.gn_tol, gn_consec = o.gn_consec,
                                                         cg_tol = o.cg_tol, dc_cap = o.dc_cap_m, du_cap = o.du_cap,
                                                         lm_mu0 = o.lm_mu0, logf = ws.logf, S = ws.fft,
                                                         rms_atol = o.rms_atol, mu = ws.view.mu, slant = slant(ws.view))

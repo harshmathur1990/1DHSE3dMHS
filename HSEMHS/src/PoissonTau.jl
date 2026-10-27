@@ -21,6 +21,9 @@
 # geometry treats each column as a slanted ray x = ξ + t_x z, y = η + t_y z (t = tan θ (cos φ, sin φ)) at its footprint
 # (ξ, η): ∂_z|_(x,y) = ∂_ray − t·∇_h in the Lorentz force, and the column balance is the one along the ray,
 # W_n = g ρ/P − (L_z + t·L_h)/P in place of W. Plane-parallel (or μ = 1) has t = 0, i.e. the vertical-column code.
+# With balance = :vertical (default; SOLVER_TIME_DESIGN.md D0) the column residual is the vertical balance
+# R_v = R_ray − Δz t·R̄_h (R̄_h the mean horizontal residual of the interval's two nodes): the along-ray residual mixes the
+# horizontal imbalance in with weight tan θ, which swamps the vertical balance at strong inclination.
 module PoissonTau
 
 using MPI, FFTW, LinearAlgebra, Printf, HDF5
@@ -225,9 +228,12 @@ mutable struct TP
     py::Array{Float64,3}; pXy::Array{Float64,3}; pYy::Array{Float64,3}
     zζ::Array{Float64,3}; zX::Array{Float64,3}; zY::Array{Float64,3}; zden::Array{Float64,3}
     mu::Float64; tx::Float64; ty::Float64           # μ = cos θ; slant t (0, 0 unless inclined)
+    vert::Bool                                      # inclined: vertical-balance column residual (D0)
+    vq::Array{Float64,3}; vd::Array{Float64,3}      # per interval: t·R̄_h and Δz (vertical balance)
 end
 
 inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
+vertical(pr::TP) = pr.vert && inclined(pr)
 
 node(pr, m) = pr.kc + m - 1
 
@@ -346,6 +352,15 @@ function evaluate!(pr::TP, u, c)
                 pr.Rz[f, j, i] = u[k+1, j, i] - u[k, j, i] -
                                  pr.dl[k] / 2 * (pr.W[f, j, i] * pr.a[f, j, i] + pr.W[f+1, j, i] * pr.a[f+1, j, i])
             end
+            if vertical(pr)
+                for f in 1:n1-1
+                    k = node(pr, f)
+                    q = 0.5 * (tx * (pr.Rx[f, j, i] + pr.Rx[f+1, j, i]) + ty * (pr.Ry[f, j, i] + pr.Ry[f+1, j, i]))
+                    d = pr.z[k, j, i] - pr.z[k+1, j, i]
+                    pr.vq[f, j, i] = q; pr.vd[f, j, i] = d
+                    pr.Rz[f, j, i] -= d * q
+                end
+            end
         end
     end
     return phi(pr), 0
@@ -409,11 +424,34 @@ function Jop!(pr::TP, jx, jy, jz, v)
             end
         end
     end
+    if vertical(pr)                                    # δR_v = δR_ray − δΔz t·R̄_h − Δz t·δR̄_h
+        tx = pr.tx; ty = pr.ty
+        Threads.@threads for i in 1:nx
+            @inbounds for j in 1:ny, f in 1:n1-1
+                jz[f, j, i] -= (dz[f, j, i] - dz[f+1, j, i]) * pr.vq[f, j, i] +
+                               pr.vd[f, j, i] * 0.5 * (tx * (jx[f, j, i] + jx[f+1, j, i]) + ty * (jy[f, j, i] + jy[f+1, j, i]))
+            end
+        end
+    end
+end
+
+"""Horizontal weights of JᵀR with the R̄_h part of the vertical-balance residual added (inclined, D0)."""
+function vertical_weights(pr::TP, rx0, ry0, rz)
+    rx = copy(rx0); ry = copy(ry0)
+    Threads.@threads for i in 1:pr.nx
+        @inbounds for j in 1:pr.ny, f in 1:pr.n1-1
+            h = -0.5 * pr.vd[f, j, i] * rz[f, j, i]
+            rx[f, j, i] += h * pr.tx; rx[f+1, j, i] += h * pr.tx
+            ry[f, j, i] += h * pr.ty; ry[f+1, j, i] += h * pr.ty
+        end
+    end
+    return rx, ry
 end
 
 """out = Jᵀ (rx, ry, rz)."""
-function JTop!(pr::TP, out, rx, ry, rz)
+function JTop!(pr::TP, out, rx0, ry0, rz)
     n1, ny, nx = pr.n1, pr.ny, pr.nx; par = pr.par
+    rx, ry = vertical(pr) ? vertical_weights(pr, rx0, ry0, rz) : (rx0, ry0)   # one assignment: no boxed captures
     a = similar(out); b = similar(out)
     sddx!(out, rx, pr.dx, par); sddy!(a, ry, pr.dy)            # (−D)ᵀ = D
     @. out += a + pr.lx * rx + pr.ly * ry
@@ -437,6 +475,12 @@ function JTop!(pr::TP, out, rx, ry, rz)
                 t[m == 1 ? 1 : m - 1, j, i] += gg; t[m+1, j, i] -= gg
             end
             gg = gζ[n1, j, i]; t[n1-1, j, i] += gg; t[n1, j, i] -= gg
+            if vertical(pr)                                # the δΔz part of R_v
+                for f in 1:n1-1
+                    h = pr.vq[f, j, i] * rz[f, j, i]
+                    t[f, j, i] -= h; t[f+1, j, i] += h
+                end
+            end
         end
     end
     Threads.@threads for i in 1:nx
@@ -530,7 +574,7 @@ Problem on the τ grid from the start heights z0 (the cut level from `logtau_cut
 of the cut level. Weights and regularisation are set by `solve_tau`; `evaluate!`, `Jop!` and `JTop!` work on `pr`.
 """
 function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0, S = nothing, mu = 1.0,
-                  slant = (0.0, 0.0))
+                  slant = (0.0, 0.0), balance = :vertical)
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
     zrel = z0[1:kc, :, :] .- z0[kc:kc, :, :]
@@ -547,7 +591,7 @@ function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0
             N3(), N3(), N3(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(),
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
-            Float64(mu), Float64(slant[1]), Float64(slant[2]))
+            Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z())
     return pr, c
 end
 
@@ -568,13 +612,18 @@ grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol 
 (lt is τ along the line of sight) and `slant` = (t_x, t_y) of the inclined geometry ((0, 0): vertical columns).
 `on_step(s, u, z, info)` (diagnostics) is called after every accepted step with the state (z not yet gauged) and
 `info = (phi, pred, cg_its, cg_rel, alpha, seconds)`; `pred` is the step's predicted relative decrease δ·(−JᵀWR)/Φ.
+`stop = :gn` (design/tau/SOLVER_TIME_DESIGN.md D1) stops instead when `pred` < gn_tol on gn_consec consecutive
+accepted steps: no Gauss–Newton step could lower Φ by more than that fraction (scale-free; independent of the tail).
+`balance` (inclined geometry only): :vertical (default, D0) or :ray (the column residual along the ray).
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
                    cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
-                   rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing)
+                   rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing,
+                   stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical)
     nt, ny, nx = size(lT); NX = par.NX
-    pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant)
+    pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
+                     balance = balance)
     kc, n1 = pr.kc, pr.n1
     Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
@@ -609,7 +658,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     # after a full step; steps over the caps are scaled as a whole (an element-wise clamp can make an ascent direction)
     δ = Z(); rhs = Z(); ut = copy(u); ct = copy(c)
     ereg0 = copy(pr.ereg); Dlm = ereg0 ./ 1e-2
-    μ = lm_mu0; steps = 0; nsmall = 0
+    μ = lm_mu0; steps = 0; nsmall = 0; npred = 0
     for s in 1:max_steps
         t0 = time()
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
@@ -648,8 +697,14 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                       s, Φ / Φ0, dec, pred, sqrt(Φ / Wtot), its, rel, α, μ, dzmax / 1e3, zq()..., time() - t0))
         on_step === nothing || on_step(s, u, pr.z, (phi = Φ, pred = pred, cg_its = its, cg_rel = rel, alpha = α,
                                                     seconds = time() - t0))
-        nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps (last max|δc| %.1f m)", rtol, nsmall, dzmax));
-                               reason = :converged; break)
+        npred = pred < gn_tol ? npred + 1 : 0
+        if stop == :gn
+            npred >= gn_consec && (logf(@sprintf("converged: predicted decrease < %.0e on %d consecutive steps (last max|δc| %.1f m)",
+                                                 gn_tol, npred, dzmax)); reason = :converged; break)
+        else
+            nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps (last max|δc| %.1f m)", rtol, nsmall, dzmax));
+                                   reason = :converged; break)
+        end
     end
     pr.ereg = ereg0
     logf("end: " * bands(pr, lt, Hb, dzf))

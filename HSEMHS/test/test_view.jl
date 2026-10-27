@@ -81,14 +81,15 @@ include("view_helpers.jl")
         @test a.Pgas == b.Pgas                               # the pressure does not depend on the view
     end
 
-    @testset "Jacobian of the inclined geometry (μ $μ, φ $φ)" for (μ, φ) in ((1.0, 0.0), (0.8, 0.0), (0.6, 45.0), (0.5, 200.0))
+    @testset "Jacobian of the inclined geometry (μ $μ, φ $φ, $bal balance)" for (μ, φ) in ((1.0, 0.0), (0.8, 0.0), (0.6, 45.0), (0.5, 200.0), (0.25, 120.0)),
+                                                                                    bal in (:vertical, :ray)
         v = H.ViewOptions(mu = μ, azimuth_deg = φ, geometry = :inclined)
         ws = mk(:column_hse_ltau, v)
         par = ws.par; lt = fx.lt
         lnP, z0, _ = H.PoissonTau.column_hse_tau(par, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, tab, g; mu = μ)
         dx = fx.x[2] - fx.x[1]; dy = fx.y[2] - fx.y[1]
         pr, c = H.PoissonTau.tp_setup(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, z0, dx, dy; logtau_cut = -4.0,
-                                      mu = μ, slant = H.slant(v))
+                                      mu = μ, slant = H.slant(v), balance = bal)
         kc, n1, nt = pr.kc, pr.n1, pr.nt
         R(u, c) = (H.PoissonTau.evaluate!(pr, u, c); (copy(pr.Rx), copy(pr.Ry), copy(pr.Rz)))
         rng = MersenneTwister(7)

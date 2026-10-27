@@ -52,7 +52,7 @@ function ref_options(mode::Symbol, fx)
         return (axis = fx.z, x = fx.x, y = fx.y, g = fx.g, column = col, poisson = poi)
     end
     col = H.ColumnTauOptions(align = "ptot")
-    poi = mode == :mhs_poisson_ltau ? H.PoissonTauOptions(logtau_cut = -4.0, max_steps = 30, rtol = 1e-4) : nothing
+    poi = mode == :mhs_poisson_ltau ? H.PoissonTauOptions(logtau_cut = -4.0, max_steps = 30, rtol = 1e-4, stop = :phi) : nothing
     return (axis = fx.lt, x = fx.x, y = fx.y, g = 274.0, column = col, poisson = poi)
 end
 

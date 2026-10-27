@@ -36,7 +36,8 @@ function tau_setup(cfg, tag, mode::Symbol)
     G = cfg.tau_grid; P = cfg.poisson
     column = ColumnTauOptions(align = G.align)
     poisson = mode == :mhs_poisson_ltau ?
-              PoissonTauOptions(logtau_cut = P.logtau_cut, max_steps = P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
+              PoissonTauOptions(logtau_cut = P.logtau_cut, max_steps = P.max_steps == 0 ? 25 : P.max_steps, rtol = P.rtol,
+                                n_consec = P.n_consec, stop = Symbol(P.stop), gn_tol = P.gn_tol, gn_consec = P.gn_consec,
                                 cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0) : nothing
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] %s: %s", time() - t0, tag, s)); flush(stdout))
     vw = config_view(cfg)
@@ -151,7 +152,7 @@ function run_mhs_poisson_z(cfg::Config)
     eos = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)
     column = ColumnZOptions(anchor = o.anchor, P_ref = o.P_ref, z_ref = o.z_ref, n_sub = o.n_sub, adapt = o.adapt,
                             rk_tol = o.rk_tol, n_sub_max = o.n_sub_max, tau_top = o.tau_top, H_max = o.H_max, mu = o.mu)
-    poisson = PoissonZOptions(z_cut_m = P.z_cut_m, max_steps = P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
+    poisson = PoissonZOptions(z_cut_m = P.z_cut_m, max_steps = P.max_steps == 0 ? 100 : P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
                               anchor_w = P.anchor_w, cg_tol = P.cg_tol, cg_maxit = P.cg_maxit)
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] mhs-poisson-z: %s", time() - t0, s)); flush(stdout))
     vw = config_view(cfg)
