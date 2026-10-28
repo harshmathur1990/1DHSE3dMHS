@@ -5,9 +5,10 @@ what the solvers and preconditioners do with it.
 
 usage: mpiexecjl -n R julia --project=. -t T scripts/viewing/frozen_lab.jl INPUT.nc MU AZIMUTH_DEG GEOMETRY LOGTAU_CUT_LOS BALANCE STEPS [KEY=VALUE ...]
 KEY: crop (0: the full cube; NC > 0: an NC × NC crop around the strongest |B| at τ = 1, periodic, one rank only),
-parts (comma list of checks, gauge, tight, direct, marq, coarse; default checks,gauge,tight,marq; direct needs a crop),
+parts (comma list of checks, gauge, tight, direct, marq, coarse, spectral; default checks,gauge,tight,marq; direct and
+spectral need a crop),
 traj (preconditioner of the trajectory, default fourier), tight_tol (1e-8), tight_maxit (2000), marq_maxit (600),
-ritz_its (Lanczos iterations, 300), nritz (Ritz vectors kept, 32).
+ritz_its (Lanczos iterations, 300), nritz (Ritz vectors kept, 32), kmax (largest |k| of the spectral coarse spaces, 4).
 
 checks  adjoint ⟨Jv, w⟩ = ⟨v, Jᵀw⟩; finite differences of R against Jv for ε 1e-2 … 1e-6 (a random v and one
         supported on the 5 levels below the cut); symmetry and positivity of A = JᵀWJ + ereg and of each M⁻¹;
@@ -23,6 +24,10 @@ marq    Marquardt damping μ ∈ 0, 0.01, 0.1, 1, 10 for block, hybrid without a
         build time, CG iterations and residuals (tol 0.1 and 1e-3), pred, cap scale.
 coarse  slow modes of the block-preconditioned system (Ritz pairs from Lanczos) and balanced deflation with
         several coarse spaces (`coarse_lab`).
+spectral  (Codex round 2, step 4) the dense generalised problem A q = λ M q (M the column blocks) against the Ritz
+        pairs of PCG-Lanczos (no reorthogonalisation) and of Lanczos with full reorthogonalisation; the weights of b
+        in the eigenvectors; balanced deflation with cut-height Fourier modes, their energy extensions (column-block
+        u = −Auu⁻¹ Auc c and the exact one over the crop) and the exact smallest eigenvectors (`spectral_lab`).
 =#
 using HSEMHS
 using MPI
@@ -38,7 +43,8 @@ const HREF = 1e5
 function main(path, mu_s, az_s, geom, cut_s, bal, steps_s, kv...)
     H.ensure_mpi()
     o = Dict{String,Any}("crop" => 0, "parts" => "checks,gauge,tight,marq", "traj" => "fourier", "tight_tol" => 1e-8,
-                         "tight_maxit" => 2000, "marq_maxit" => 600, "ritz_its" => 300, "nritz" => 32)
+                         "tight_maxit" => 2000, "marq_maxit" => 600, "ritz_its" => 300, "nritz" => 32,
+                         "kmax" => 4)
     for a in kv
         k, v = split(a, "="); haskey(o, k) || error("unknown key $k")
         o[k] = o[k] isa String ? String(v) : o[k] isa Int ? parse(Int, v) : parse(Float64, v)
@@ -250,6 +256,10 @@ function main(path, mu_s, az_s, geom, cut_s, bal, steps_s, kv...)
     if "coarse" in parts
         coarse_lab(par, pr, rhs, Φ, lt, NX, o, logf, Z, snorm, sc_, truerel, gi)
     end
+    if "spectral" in parts
+        NC > 0 || error("spectral needs a crop")
+        spectral_lab(par, pr, rhs, Φ, lt, o, logf, Z, truerel)
+    end
     logf("done")
 end
 
@@ -384,6 +394,201 @@ function coarse_lab(par, pr, rhs, Φ, lt, NX, o, logf, Z, snorm, sc_, truerel, g
         logf(@sprintf("BNN %-20s k %4d (rank %4d, cond(ZᵀAZ) %.1e) build %.0f s | %s", name, k, count(keep),
                       Ee.values[end] / Ee.values[findfirst(keep)], tb, join(row, " | ")))
     end
+end
+
+"""Dense operator of `f!(out, e)` on the (n1, ny, nx) grid by unit probes (one rank)."""
+function probe(f!, Z, n)
+    D = zeros(n, n); e = Z(); out = Z()
+    for col in 1:n
+        fill!(e, 0.0); e[col] = 1.0; f!(out, e); D[:, col] = vec(out)
+    end
+    return (D .+ D') ./ 2
+end
+
+"""
+Lanczos for M⁻¹A in the M inner product with full reorthogonalisation (twice, classical Gram–Schmidt): v₁ = M⁻¹b/‖·‖_M,
+U = M V carried alongside so that the coefficients are vᵢᵀ A v = uᵢᵀ M⁻¹ A v. Returns V, the projected VᵀAV and
+max |VᵀMV − I| (from U).
+"""
+function lanczos_reorth(p, rhs, m, Z)
+    n = length(rhs); V = zeros(n, m); U = zeros(n, m); Hm = zeros(m, m)
+    w = Z(); PT.Minv!(p, w, rhs); nb = sqrt(dot(vec(w), vec(rhs)))
+    V[:, 1] .= vec(w) ./ nb; U[:, 1] .= vec(rhs) ./ nb
+    s = Z()
+    for j in 1:m
+        PT.Aop!(p, s, reshape(view(V, :, j), size(rhs))); sv = vec(copy(s))
+        Hm[1:j, j] .= view(V, :, 1:j)' * sv
+        for _ in 1:2                                            # s ← s − U Vᵀ s: the M⁻¹-orthogonal residual
+            sv .-= view(U, :, 1:j) * (view(V, :, 1:j)' * sv)
+        end
+        j == m && break
+        PT.Minv!(p, w, reshape(sv, size(rhs))); nr = sqrt(dot(vec(w), sv))
+        V[:, j+1] .= vec(w) ./ nr; U[:, j+1] .= sv ./ nr
+    end
+    return V, Matrix(Symmetric(Hm, :U)), maximum(abs, V' * U - I)
+end
+
+"""
+Spectral part on a crop (Codex round 2, step 4). Dense A (probes) and the block preconditioner M (from its factors);
+the generalised eigenpairs A q = λ M q (QᵀMQ = I) are the reference. Checks the Ritz pairs of the PCG-Lanczos used in
+`coarse_lab` (no reorthogonalisation) and of `lanczos_reorth`: M-Gram of the basis, θ against the nearest λ, true
+Rayleigh quotients and residuals ‖Ax − θMx‖_{M⁻¹} / (θ‖x‖_M). Weights of b in the eigenvectors, (qᵀb)² / bᵀM⁻¹b,
+cumulative from the smallest λ. Then balanced deflation (as `coarse_lab`) with: cut-height Fourier |k| ≤ K (+ the 3
+Nyquist gauge modes), the same modes energy-extended with the column blocks of Auu (u = −Auu_col⁻¹ (A c)_u, horizontal
+coupling in Auc kept) and with the exact Auu of the crop, and the smallest eigenvectors of the same dimension.
+"""
+function spectral_lab(par, pr, rhs, Φ, lt, o, logf, Z, truerel)
+    n1, ny, nx = pr.n1, pr.ny, pr.nx; n = n1 * ny * nx
+    p = pr; p.prec = :block; p.mlm = 0.0; PT.setprec!(p)
+    BLAS.set_num_threads(Threads.nthreads())
+    t0 = time()
+    A = probe((o_, e) -> PT.Aop!(p, o_, e), Z, n)
+    M = zeros(n, n)                                             # block diagonal L Lᵀ, column-major (n1, ny, nx) layout
+    for i in 1:nx, j in 1:ny
+        L = LowerTriangular(p.blk[:, :, j, i]); r = ((i - 1) * ny + (j - 1)) * n1 .+ (1:n1)
+        M[r, r] .= L * L'
+    end
+    Mi = probe((o_, e) -> PT.Minv!(p, o_, e), Z, n)
+    logf(@sprintf("spectral: dense A, M (%d unknowns) %.0f s; max |M⁻¹M − I| %.1e", n, time() - t0, maximum(abs, Mi * M - I)))
+    t0 = time()
+    E = eigen(Symmetric(A), Symmetric(M)); λ = E.values; Q = E.vectors      # QᵀMQ = I
+    b = vec(rhs); bMb = dot(b, Mi * b)
+    wts = (Q' * b) .^ 2 ./ bMb
+    logf(@sprintf("generalised eigenproblem %.0f s: λ min %.3e max %.3e (κ %.2e), Σ weights %.4f; smallest: %s", time() - t0,
+                  λ[1], λ[end], λ[end] / λ[1], sum(wts), join((@sprintf("%.2e", x) for x in λ[1:12]), " ")))
+    cw = cumsum(wts)
+    logf("weights of b, cumulative from the smallest λ: " * join((@sprintf("%d: %.3f", k, cw[k]) for k in (1, 4, 8, 16, 32, 64, 128, 256) if k <= n), ", "))
+    for thr in (1e-3, 1e-2, 1e-1)
+        k = count(<(thr * λ[end]), λ)
+        logf(@sprintf("  λ < %.0e λmax: %d eigenvalues, weight %.3f", thr, k, k > 0 ? cw[k] : 0.0))
+    end
+    cidx = 1:n1:n                                               # cut-height slots
+    for q in 1:10
+        logf(@sprintf("  λ%-2d %.3e weight %.2e, c share (M-norm) %.2f", q, λ[q], wts[q],
+                      dot(Q[cidx, q], (M*Q[:, q])[cidx])))
+    end
+
+    # Ritz pairs: PCG-Lanczos (as coarse_lab) and with full reorthogonalisation
+    m = min(o["ritz_its"], n); nr = min(o["nritz"], m)
+    function check(name, X, θ, gram)
+        out = String[]
+        for q in 1:min(nr, 12)
+            x = X[:, q]; Ax = A * x; Mx = M * x
+            rq = dot(x, Ax) / dot(x, Mx)
+            rs = Ax .- θ[q] .* Mx; res = sqrt(dot(rs, Mi * rs)) / (θ[q] * sqrt(dot(x, Mx)))
+            nl = argmin(abs.(λ .- θ[q]))
+            push!(out, @sprintf("θ%d %.3e (λ%d %.3e, rel %.1e; RQ %.3e; res %.1e)", q, θ[q], nl, λ[nl], abs(θ[q] - λ[nl]) / λ[nl], rq, res))
+        end
+        ncov = count(<=(θ[nr] * (1 + 1e-8)), λ)
+        nconv = count(q -> (x = X[:, q]; rs = A * x .- θ[q] .* (M * x); sqrt(dot(rs, Mi * rs)) < 1e-3 * θ[q] * sqrt(dot(x, M * x))), 1:nr)
+        logf(@sprintf("%s: max |VᵀMV − I| %.1e; %d eigenvalues λ ≤ θ_%d; %d of %d Ritz pairs with res < 1e-3", name, gram, ncov, nr,
+                      nconv, nr))
+        foreach(l -> logf("  " * l), out)
+    end
+    # PCG-Lanczos (coarse_lab), V kept to measure its M-Gram matrix
+    V = zeros(n, m); xs = Z(); r = copy(rhs); zv = Z(); pv = Z(); Ap = Z()
+    PT.Minv!(p, zv, r); pv .= zv; rz = dot(r, zv); α = Float64[]; β = Float64[]
+    for j in 1:m
+        V[:, j] .= vec(zv) ./ sqrt(rz)
+        PT.Aop!(p, Ap, pv); a = rz / dot(pv, Ap); push!(α, a)
+        @. xs += a * pv; @. r -= a * Ap
+        PT.Minv!(p, zv, r); rz2 = dot(r, zv); push!(β, rz2 / rz); rz = rz2
+        @. pv = zv + β[end] * pv
+    end
+    T = zeros(m, m)
+    for j in 1:m
+        T[j, j] = 1 / α[j] + (j > 1 ? β[j-1] / α[j-1] : 0.0)
+        j < m && (T[j, j+1] = T[j+1, j] = -sqrt(β[j]) / α[j])
+    end
+    Et = eigen(Symmetric(T))
+    check(@sprintf("PCG-Lanczos %d its (rel %.1e)", m, norm(r) / norm(rhs)), V * Et.vectors, Et.values, maximum(abs, V' * M * V - I))
+    Vr, Hm, gr = lanczos_reorth(p, rhs, m, Z)
+    Er = eigen(Symmetric(Hm))
+    check("Lanczos reorthogonalised $m its", Vr * Er.vectors, Er.values, gr)
+    Gv = V' * M * V; Ev = eigen(Symmetric(Gv)); keep = Ev.values .> 1e-10 * Ev.values[end]
+    Wv = V * (Ev.vectors[:, keep] * Diagonal(1 ./ sqrt.(Ev.values[keep])))            # M-orthonormalised PCG basis
+    Ep = eigen(Symmetric(Wv' * A * Wv))
+    check(@sprintf("PCG basis M-orthonormalised (%d of %d kept), projected", count(keep), m), Wv * Ep.vectors, Ep.values,
+          maximum(abs, Wv' * M * Wv - I))
+    V = Vr = Wv = nothing; GC.gc()
+
+    # coarse spaces: cut-height Fourier modes, energy extensions, exact eigenvectors
+    ii = reshape(collect(1:nx), 1, :); jj = collect(1:ny)
+    function cmodes(K)
+        pats = Matrix{Float64}[ones(ny, nx)]
+        for ky in 0:K, kx in -K:K
+            (ky == 0 && kx <= 0) && continue
+            ky^2 + kx^2 <= K^2 || continue
+            ang = 2π .* (kx .* (ii .- 1) ./ nx .+ ky .* (jj .- 1) ./ ny)
+            push!(pats, cos.(ang), sin.(ang))
+        end
+        append!(pats, [repeat((-1.0) .^ ii, ny, 1), repeat((-1.0) .^ jj, 1, nx), (-1.0) .^ (jj .+ ii)])
+        C = zeros(n, length(pats))
+        for (q, pt) in enumerate(pats)
+            C[cidx, q] .= vec(pt) .* HREF
+        end
+        return C
+    end
+    uidx = setdiff(1:n, cidx)
+    Fu = cholesky(Symmetric(A[uidx, uidx]))
+    Fcol = Vector{Any}(undef, ny * nx)                          # column blocks of Auu
+    for c_ in 1:ny*nx
+        r = (c_ - 1) * n1 .+ (2:n1); Fcol[c_] = cholesky(Symmetric(A[r, r]))
+    end
+    function ext_col(C)
+        X = copy(C); AC = A * C
+        for c_ in 1:ny*nx
+            r = (c_ - 1) * n1 .+ (2:n1); X[r, :] .= -(Fcol[c_] \ AC[r, :])
+        end
+        return X
+    end
+    function ext_exact(C)
+        X = copy(C); X[uidx, :] .= -(Fu \ (A[uidx, cidx] * C[cidx, :])); return X
+    end
+    energy(X) = (G = X' * A * X; tr(G) / tr(X' * M * X))
+    function bnn(name, Zm)
+        k = size(Zm, 2); AZ = A * Zm; Eg = Symmetric(Zm' * AZ)
+        Ee = eigen(Eg); keep = Ee.values .> 1e-12 * Ee.values[end]
+        Ei = Ee.vectors[:, keep] * Diagonal(1 ./ Ee.values[keep]) * Ee.vectors[:, keep]'
+        y = Z()
+        function bnn!(_, out, rr)
+            c1 = Ei * (Zm' * vec(rr))
+            PT.Minv!(p, y, reshape(vec(rr) .- AZ * c1, size(rr)))
+            c2 = Ei * (AZ' * vec(y))
+            out .= y .- reshape(Zm * (c2 .- c1), size(rr))
+            return out
+        end
+        row = String[]
+        for tol in (1e-3, 1e-5)
+            δ = Z(); its, _ = PT.pcg!(PT.Aop!, bnn!, par, p, δ, rhs; tol = tol, maxit = 2 * o["marq_maxit"])
+            push!(row, @sprintf("tol %.0e: %4d its true %.1e", tol, its, truerel(p, δ)))
+        end
+        # Rayleigh quotients of the coarse space in the preconditioned metric (its largest is the worst-captured mode)
+        Gm = eigen(Symmetric(Zm' * M * Zm)); km = Gm.values .> 1e-12 * Gm.values[end]
+        Wm = Gm.vectors[:, km] * Diagonal(1 ./ sqrt.(Gm.values[km]))                      # M-orthonormal coordinates
+        ge = eigvals(Symmetric(Wm' * Matrix(Eg) * Wm))
+        logf(@sprintf("BNN %-34s k %3d (rank %3d) | λ(ZᵀAZ, ZᵀMZ) %.2e … %.2e | %s", name, k, count(keep), ge[1], ge[end],
+                      join(row, " | ")))
+    end
+    row = String[]
+    for tol in (1e-3, 1e-5)
+        δ = Z(); its, _ = PT.pcg!(PT.Aop!, PT.Minv!, par, p, δ, rhs; tol = tol, maxit = 2 * o["marq_maxit"])
+        push!(row, @sprintf("tol %.0e: %4d its true %.1e", tol, its, truerel(p, δ)))
+    end
+    logf("block alone: " * join(row, " | "))
+    for K in unique((1, 2, o["kmax"]))
+        C = cmodes(K); k = size(C, 2)
+        Xc = ext_col(C); Xe = ext_exact(C)
+        logf(@sprintf("|k| ≤ %d: k %d; mean RQ (energy / M-norm) c-only %.3e, column-extended %.3e, exact-extended %.3e", K, k,
+                      energy(C), energy(Xc), energy(Xe)))
+        bnn("c |k| ≤ $K", C)
+        bnn("c |k| ≤ $K column-block extended", Xc)
+        bnn("c |k| ≤ $K exact extended", Xe)
+        bnn("c |k| ≤ $K both (c-only + column ext.)", hcat(C, Xc))
+        bnn("smallest $k eigenvectors", Q[:, 1:k])
+    end
+    bnn("smallest 64 eigenvectors", Q[:, 1:min(64, n)])
+    BLAS.set_num_threads(1)
 end
 
 main(ARGS...)
