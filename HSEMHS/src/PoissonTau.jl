@@ -501,6 +501,20 @@ function JTop!(pr::TP, out, rx0, ry0, rz)
     return out
 end
 
+"""Σ w (Jδ)² of Jop! output (the weights of Φ)."""
+function wnorm2(pr::TP, jx, jy, jz)
+    acc = zeros(size(jx, 3))
+    Threads.@threads for i in axes(jx, 3)
+        a = 0.0
+        @inbounds for j in axes(jx, 2), m in 1:pr.n1
+            a += pr.wc[m] * (jx[m, j, i]^2 + jy[m, j, i]^2)
+            m < pr.n1 && (a += pr.wf[m] * jz[m, j, i]^2)
+        end
+        acc[i] = a
+    end
+    return gsum(pr.par, sum(acc))
+end
+
 function Aop!(pr::TP, out, v)
     jx = similar(v); jy = similar(v); jz = similar(v)
     Jop!(pr, jx, jy, jz, v)
@@ -615,12 +629,18 @@ grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol 
 `stop = :gn` (design/tau/SOLVER_TIME_DESIGN.md D1) stops instead when `pred` < gn_tol on gn_consec consecutive
 accepted steps: no Gauss–Newton step could lower Φ by more than that fraction (scale-free; independent of the tail).
 `balance` (inclined geometry only): :vertical (default, D0) or :ray (the column residual along the ray).
+D2 (design/tau/SOLVER_TIME_DESIGN.md): `lm = :gain` sets the damping from the gain ratio ρ = actual / model decrease of
+the accepted step (model 2α g·δ − α²‖Jδ‖²_W, g = −JᵀWR): ρ > 0.75 lowers μ ×3, ρ < 0.25 raises it to max(4μ, 1);
+`lm = :alpha` is the earlier rule (from the line-search length). `forcing = :ew` sets the CG tolerance from the outer
+progress, η = clamp(pred of the previous step, eta_min, eta_max), with at most `cg_cap` iterations; `forcing = :fixed`
+uses cg_tol and cg_maxit.
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
                    cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
                    rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing,
-                   stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical)
+                   stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical, lm = :alpha, forcing = :fixed,
+                   cg_cap = 200, eta_min = 0.005, eta_max = 0.1)
     nt, ny, nx = size(lT); NX = par.NX
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
                      balance = balance)
@@ -659,15 +679,19 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     δ = Z(); rhs = Z(); ut = copy(u); ct = copy(c)
     ereg0 = copy(pr.ereg); Dlm = ereg0 ./ 1e-2
     μ = lm_mu0; steps = 0; nsmall = 0; npred = 0
+    η = eta_max; tol_k, maxit_k = forcing == :ew ? (η, cg_cap) : (cg_tol, cg_maxit)
+    jx, jy, jz = Z(), Z(), Z()
     for s in 1:max_steps
         t0 = time()
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
-        accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0; pred = NaN
+        accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0; pred = NaN; jj = NaN
         for tries in 1:8
             pr.ereg = ereg0 .+ μ .* Dlm
             setprec!(pr)
-            its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit)
+            its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit_k)
             pred = gdot(par, δ, rhs) / Φ
+            Jop!(pr, jx, jy, jz, δ)                   # ‖Jδ‖²_W at the linearisation state (before the line search)
+            jj = wnorm2(pr, jx, jy, jz)
             mu_ = gmax(par, maximum(abs, @view δ[2:end, :, :])); mc = gmax(par, maximum(abs, @view δ[1, :, :]))
             sc = min(1.0, du_cap / mu_, dc_cap / mc)
             α = sc
@@ -687,16 +711,23 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             reason = :no_descent
             break
         end
-        μ = α == 1.0 ? μ / 3 : (α >= sc / 2 ? μ : 2μ)
-        μ < 1e-3 && (μ = 0.0)
         dec = (Φ - Φt) / Φ
+        model = 2α * pred - α^2 * jj / Φ             # relative model decrease of the step αδ
+        ρg = dec / model
+        if lm == :gain
+            μ = !(model > 0) || ρg < 0.25 ? max(4μ, 1.0) : ρg > 0.75 ? μ / 3 : μ
+        else
+            μ = α == 1.0 ? μ / 3 : (α >= sc / 2 ? μ : 2μ)
+        end
+        μ < 1e-3 && (μ = 0.0)
         u .= ut; c .= ct; Φ = Φt; steps = s
         dzmax = α * gmax(par, maximum(abs, @view δ[1, :, :]))
         nsmall = dec < rtol ? nsmall + 1 : 0
-        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e), RMS %.4e | CG %d its (rel %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
-                      s, Φ / Φ0, dec, pred, sqrt(Φ / Wtot), its, rel, α, μ, dzmax / 1e3, zq()..., time() - t0))
+        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
+                      s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, α, μ, dzmax / 1e3, zq()..., time() - t0))
         on_step === nothing || on_step(s, u, pr.z, (phi = Φ, pred = pred, cg_its = its, cg_rel = rel, alpha = α,
-                                                    seconds = time() - t0))
+                                                    seconds = time() - t0, model = model, rho = ρg, cg_tol = tol_k, lm_mu = μ))
+        forcing == :ew && isfinite(pred) && (tol_k = clamp(pred, eta_min, eta_max))
         npred = pred < gn_tol ? npred + 1 : 0
         if stop == :gn
             npred >= gn_consec && (logf(@sprintf("converged: predicted decrease < %.0e on %d consecutive steps (last max|δc| %.1f m)",

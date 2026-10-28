@@ -4,8 +4,9 @@ scripts/run.jl (column HSE in τ, aligned, then PoissonTau.solve_tau), with the 
 every step up to step 40 and every 10th step after that, for accuracy against the step count.
 
 usage: mpiexecjl -n R julia --project=. -t T scripts/viewing/measure_steps.jl INPUT.nc OUTDIR MU AZIMUTH_DEG GEOMETRY [KEY=VALUE ...]
-KEY: max_steps, rtol, n_consec, cg_maxit, cg_tol, logtau_cut, stop (phi | gn), gn_tol, gn_consec, balance (vertical | ray) (as the [poisson] keys;
-defaults: the earlier rule, stop = phi, max_steps 100).
+KEY: max_steps, rtol, n_consec, cg_maxit, cg_tol, logtau_cut, stop (phi | gn), gn_tol, gn_consec, balance (vertical | ray),
+lm (alpha | gain), forcing (fixed | ew), cg_cap, eta_min, eta_max (as the solve_tau keywords; defaults: the earlier rule,
+stop = phi, max_steps 100). logtau_cut is on the line-of-sight axis.
 OUTDIR/snap_r<rank>.h5: s<step>/{lnP, z} (and final/ at the returned state) (Float32, solved levels k_c … nt, this rank's x slab, Julia (τ, y, x)), with
 step attributes phi, pred, cg_its, cg_rel, alpha, seconds; root attributes i0 (first global x), kc, view.
 =#
@@ -20,12 +21,12 @@ const H = HSEMHS
 function main(path, outdir, mu_s, az_s, geom, kv...)
     H.ensure_mpi()
     o = Dict{String,Float64}("max_steps" => 100, "rtol" => 1e-4, "n_consec" => 3, "cg_maxit" => 80, "cg_tol" => 1e-3,
-                             "logtau_cut" => -4.0, "gn_tol" => 1e-3, "gn_consec" => 2)
-    stop = :phi; balance = :vertical
+                             "logtau_cut" => -4.0, "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200,
+                             "eta_min" => 0.005, "eta_max" => 0.1)
+    sy = Dict(:stop => :phi, :balance => :vertical, :lm => :alpha, :forcing => :fixed)
     for a in kv
         k, v = split(a, "=")
-        k == "stop" && (stop = Symbol(v); continue)
-        k == "balance" && (balance = Symbol(v); continue)
+        haskey(sy, Symbol(k)) && (sy[Symbol(k)] = Symbol(v); continue)
         haskey(o, k) || error("unknown key $k"); o[k] = parse(Float64, v)
     end
     v = H.ViewOptions(mu = parse(Float64, mu_s), azimuth_deg = parse(Float64, az_s), geometry = Symbol(geom))
@@ -38,7 +39,7 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     lT = log.(T); g = 274.0
     lnP, z0, nf, _, _, nbad = H.PoissonTau.column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", mu = v.mu)
     nbad == 0 || error("column HSE failed in $nf columns")
-    logf(@sprintf("column HSE done; view μ %.3f φ %.1f %s; stop %s, balance %s; options %s", v.mu, v.azimuth_deg, v.geometry, stop, balance, o))
+    logf(@sprintf("column HSE done; view μ %.3f φ %.1f %s; %s; options %s", v.mu, v.azimuth_deg, v.geometry, sy, o))
     mkpath(outdir)
     kc = argmin(abs.(lt .- o["logtau_cut"]))
     f = h5open(joinpath(outdir, "snap_r$(par.rank).h5"), "w")
@@ -58,8 +59,10 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     u, z, Φ0, Φ, steps, _, info = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, lnP, z0, x[2] - x[1], y[2] - y[1];
                                      logtau_cut = o["logtau_cut"], max_steps = Int(o["max_steps"]), rtol = o["rtol"],
                                      n_consec = Int(o["n_consec"]), cg_maxit = Int(o["cg_maxit"]), cg_tol = o["cg_tol"],
-                                     logf = logf, mu = v.mu, slant = H.slant(v), on_step = save, stop = stop,
-                                     gn_tol = o["gn_tol"], gn_consec = Int(o["gn_consec"]), balance = balance)
+                                     logf = logf, mu = v.mu, slant = H.slant(v), on_step = save, stop = sy[:stop],
+                                     gn_tol = o["gn_tol"], gn_consec = Int(o["gn_consec"]), balance = sy[:balance],
+                                     lm = sy[:lm], forcing = sy[:forcing], cg_cap = Int(o["cg_cap"]),
+                                     eta_min = o["eta_min"], eta_max = o["eta_max"])
     tsolve = time() - ts
     BLAS.set_num_threads(1)
     save(steps, u, z, (phi = Φ, pred = info.gn_decrement, cg_its = info.cg_its, cg_rel = info.cg_rel, alpha = NaN,
