@@ -584,6 +584,29 @@ function bands(pr::TP, lt, Hb, dzb)
 end
 
 """
+    warm_start!(u, z0, kc, uprev, cprev)
+
+Start of a solve from a previous solution (design/tau/SOLVER_TIME_DESIGN.md D4): `u`, `z0` are the new column HSE
+(levels above the cut and ln P at the fixed cut level kc are kept); `uprev` = ln P on levels kc … nt and `cprev` the
+cut heights of the previous solution. ln P below the cut is the previous one shifted per column by the change of ln P
+at the cut level; the heights above the cut are moved as a block onto the previous cut height.
+"""
+function warm_start!(u, z0, kc, uprev, cprev)
+    nt = size(u, 1)
+    @inbounds for i in axes(u, 3), j in axes(u, 2)
+        d = u[kc, j, i] - uprev[1, j, i]
+        for k in kc+1:nt
+            u[k, j, i] = uprev[k-kc+1, j, i] + d
+        end
+        h = cprev[j, i] - z0[kc, j, i]
+        for k in 1:kc
+            z0[k, j, i] += h
+        end
+    end
+    return u, z0
+end
+
+"""
 Problem on the τ grid from the start heights z0 (the cut level from `logtau_cut`); returns (pr, c) with c the heights
 of the cut level. Weights and regularisation are set by `solve_tau`; `evaluate!`, `Jop!` and `JTop!` work on `pr`.
 """
