@@ -231,8 +231,12 @@ mutable struct TP
     mu::Float64; tx::Float64; ty::Float64           # μ = cos θ; slant t (0, 0 unless inclined)
     vert::Bool                                      # inclined: vertical-balance column residual (D0)
     vq::Array{Float64,3}; vd::Array{Float64,3}      # per interval: t·R̄_h and Δz (vertical balance)
-    prec::Symbol                                    # :fourier (layer-median modes) or :block (exact column blocks, D3b)
-    blk::Array{Float64,4}                           # :block: Cholesky factors L of the column blocks, (n1, n1, ny, nx)
+    prec::Symbol                                    # :fourier (layer-median modes), :block (exact column blocks, D3b) or
+                                                    # :hybrid (column blocks + the Fourier modes with |k| ≤ klow, D3c)
+    blk::Array{Float64,4}                           # :block, :hybrid: Cholesky factors L of the column blocks, (n1, n1, ny, nx)
+    wk::Vector{Float64}                             # per T column: 1 for the modes the Fourier part acts on, else 0
+    dlm::Array{Float64,3}                           # :block, :hybrid: diag(JᵀWJ), set by colblocks! (Marquardt damping)
+    mlm::Float64                                    # Marquardt damping: the operator adds mlm · dlm
 end
 
 inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
@@ -524,13 +528,17 @@ function Aop!(pr::TP, out, v)
     jx .*= pr.wc; jy .*= pr.wc; jz .*= vcat(pr.wf, 0.0)
     JTop!(pr, out, jx, jy, jz)
     @. out += pr.ereg * v
+    pr.mlm > 0 && (@. out += pr.mlm * pr.dlm * v)
     return out
 end
 
 """Preconditioner at the current state and regularisation of `pr`: :fourier, the layer-median operator A + s² B per
-horizontal mode, diagonalised (M⁻¹ = Qᵀ diag(1/(1 + s²λ)) Q); :block, the exact column blocks (block Jacobi)."""
+horizontal mode, diagonalised (M⁻¹ = Qᵀ diag(1/(1 + s²λ)) Q); :block, the exact column blocks (block Jacobi);
+:hybrid, both added, the Fourier part on the modes |k| ≤ klow only (the large scales, which block Jacobi cannot
+propagate and which barely show in the residual: design/tau/SOLVER_TIME_DESIGN.md D3c)."""
 function setprec!(pr::TP)
-    pr.prec == :block && return colblocks!(pr)
+    pr.prec == :fourier || colblocks!(pr)
+    pr.prec == :block && return pr
     n1 = pr.n1; par = pr.par
     aχ = gmedians(par, pr.aχ); dw = gmedians(par, pr.dw); W = gmedians(par, pr.W)
     Gz = zeros(n1 - 1, n1)
@@ -559,15 +567,25 @@ end
 
 function Minv!(pr::TP, out, r)
     pr.prec == :block && return block_solve!(out, pr.blk, r)
+    if pr.prec == :hybrid
+        b = block_solve!(similar(out), pr.blk, r)
+        fourier_minv!(pr, out, r)
+        out .+= b
+        return out
+    end
+    return fourier_minv!(pr, out, r)
+end
+
+function fourier_minv!(pr::TP, out, r)
     n1 = pr.n1
     T = fwd!(pr.S, pr.par, r)
     X = reshape(T, n1, :)
     size(pr.Yh) == size(X) || (pr.Yh = similar(X))
     mul!(pr.Yh, pr.Q, X)
     Threads.@threads for col in axes(pr.Yh, 2)
-        s = pr.s2[col]
+        s = pr.s2[col]; w = pr.wk[col]
         @inbounds for m in 1:n1
-            pr.Yh[m, col] /= 1 + s * pr.λ[m]
+            pr.Yh[m, col] *= w / (1 + s * pr.λ[m])
         end
     end
     mul!(X, pr.Qt, pr.Yh)
@@ -588,6 +606,7 @@ Lorentz terms and, in the vertical balance, R̄_h. Needs NX, ny ≥ 3 (distinct 
 function colblocks!(pr::TP)
     n1, ny, nx = pr.n1, pr.ny, pr.nx; par = pr.par
     size(pr.blk) == (n1, n1, ny, nx) || (pr.blk = zeros(n1, n1, ny, nx))
+    size(pr.dlm) == (n1, ny, nx) || (pr.dlm = zeros(n1, ny, nx))
     vt = vertical(pr); tx = pr.tx; ty = pr.ty
     Wh = xhalo(par, pr.W); Xxh = xhalo(par, pr.pXx); Xyh = xhalo(par, pr.pXy); zXh = xhalo(par, pr.zX); vdh = xhalo(par, pr.vd)
     hf = [pr.dl[node(pr, f)] / 2 for f in 1:n1-1]
@@ -662,7 +681,10 @@ function colblocks!(pr::TP)
                 end
                 addgram!(B, Jx, Jy, Jz, pr.wc, pr.wf)
             end
-            for m in 1:n1; B[m, m] += pr.ereg[m]; end
+            for m in 1:n1
+                pr.dlm[m, j, i] = B[m, m]
+                B[m, m] += pr.ereg[m] + pr.mlm * B[m, m]
+            end
             chol_lower!(B) || (Threads.atomic_add!(nfail, 1))
         end
     end
@@ -777,7 +799,7 @@ Problem on the τ grid from the start heights z0 (the cut level from `logtau_cut
 of the cut level. Weights and regularisation are set by `solve_tau`; `evaluate!`, `Jop!` and `JTop!` work on `pr`.
 """
 function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0, S = nothing, mu = 1.0,
-                  slant = (0.0, 0.0), balance = :vertical, precond = :fourier)
+                  slant = (0.0, 0.0), balance = :vertical, precond = :fourier, klow = 8)
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
     zrel = z0[1:kc, :, :] .- z0[kc:kc, :, :]
@@ -789,13 +811,16 @@ function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0
     sx2 = [sin(2π * fftfreq(NX)[i])^2 / dx^2 for i in 1:NX]
     jr = S.jr[par.rank+1]
     s2 = vec([sx2[kx] + sy2[jr[1]+jl-1] for kx in 1:NX, jl in 1:length(jr)])   # T columns: (kx, local ky)
+    prec = precond in (:block, :hybrid) && NX >= 3 && ny >= 3 ? precond : :fourier
+    wk = prec == :hybrid ? vec([Float64((fftfreq(NX)[kx] * NX)^2 + (jr[1] + jl - 2)^2 <= klow^2) for kx in 1:NX, jl in 1:length(jr)]) :
+         ones(length(s2))
     Z() = zeros(n1, ny, nx); N3() = zeros(nt, ny, nx)
     pr = TP(par, S, tab, g, nt, kc, n1, ny, nx, dx, dy, LN10 .* lt, diff(LN10 .* lt), lT, Bx, By, Bz, zrel, N3(),
             N3(), N3(), N3(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(),
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
             Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z(),
-            precond == :block && NX >= 3 && ny >= 3 ? :block : :fourier, zeros(0, 0, 0, 0))
+            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0)
     return pr, c
 end
 
@@ -838,19 +863,26 @@ D2 (design/tau/SOLVER_TIME_DESIGN.md): `lm = :gain` sets the damping from the ga
 the accepted step (model 2α g·δ − α²‖Jδ‖²_W, g = −JᵀWR): ρ > 0.75 lowers μ ×3, ρ < 0.25 raises it to max(4μ, 1);
 `lm = :alpha` is the earlier rule (from the line-search length). `forcing = :ew` sets the CG tolerance from the outer
 progress, η = clamp(pred of the previous step, eta_min, eta_max), with at most `cg_cap` iterations; `forcing = :fixed`
-uses cg_tol and cg_maxit. `precond` (D3b): :fourier (layer-median Fourier modes) or :block (exact column blocks, block
-Jacobi; `colblocks!`).
+uses cg_tol and cg_maxit. `precond` (D3b): :fourier (layer-median Fourier modes), :block (exact column blocks, block
+Jacobi; `colblocks!`) or :hybrid (both, the Fourier part on the modes |k| ≤ `klow` (mode index) only; D3c).
+`damping = :marquardt` (block preconditioners only) damps with μ diag(JᵀWJ) instead of μ times the regularisation
+shape, from `mlm_min` up, and treats a step the caps would scale below `cap_frac` as outside the trust region (μ is
+raised and the step solved again): the column blocks expose near-null directions (ln P just below the cut) that the
+undamped step fills with huge values. A failed line search re-evaluates the state before the next solve.
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
                    cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
                    rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing,
                    stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical, lm = :alpha, forcing = :fixed,
-                   cg_cap = 200, eta_min = 0.005, eta_max = 0.1, precond = :fourier)
+                   cg_cap = 200, eta_min = 0.005, eta_max = 0.1, precond = :fourier, klow = 8,
+                   damping = :reg, cap_frac = 0.5, mlm_min = 0.01)
     nt, ny, nx = size(lT); NX = par.NX
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
-                     balance = balance, precond = precond)
+                     balance = balance, precond = precond, klow = klow)
     kc, n1 = pr.kc, pr.n1
+    damping == :marquardt && pr.prec == :fourier && error("solve_tau: damping = :marquardt needs precond = :block or :hybrid")
+    mq = damping == :marquardt
     Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
@@ -883,7 +915,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
         accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0; pred = NaN; jj = NaN
         for tries in 1:8
-            pr.ereg = ereg0 .+ μ .* Dlm
+            if mq
+                pr.mlm = μ
+            else
+                pr.ereg = ereg0 .+ μ .* Dlm
+            end
             setprec!(pr)
             its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit_k)
             pred = gdot(par, δ, rhs) / Φ
@@ -891,6 +927,10 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             jj = wnorm2(pr, jx, jy, jz)
             mu_ = gmax(par, maximum(abs, @view δ[2:end, :, :])); mc = gmax(par, maximum(abs, @view δ[1, :, :]))
             sc = min(1.0, du_cap / mu_, dc_cap / mc)
+            if mq && sc < cap_frac && tries < 8           # the step leaves the trust region set by the caps: damp more
+                μ = max(4μ, mlm_min)
+                continue
+            end
             α = sc
             for ls in 1:4
                 ut .= u; @views ut[kc+1:nt, :, :] .+= α .* δ[2:end, :, :]
@@ -900,7 +940,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                 α /= 2
             end
             accepted && break
-            μ = max(4μ, 1.0)
+            evaluate!(pr, u, c)                           # back to the linearisation state before solving again
+            μ = max(4μ, mq ? mlm_min : 1.0)
         end
         if !accepted
             evaluate!(pr, u, c)
@@ -912,11 +953,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         model = 2α * pred - α^2 * jj / Φ             # relative model decrease of the step αδ
         ρg = dec / model
         if lm == :gain
-            μ = !(model > 0) || ρg < 0.25 ? max(4μ, 1.0) : ρg > 0.75 ? μ / 3 : μ
+            μ = !(model > 0) || ρg < 0.25 ? max(4μ, mq ? mlm_min : 1.0) : ρg > 0.75 ? μ / 3 : μ
         else
             μ = α == 1.0 ? μ / 3 : (α >= sc / 2 ? μ : 2μ)
         end
-        μ < 1e-3 && (μ = 0.0)
+        μ < (mq ? mlm_min / 10 : 1e-3) && (μ = 0.0)
         u .= ut; c .= ct; Φ = Φt; steps = s
         dzmax = α * gmax(par, maximum(abs, @view δ[1, :, :]))
         nsmall = dec < rtol ? nsmall + 1 : 0
@@ -934,7 +975,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                                    reason = :converged; break)
         end
     end
-    pr.ereg = ereg0
+    pr.ereg = ereg0; pr.mlm = 0.0
     logf("end: " * bands(pr, lt, Hb, dzf))
     # stationarity at the returned state (pr holds its evaluation): undamped Gauss–Newton step δ from (JᵀWJ + ereg) δ =
     # −JᵀWR and the predicted relative decrease δ·(−JᵀWR)/Φ. Diagnostics only: u and z are not changed.

@@ -45,9 +45,9 @@ end
 function main(path, outdir, mu_s, az_s, geom, eps_s, kv...)
     H.ensure_mpi()
     o = Dict{String,Float64}("max_steps" => 25, "first_steps" => 25, "ref_steps" => 40, "logtau_cut" => -4.0,
-                             "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200, "eta_min" => 0.005, "eta_max" => 0.1,
+                             "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200, "klow" => 8, "cap_frac" => 0.5, "mlm_min" => 0.01, "eta_min" => 0.005, "eta_max" => 0.1,
                              "cg_maxit" => 80, "cg_tol" => 1e-3, "seed" => 1)
-    sy = Dict(:stop => :gn, :balance => :ray, :lm => :gain, :forcing => :ew, :precond => :fourier, :warm => :column)
+    sy = Dict(:stop => :gn, :balance => :ray, :lm => :gain, :forcing => :ew, :precond => :fourier, :damping => :reg, :warm => :column)
     for a in kv
         k, v = split(a, "=")
         haskey(sy, Symbol(k)) && (sy[Symbol(k)] = Symbol(v); continue)
@@ -68,7 +68,8 @@ function main(path, outdir, mu_s, az_s, geom, eps_s, kv...)
                                max_steps = Int(nsteps), cg_maxit = Int(o["cg_maxit"]), cg_tol = o["cg_tol"], logf = quiet,
                                mu = v.mu, slant = H.slant(v), on_step = on_step, stop = sy[:stop], gn_tol = o["gn_tol"],
                                gn_consec = Int(o["gn_consec"]), balance = sy[:balance], lm = sy[:lm],
-                               forcing = sy[:forcing], precond = sy[:precond], cg_cap = Int(o["cg_cap"]), eta_min = o["eta_min"],
+                               forcing = sy[:forcing], precond = sy[:precond], damping = sy[:damping], klow = Int(o["klow"]), cap_frac = o["cap_frac"],
+                               mlm_min = o["mlm_min"], cg_cap = Int(o["cg_cap"]), eta_min = o["eta_min"],
                                eta_max = o["eta_max"], stationarity = false)
     column(lTs) = (r = H.PoissonTau.column_hse_tau(par, lt, lTs, Bx, By, Bz, tab, g; align = "ptot", mu = v.mu);
                    r[6] == 0 || error("column HSE failed"); (r[1], r[2]))

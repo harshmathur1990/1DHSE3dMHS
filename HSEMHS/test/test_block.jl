@@ -1,6 +1,6 @@
 # Column-block preconditioner of mhs-poisson-ltau (design/tau/SOLVER_TIME_DESIGN.md D3b): the analytically assembled
-# blocks equal the diagonal blocks of the operator (probed with unit vectors), the block solve inverts them, and a
-# solve preconditioned with them converges.
+# blocks equal the diagonal blocks of the operator (probed with unit vectors), the block solve inverts them, and solves
+# preconditioned with them (alone, and with the low-|k| Fourier modes added: D3c) converge.
 
 @isdefined(ETABLE) || include("embedded_helpers.jl")
 
@@ -43,12 +43,15 @@
     @testset "solve with the block preconditioner" begin
         v = H.ViewOptions(mu = 0.5, azimuth_deg = 30.0, geometry = :inclined)
         lnP, z0, _ = PT.column_hse_tau(par, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, tab, g; mu = v.mu)
-        run(p) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
-                              max_steps = 15, mu = v.mu, slant = H.slant(v), precond = p, stop = :gn, lm = :gain,
+        run(p; d = :reg) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
+                              max_steps = 15, mu = v.mu, slant = H.slant(v), precond = p, damping = d, stop = :gn, lm = :gain,
                               forcing = :ew, stationarity = false)
-        f = run(:fourier); b = run(:block)
-        @test b[7].reason in (:converged, :max_steps)
-        @test b[4] / b[3] < 0.1                                             # Φ/Φ₀
-        @test b[4] <= 2 * f[4]
+        f = run(:fourier)
+        for (p, d) in ((:block, :reg), (:hybrid, :reg), (:hybrid, :marquardt))
+            b = run(p; d = d)
+            @test b[7].reason in (:converged, :max_steps)
+            @test b[4] / b[3] < 0.1                                         # Φ/Φ₀
+            @test b[4] <= 2 * f[4]
+        end
     end
 end

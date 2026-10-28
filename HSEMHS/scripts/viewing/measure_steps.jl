@@ -21,9 +21,9 @@ const H = HSEMHS
 function main(path, outdir, mu_s, az_s, geom, kv...)
     H.ensure_mpi()
     o = Dict{String,Float64}("max_steps" => 100, "rtol" => 1e-4, "n_consec" => 3, "cg_maxit" => 80, "cg_tol" => 1e-3,
-                             "logtau_cut" => -4.0, "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200,
+                             "logtau_cut" => -4.0, "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200, "klow" => 8, "cap_frac" => 0.5, "mlm_min" => 0.01,
                              "eta_min" => 0.005, "eta_max" => 0.1)
-    sy = Dict(:stop => :phi, :balance => :vertical, :lm => :alpha, :forcing => :fixed, :precond => :fourier)
+    sy = Dict(:stop => :phi, :balance => :vertical, :lm => :alpha, :forcing => :fixed, :precond => :fourier, :damping => :reg)
     for a in kv
         k, v = split(a, "=")
         haskey(sy, Symbol(k)) && (sy[Symbol(k)] = Symbol(v); continue)
@@ -61,7 +61,8 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
                                      n_consec = Int(o["n_consec"]), cg_maxit = Int(o["cg_maxit"]), cg_tol = o["cg_tol"],
                                      logf = logf, mu = v.mu, slant = H.slant(v), on_step = save, stop = sy[:stop],
                                      gn_tol = o["gn_tol"], gn_consec = Int(o["gn_consec"]), balance = sy[:balance],
-                                     lm = sy[:lm], forcing = sy[:forcing], precond = sy[:precond], cg_cap = Int(o["cg_cap"]),
+                                     lm = sy[:lm], forcing = sy[:forcing], precond = sy[:precond], damping = sy[:damping], klow = Int(o["klow"]), cap_frac = o["cap_frac"],
+                               mlm_min = o["mlm_min"], cg_cap = Int(o["cg_cap"]),
                                      eta_min = o["eta_min"], eta_max = o["eta_max"])
     tsolve = time() - ts
     BLAS.set_num_threads(1)
