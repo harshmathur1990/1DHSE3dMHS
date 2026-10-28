@@ -5,8 +5,9 @@ what the solvers and preconditioners do with it.
 
 usage: mpiexecjl -n R julia --project=. -t T scripts/viewing/frozen_lab.jl INPUT.nc MU AZIMUTH_DEG GEOMETRY LOGTAU_CUT_LOS BALANCE STEPS [KEY=VALUE ...]
 KEY: crop (0: the full cube; NC > 0: an NC × NC crop around the strongest |B| at τ = 1, periodic, one rank only),
-parts (comma list of checks, gauge, tight, direct, marq; default checks,gauge,tight,marq; direct needs a crop),
-traj (preconditioner of the trajectory, default fourier), tight_tol (1e-8), tight_maxit (2000), marq_maxit (600).
+parts (comma list of checks, gauge, tight, direct, marq, coarse; default checks,gauge,tight,marq; direct needs a crop),
+traj (preconditioner of the trajectory, default fourier), tight_tol (1e-8), tight_maxit (2000), marq_maxit (600),
+ritz_its (Lanczos iterations, 300), nritz (Ritz vectors kept, 32).
 
 checks  adjoint ⟨Jv, w⟩ = ⟨v, Jᵀw⟩; finite differences of R against Jv for ε 1e-2 … 1e-6 (a random v and one
         supported on the 5 levels below the cut); symmetry and positivity of A = JᵀWJ + ereg and of each M⁻¹;
@@ -20,6 +21,8 @@ direct  dense A by probes, Cholesky solve (compared with the PCG δ) and the sma
         and of H + ereg: eigenvalue / largest, c share, depth (log τ of the largest ln P part), |k| of the c part.
 marq    Marquardt damping μ ∈ 0, 0.01, 0.1, 1, 10 for block, hybrid without and with the damping in its Fourier part:
         build time, CG iterations and residuals (tol 0.1 and 1e-3), pred, cap scale.
+coarse  slow modes of the block-preconditioned system (Ritz pairs from Lanczos) and balanced deflation with
+        several coarse spaces (`coarse_lab`).
 =#
 using HSEMHS
 using MPI
@@ -35,7 +38,7 @@ const HREF = 1e5
 function main(path, mu_s, az_s, geom, cut_s, bal, steps_s, kv...)
     H.ensure_mpi()
     o = Dict{String,Any}("crop" => 0, "parts" => "checks,gauge,tight,marq", "traj" => "fourier", "tight_tol" => 1e-8,
-                         "tight_maxit" => 2000, "marq_maxit" => 600)
+                         "tight_maxit" => 2000, "marq_maxit" => 600, "ritz_its" => 300, "nritz" => 32)
     for a in kv
         k, v = split(a, "="); haskey(o, k) || error("unknown key $k")
         o[k] = o[k] isa String ? String(v) : o[k] isa Int ? parse(Int, v) : parse(Float64, v)
@@ -244,7 +247,143 @@ function main(path, mu_s, az_s, geom, cut_s, bal, steps_s, kv...)
             logf(@sprintf("marq μ %-5g %-7s fdamp %-5s build %.1f s | %s", μ, pc, fd, tb, join(row, " | ")))
         end
     end
+    if "coarse" in parts
+        coarse_lab(par, pr, rhs, Φ, lt, NX, o, logf, Z, snorm, sc_, truerel, gi)
+    end
     logf("done")
+end
+
+"""Columns of a matrix (local part) for a list of fields."""
+cols(fs) = reduce(hcat, (vec(f) for f in fs))
+
+"""
+Coarse-space part (Codex review step 5): the slow modes of the block-preconditioned system from the Lanczos process of
+`ritz_its` PCG iterations (Ritz pairs of M⁻¹A, the smallest `nritz` characterised: θ, residual, c share, |k| ≤ 2 share,
+depth) and balanced deflation M⁻¹_BNN = Q + (I − QA) B (I − AQ), Q = Z (ZᵀAZ)⁻¹ Zᵀ, B the column blocks, for
+coarse spaces Z: the cut-height gauge modes, low-k cut-height Fourier modes, low-k modes on every level, Ritz vectors.
+"""
+function coarse_lab(par, pr, rhs, Φ, lt, NX, o, logf, Z, snorm, sc_, truerel, gi)
+    n1, ny, nx, kc = pr.n1, pr.ny, pr.nx, pr.kc
+    p = pr; p.prec = :block; p.mlm = 0.0; PT.setprec!(p)
+    N = ny * NX; nloc = n1 * ny * nx
+    hs = ones(n1); hs[1] = HREF                                 # scaled field: c / HREF
+    ii = reshape(collect(gi), 1, :); jj = collect(1:ny)
+    # Lanczos from PCG: q_j = z_j / √(r_jᵀ z_j) M-orthonormal (signs folded into T), T from α, β
+    m = o["ritz_its"]; V = zeros(nloc, m)
+    xs = Z(); r = copy(rhs); zv = Z(); pv = Z(); Ap = Z()
+    PT.Minv!(p, zv, r); pv .= zv; rz = H.gdot(par, r, zv); α = Float64[]; β = Float64[]
+    t0 = time()
+    for j in 1:m
+        V[:, j] .= vec(zv) ./ sqrt(rz)
+        PT.Aop!(p, Ap, pv); a = rz / H.gdot(par, pv, Ap); push!(α, a)
+        @. xs += a * pv; @. r -= a * Ap
+        PT.Minv!(p, zv, r); rz2 = H.gdot(par, r, zv); b = rz2 / rz; push!(β, b); rz = rz2
+        @. pv = zv + b * pv
+    end
+    rel = H.gnorm(par, r) / H.gnorm(par, rhs)
+    T = zeros(m, m)
+    for j in 1:m
+        T[j, j] = 1 / α[j] + (j > 1 ? β[j-1] / α[j-1] : 0.0)
+        j < m && (T[j, j+1] = T[j+1, j] = -sqrt(β[j]) / α[j])
+    end
+    E = eigen(Symmetric(T))
+    logf(@sprintf("Lanczos (block PCG) %d its %.0f s, rel %.1e: Ritz θ of M⁻¹A min %.3e max %.3e (κ ≈ %.2e); smallest: %s",
+                  m, time() - t0, rel, E.values[1], E.values[end], E.values[end] / E.values[1],
+                  join((@sprintf("%.2e", t) for t in E.values[1:min(12, m)]), " ")))
+    nr = min(o["nritz"], m)
+    BLAS.set_num_threads(min(32, Threads.nthreads()))
+    X = V * E.vectors[:, 1:nr]
+    BLAS.set_num_threads(1)
+    V = nothing; GC.gc()
+    # low-k phases on the global grid for the |k| ≤ 2 shares
+    ks = [(ky, kx) for ky in -2:2 for kx in -2:2 if ky^2 + kx^2 <= 4]
+    phs = [vec(cis.(-2π .* (kx .* (ii .- 1) ./ NX .+ ky .* (jj .- 1) ./ ny))) for (ky, kx) in ks]
+    gauge = [ones(ny, nx), repeat((-1.0) .^ ii, ny, 1), repeat((-1.0) .^ jj, 1, nx), (-1.0) .^ (jj .+ ii)]
+    function describe(x)
+        s = reshape(x, n1, ny, nx) ./ hs                      # scaled field
+        tot = H.gsum(par, sum(abs2, s))
+        cs = H.gsum(par, sum(abs2, @view s[1, :, :])) / tot
+        S2 = reshape(s, n1, ny * nx)
+        lk = 0.0
+        for ph in phs
+            F = S2 * ph; Fr = H.gsum(par, real(F)); Fi = H.gsum(par, imag(F))
+            lk += sum(abs2, Fr) + sum(abs2, Fi)
+        end
+        lev = [H.gsum(par, sum(abs2, @view s[q, :, :])) for q in 2:n1]
+        dep = sum(lt[kc+1:kc+n1-1] .* lev) / max(sum(lev), eps())
+        gov = sum(abs2, [H.gsum(par, sum(s[1, :, :] .* gm)) for gm in gauge]) / N / tot   # c part in the gauge modes
+        return cs, lk / N / tot, dep, gov
+    end
+    w = Z(); Ax = Z()
+    for q in 1:nr
+        x = reshape(view(X, :, q), n1, ny, nx)
+        PT.Aop!(p, Ax, x); PT.Minv!(p, w, Ax)
+        res = snorm(w .- E.values[q] .* x) / (E.values[q] * snorm(x))
+        cs, lk, dep, gov = describe(vec(x))
+        logf(@sprintf("  Ritz %-2d θ %.3e res %.1e: c share %.2f, |k| ≤ 2 share %.2f, gauge share %.2f, ln P mean log τ %.2f",
+                      q, E.values[q], res, cs, lk, gov, dep))
+    end
+
+    # coarse spaces
+    function fourier_fields(K; levels)
+        fs = Array{Float64,3}[]
+        pats = Matrix{Float64}[ones(ny, nx)]
+        for ky in 0:K, kx in -K:K
+            (ky == 0 && kx <= 0) && continue
+            ky^2 + kx^2 <= K^2 || continue
+            ang = 2π .* (kx .* (ii .- 1) ./ NX .+ ky .* (jj .- 1) ./ ny)
+            push!(pats, cos.(ang), sin.(ang))
+        end
+        for q in levels, pt in pats
+            f = Z(); f[q, :, :] .= pt .* hs[q]; push!(fs, f)
+        end
+        for gm in gauge[2:4]
+            f = Z(); f[1, :, :] .= gm .* HREF; push!(fs, f)
+        end
+        return fs
+    end
+    sets = Any[("gauge (4)", () -> (fs = Array{Float64,3}[]; for gm in gauge; f = Z(); f[1, :, :] .= gm .* HREF; push!(fs, f); end; cols(fs))),
+               ("c |k| ≤ 2", () -> cols(fourier_fields(2; levels = 1:1))),
+               ("c |k| ≤ 4", () -> cols(fourier_fields(4; levels = 1:1))),
+               ("all levels |k| ≤ 1", () -> cols(fourier_fields(1; levels = 1:n1))),
+               ("all levels |k| ≤ 2", () -> cols(fourier_fields(2; levels = 1:n1))),
+               ("Ritz 8", () -> X[:, 1:min(8, nr)]),
+               ("Ritz $nr", () -> X)]
+    for (name, mk) in sets
+        tb = time()
+        Zm = mk(); k = size(Zm, 2)
+        AZ = similar(Zm); t = Z()
+        for q in 1:k
+            PT.Aop!(p, t, reshape(view(Zm, :, q), n1, ny, nx)); AZ[:, q] .= vec(t)
+        end
+        BLAS.set_num_threads(min(32, Threads.nthreads()))
+        Eg = reshape(H.gsum(par, vec(Zm' * AZ)), k, k); Eg = (Eg .+ Eg') ./ 2
+        BLAS.set_num_threads(1)
+        Ee = eigen(Symmetric(Eg)); keep = Ee.values .> 1e-12 * Ee.values[end]
+        Ei = Ee.vectors[:, keep] * Diagonal(1 ./ Ee.values[keep]) * Ee.vectors[:, keep]'   # (ZᵀAZ)⁻¹ on its range
+        tb = time() - tb
+        gz(v) = H.gsum(par, Zm' * vec(v))
+        gaz(v) = H.gsum(par, AZ' * vec(v))
+        bt = Z(); y = Z()
+        function bnn!(_, out, rr)                               # Q r + (I − QA) B (I − AQ) r
+            c1 = Ei * gz(rr)
+            bt .= rr .- reshape(AZ * c1, n1, ny, nx)
+            PT.Minv!(p, y, bt)
+            c2 = Ei * gaz(y)
+            out .= y .- reshape(Zm * c2, n1, ny, nx) .+ reshape(Zm * c1, n1, ny, nx)
+            return out
+        end
+        row = String[]
+        for (tol, mi) in ((1e-3, o["marq_maxit"]), (1e-5, 2 * o["marq_maxit"]))
+            δ = Z(); ts = time()
+            its, rel = PT.pcg!(PT.Aop!, bnn!, par, p, δ, rhs; tol = tol, maxit = mi)
+            sc, du, dc = sc_(δ)
+            push!(row, @sprintf("tol %.0e: %4d its %5.0f s true %.1e pred %.3f sc %.3f", tol, its, time() - ts, truerel(p, δ),
+                                H.gdot(par, δ, rhs) / Φ, sc))
+        end
+        logf(@sprintf("BNN %-20s k %4d (rank %4d, cond(ZᵀAZ) %.1e) build %.0f s | %s", name, k, count(keep),
+                      Ee.values[end] / Ee.values[findfirst(keep)], tb, join(row, " | ")))
+    end
 end
 
 main(ARGS...)
