@@ -311,7 +311,7 @@ function evaluate!(pr::TP, u, c)
             end
         end
     end
-    gcount(pr.par, bad[]) > 0 && return Inf, 1
+    nbad = gcount(pr.par, bad[]); nbad > 0 && return Inf, nbad
     Bxz, Byz, Bzz, zxf, zyf = lorentz_tau!(pr)
     tx = pr.tx; ty = pr.ty; sl = inclined(pr)
     Threads.@threads for i in 1:nx
@@ -995,6 +995,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
         accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0; pred = NaN; jj = NaN
         cg_s = 0; tries_s = 0; ev_s = 0
+        fails = String[]                                  # per failed try: μ, CG, pred, cap scale, trial Φ/Φ (bad = EOS out of range)
         for tries in 1:8
             tries_s = tries
             if mq
@@ -1014,15 +1015,18 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                 μ = max(4μ, mlm_min)
                 continue
             end
-            α = sc
-            for ls in 1:4
+            α = sc; trial = String[]
+            for ls in 1:12                                # 4 halvings, more while the trial leaves the EOS table
+                ls > 4 && bad == 0 && break
                 ut .= u; @views ut[kc+1:nt, :, :] .+= α .* δ[2:end, :, :]
                 @views ct .= c .+ α .* δ[1, :, :]
                 Φt, bad = evaluate!(pr, ut, ct); ev_s += 1
                 bad == 0 && Φt < Φ && (accepted = true; break)
+                push!(trial, bad == 0 ? @sprintf("%.4g", Φt / Φ) : "bad $bad")
                 α /= 2
             end
             accepted && break
+            push!(fails, @sprintf("μ %.3g: CG %d rel %.2g pred %.3g cap %.3g, Φ/Φ [%s]", μ, its, rel, pred, sc, join(trial, " ")))
             evaluate!(pr, u, c)                           # back to the linearisation state before solving again
             μ = max(4μ, mq ? mlm_min : 1.0)
         end
@@ -1030,6 +1034,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         if !accepted
             evaluate!(pr, u, c)
             logf(@sprintf("step %2d: no decrease up to μ = %.3g; stopping", s, μ))
+            foreach(f -> logf("    failed try " * f), fails)
             reason = :no_descent
             break
         end
