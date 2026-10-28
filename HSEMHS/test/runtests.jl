@@ -38,6 +38,7 @@ include("test_face_bounds.jl")
 include("test_tau_height.jl")
 include("test_embedded.jl")
 include("test_view.jl")
+include("test_block.jl")
 include("test_warm.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks

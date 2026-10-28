@@ -329,7 +329,7 @@ mutable struct EmbeddedWorkspace
     logf::Any
     progress::Bool
     view::ViewOptions
-    warm::Any                         # mhs-poisson-ltau: (ln P on levels k_c…, cut heights) of the last valid solve, or nothing
+    warm::Any                         # mhs-poisson-ltau: (ln P on levels k_c…, cut heights) of the last valid solve and of its column HSE, or nothing
 end
 
 height_mode(mode) = mode in (:column_hse_z, :mhs_poisson_z)
@@ -430,8 +430,8 @@ Collective. `lnT` = ln(T/K) and the cell-centred field [T] on this rank's slab, 
 Poisson modes and for column-hse-ltau with align = "ptot"; `nothing` means zero otherwise. T and B are not modified.
 Returns `ws.res` (buffers reused by the next solve; see `snapshot`).
 `start` (mhs-poisson-ltau): `:column_hse` (default) starts the solved region from the column HSE; `:previous` from the
-last valid solution of this workspace (warm start for inversion loops, design/tau/SOLVER_TIME_DESIGN.md D4), or from
-the column HSE when there is none. `status.stats["start"]` records which was used.
+last valid solution of this workspace, corrected by the change of the column HSE (warm start for inversion loops,
+design/tau/SOLVER_TIME_DESIGN.md D4b), or from the column HSE when there is none. `status.stats["start"]` records which was used.
 """
 function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx = nothing, By = nothing, Bz = nothing;
                          start::Symbol = :column_hse)
@@ -472,12 +472,13 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
     else
         column_ltau!(ws, lT, bx, by, bz, st)
         res.Pgas_start .= res.Pgas
+        kc = cut_levels(ws.poisson, ws.axis, ws.view.mu)[1]
+        col = (res.lnP[kc:end, :, :], res.z[kc, :, :])                 # this column HSE, for the next warm start
         st.valid && poisson_ltau!(ws, lT, bx, by, bz, st; warm = start == :previous ? ws.warm : nothing)
     end
     st.valid && check_fields!(ws, st)
     if ws.mode == :mhs_poisson_ltau && st.valid                       # an invalid solve keeps the earlier warm start
-        kc = cut_levels(ws.poisson, ws.axis, ws.view.mu)[1]
-        ws.warm = (res.lnP[kc:end, :, :], res.z[kc, :, :])
+        ws.warm = (res.lnP[kc:end, :, :], res.z[kc, :, :], col...)
     end
     st.stats["view_mu"] = ws.view.mu; st.stats["view_azimuth_deg"] = ws.view.azimuth_deg
     st.stats["view_geometry"] = String(ws.view.geometry)
@@ -641,7 +642,8 @@ function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
 end
 
 """Gauss–Newton solve on the τ grid from the column-HSE start in ws.res (or a warm start on top of it: `warm` =
-(ln P on levels k_c…, cut heights) of a previous solution); gauged afterwards (mean z(τ = 1) = 0)."""
+(ln P on levels k_c…, cut heights) of a previous solution and of its column HSE, PoissonTau.warm_start!); gauged
+afterwards (mean z(τ = 1) = 0)."""
 function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing)
     par = ws.par; res = ws.res; o = ws.poisson; lt = ws.axis
     u0 = copy(res.lnP); z0 = res.z

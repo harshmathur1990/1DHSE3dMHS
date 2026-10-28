@@ -29,6 +29,7 @@ module PoissonTau
 using MPI, FFTW, LinearAlgebra, Printf, HDF5
 import ..HSEMHS as H
 using ..Slab
+import ..Slab: xhalo
 import ..HSEMHS: ParCtx, rank0, MU0
 using ProgressMeter: Progress, next!, finish!
 import ..PoissonZ: tbcast!, pcg!
@@ -230,6 +231,8 @@ mutable struct TP
     mu::Float64; tx::Float64; ty::Float64           # μ = cos θ; slant t (0, 0 unless inclined)
     vert::Bool                                      # inclined: vertical-balance column residual (D0)
     vq::Array{Float64,3}; vd::Array{Float64,3}      # per interval: t·R̄_h and Δz (vertical balance)
+    prec::Symbol                                    # :fourier (layer-median modes) or :block (exact column blocks, D3b)
+    blk::Array{Float64,4}                           # :block: Cholesky factors L of the column blocks, (n1, n1, ny, nx)
 end
 
 inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
@@ -524,8 +527,10 @@ function Aop!(pr::TP, out, v)
     return out
 end
 
-"""Layer-median operator A + s² B per horizontal mode, diagonalised: M⁻¹ = Qᵀ diag(1/(1 + s²λ)) Q."""
+"""Preconditioner at the current state and regularisation of `pr`: :fourier, the layer-median operator A + s² B per
+horizontal mode, diagonalised (M⁻¹ = Qᵀ diag(1/(1 + s²λ)) Q); :block, the exact column blocks (block Jacobi)."""
 function setprec!(pr::TP)
+    pr.prec == :block && return colblocks!(pr)
     n1 = pr.n1; par = pr.par
     aχ = gmedians(par, pr.aχ); dw = gmedians(par, pr.dw); W = gmedians(par, pr.W)
     Gz = zeros(n1 - 1, n1)
@@ -553,6 +558,7 @@ function setprec!(pr::TP)
 end
 
 function Minv!(pr::TP, out, r)
+    pr.prec == :block && return block_solve!(out, pr.blk, r)
     n1 = pr.n1
     T = fwd!(pr.S, pr.par, r)
     X = reshape(T, n1, :)
@@ -566,6 +572,156 @@ function Minv!(pr::TP, out, r)
     end
     mul!(X, pr.Qt, pr.Yh)
     bwd!(pr.S, pr.par, out)
+    return out
+end
+
+"""
+    colblocks!(pr)
+
+Block-Jacobi preconditioner (design/tau/SOLVER_TIME_DESIGN.md D3b): the diagonal blocks Σ_R J_RPᵀ W J_RP + diag(ereg)
+of JᵀWJ + ereg, one n₁ × n₁ block per column P, assembled from the Jacobian coefficients of the evaluated state and
+Cholesky-factored into pr.blk. The rows R that depend on column P are its own and, through the centred differences
+(no self term), those of its four horizontal neighbours: ∂_x of ln P and of the heights, X = ∂_xδz and Y = ∂_yδz in the
+Lorentz terms and, in the vertical balance, R̄_h. Needs NX, ny ≥ 3 (distinct neighbours; tp_setup falls back to
+:fourier). The field-dependent terms that stall the Fourier preconditioner (the slant, B gradients) are exact here.
+"""
+function colblocks!(pr::TP)
+    n1, ny, nx = pr.n1, pr.ny, pr.nx; par = pr.par
+    size(pr.blk) == (n1, n1, ny, nx) || (pr.blk = zeros(n1, n1, ny, nx))
+    vt = vertical(pr); tx = pr.tx; ty = pr.ty
+    Wh = xhalo(par, pr.W); Xxh = xhalo(par, pr.pXx); Xyh = xhalo(par, pr.pXy); zXh = xhalo(par, pr.zX); vdh = xhalo(par, pr.vd)
+    hf = [pr.dl[node(pr, f)] / 2 for f in 1:n1-1]
+    nfail = Threads.Atomic{Int}(0)
+    Threads.@threads for i in 1:nx
+        Zm = zeros(n1, n1); Zt = zeros(n1, n1)                  # δz = Zm v; ζ = Zt v
+        Jx = zeros(n1, n1); Jy = zeros(n1, n1); Jz = zeros(n1, n1 - 1); T = zeros(n1, n1)   # rows stored as columns
+        cW = zeros(n1); c1 = zeros(n1); c2 = zeros(n1); cT = zeros(n1); cV = zeros(n1)        # neighbour coefficients
+        @inbounds for j in 1:ny
+            B = @view pr.blk[:, :, j, i]; fill!(B, 0.0)
+            fill!(Zm, 0.0); Zm[1, 1] = 1.0                      # Zm[:, m] = row m of the δz map (transposed)
+            for f in 1:n1-1
+                for l in 1:f; Zm[l, f+1] = Zm[l, f]; end
+                f >= 2 && (Zm[f, f+1] += hf[f] * pr.aχ[f, j, i])
+                Zm[f+1, f+1] += hf[f] * pr.aχ[f+1, j, i]
+            end
+            for m in 1:n1
+                a, b = m == n1 ? (n1 - 1, n1) : (m == 1 ? 1 : m - 1, m + 1)
+                d = pr.zden[m, j, i]
+                for l in 1:n1; Zt[l, m] = (Zm[l, a] - Zm[l, b]) / d; end
+            end
+            # rows of column P itself
+            for m in 1:n1, l in 1:n1
+                Jx[l, m] = pr.px[m, j, i] * Zt[l, m]; Jy[l, m] = pr.py[m, j, i] * Zt[l, m]; T[l, m] = pr.zζ[m, j, i] * Zt[l, m]
+            end
+            for m in 2:n1; Jx[m, m] += pr.lx[m, j, i]; Jy[m, m] += pr.ly[m, j, i]; end
+            for f in 1:n1-1
+                for l in 1:n1; Jz[l, f] = hf[f] * (T[l, f] + T[l, f+1]); end
+                f >= 2 && (Jz[f, f] += -1 - hf[f] * pr.dw[f, j, i])
+                Jz[f+1, f] += 1 - hf[f] * pr.dw[f+1, j, i]
+                if vt
+                    q = pr.vq[f, j, i]; vd = 0.5 * pr.vd[f, j, i]
+                    for l in 1:n1
+                        Jz[l, f] -= (Zm[l, f] - Zm[l, f+1]) * q + vd * (tx * (Jx[l, f] + Jx[l, f+1]) + ty * (Jy[l, f] + Jy[l, f+1]))
+                    end
+                end
+            end
+            addgram!(B, Jx, Jy, Jz, pr.wc, pr.wf)
+            # rows of the four neighbours R: their centred differences take column P with weight s. Along x,
+            # δR_x = −∂_xδu + (pXx − W) X + pXy-part in R_y, T from zX; along y the same with the roles of x and y swapped
+            for nb in 1:4
+                if nb <= 2                                      # nb 1: R = P + x̂ (P is R's left neighbour)
+                    s = (nb == 1 ? -1 : 1) / (2pr.dx); ii = nb == 1 ? i + 1 : i - 1
+                    for m in 1:n1
+                        if 1 <= ii <= nx
+                            cW[m] = pr.W[m, j, ii]; c1[m] = pr.pXx[m, j, ii]; c2[m] = pr.pXy[m, j, ii]
+                            cT[m] = pr.zX[m, j, ii]; cV[m] = pr.vd[m, j, ii]
+                        else
+                            h = ii > nx ? 2 : 1
+                            cW[m] = Wh[h][m, j]; c1[m] = Xxh[h][m, j]; c2[m] = Xyh[h][m, j]; cT[m] = zXh[h][m, j]; cV[m] = vdh[h][m, j]
+                        end
+                    end
+                    Ja, Jb = Jx, Jy                             # Ja: the component whose derivative is along the step
+                else
+                    s = (nb == 3 ? -1 : 1) / (2pr.dy); jj = nb == 3 ? (j == ny ? 1 : j + 1) : (j == 1 ? ny : j - 1)
+                    for m in 1:n1
+                        cW[m] = pr.W[m, jj, i]; c1[m] = pr.pYy[m, jj, i]; c2[m] = pr.pYx[m, jj, i]
+                        cT[m] = pr.zY[m, jj, i]; cV[m] = pr.vd[m, jj, i]
+                    end
+                    Ja, Jb = Jy, Jx
+                end
+                for m in 1:n1
+                    ca = s * (c1[m] - cW[m]); cb = s * c2[m]; ct = s * cT[m]
+                    for l in 1:n1; Ja[l, m] = ca * Zm[l, m]; Jb[l, m] = cb * Zm[l, m]; T[l, m] = ct * Zm[l, m]; end
+                    m >= 2 && (Ja[m, m] -= s)
+                end
+                for f in 1:n1-1
+                    vd = vt ? 0.5 * cV[f] : 0.0
+                    for l in 1:n1
+                        Jz[l, f] = hf[f] * (T[l, f] + T[l, f+1]) - vd * (tx * (Jx[l, f] + Jx[l, f+1]) + ty * (Jy[l, f] + Jy[l, f+1]))
+                    end
+                end
+                addgram!(B, Jx, Jy, Jz, pr.wc, pr.wf)
+            end
+            for m in 1:n1; B[m, m] += pr.ereg[m]; end
+            chol_lower!(B) || (Threads.atomic_add!(nfail, 1))
+        end
+    end
+    gcount(par, nfail[]) == 0 || error("colblocks!: a column block is not positive definite")
+    return pr
+end
+
+"""B += Jxᵀ diag(wc) Jx + Jyᵀ diag(wc) Jy + Jzᵀ diag(wf) Jz (lower triangle; J rows stored as the columns of Jx, Jy, Jz)."""
+function addgram!(B, Jx, Jy, Jz, wc, wf)
+    n1 = size(B, 1)
+    @inbounds for (J, w) in ((Jx, wc), (Jy, wc), (Jz, wf)), r in 1:size(J, 2)
+        wr = w[r]
+        for b in 1:n1
+            t = wr * J[b, r]
+            t == 0.0 && continue
+            @simd for a in b:n1
+                B[a, b] += t * J[a, r]
+            end
+        end
+    end
+    return B
+end
+
+"""In-place Cholesky of the lower triangle of B (B = L Lᵀ, L in the lower triangle); false if not positive definite."""
+function chol_lower!(B)
+    n = size(B, 1)
+    @inbounds for k in 1:n
+        d = B[k, k]
+        d > 0 || return false
+        d = sqrt(d); B[k, k] = d
+        for a in k+1:n; B[a, k] /= d; end
+        for b in k+1:n
+            t = B[b, k]
+            @simd for a in b:n
+                B[a, b] -= t * B[a, k]
+            end
+        end
+    end
+    return true
+end
+
+"""out = (L Lᵀ)⁻¹ r per column, L the factors of `colblocks!`."""
+function block_solve!(out, F, r)
+    n1 = size(F, 1)
+    Threads.@threads for i in axes(r, 3)
+        @inbounds for j in axes(r, 2)
+            L = @view F[:, :, j, i]
+            for m in 1:n1; out[m, j, i] = r[m, j, i]; end
+            for k in 1:n1                                       # L y = r
+                y = out[k, j, i] / L[k, k]; out[k, j, i] = y
+                for a in k+1:n1; out[a, j, i] -= L[a, k] * y; end
+            end
+            for k in n1:-1:1                                    # Lᵀ x = y
+                t = out[k, j, i]
+                for a in k+1:n1; t -= L[a, k] * out[a, j, i]; end
+                out[k, j, i] = t / L[k, k]
+            end
+        end
+    end
     return out
 end
 
@@ -584,21 +740,31 @@ function bands(pr::TP, lt, Hb, dzb)
 end
 
 """
-    warm_start!(u, z0, kc, uprev, cprev)
+    warm_start!(u, z0, kc, uprev, cprev[, ucol, zcol])
 
 Start of a solve from a previous solution (design/tau/SOLVER_TIME_DESIGN.md D4): `u`, `z0` are the new column HSE
 (levels above the cut and ln P at the fixed cut level kc are kept); `uprev` = ln P on levels kc … nt and `cprev` the
-cut heights of the previous solution. ln P below the cut is the previous one shifted per column by the change of ln P
-at the cut level; the heights above the cut are moved as a block onto the previous cut height.
+cut heights of the previous solution. Without `ucol`, ln P below the cut is the previous one shifted per column by the
+change of ln P at the cut level, and the heights above the cut are moved as a block onto the previous cut height (D4a).
+With the previous column HSE (`ucol` = its ln P on levels kc … nt, `zcol` its cut heights; D4b), the previous solution
+is corrected by the column-HSE response to the change of T: u = uprev + (u − ucol) level by level, and the cut height
+by the change of the column-HSE cut height.
 """
-function warm_start!(u, z0, kc, uprev, cprev)
+function warm_start!(u, z0, kc, uprev, cprev, ucol = nothing, zcol = nothing)
     nt = size(u, 1)
     @inbounds for i in axes(u, 3), j in axes(u, 2)
-        d = u[kc, j, i] - uprev[1, j, i]
-        for k in kc+1:nt
-            u[k, j, i] = uprev[k-kc+1, j, i] + d
+        if ucol === nothing
+            d = u[kc, j, i] - uprev[1, j, i]
+            for k in kc+1:nt
+                u[k, j, i] = uprev[k-kc+1, j, i] + d
+            end
+            h = cprev[j, i] - z0[kc, j, i]
+        else
+            for k in kc+1:nt
+                u[k, j, i] = uprev[k-kc+1, j, i] + (u[k, j, i] - ucol[k-kc+1, j, i])
+            end
+            h = cprev[j, i] - zcol[j, i]
         end
-        h = cprev[j, i] - z0[kc, j, i]
         for k in 1:kc
             z0[k, j, i] += h
         end
@@ -611,7 +777,7 @@ Problem on the τ grid from the start heights z0 (the cut level from `logtau_cut
 of the cut level. Weights and regularisation are set by `solve_tau`; `evaluate!`, `Jop!` and `JTop!` work on `pr`.
 """
 function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0, S = nothing, mu = 1.0,
-                  slant = (0.0, 0.0), balance = :vertical)
+                  slant = (0.0, 0.0), balance = :vertical, precond = :fourier)
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
     zrel = z0[1:kc, :, :] .- z0[kc:kc, :, :]
@@ -628,8 +794,24 @@ function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0
             N3(), N3(), N3(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(),
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
-            Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z())
+            Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z(),
+            precond == :block && NX >= 3 && ny >= 3 ? :block : :fourier, zeros(0, 0, 0, 0))
     return pr, c
+end
+
+"""Weights of Φ (wc, wf: H̄² per volume) and the regularisation ereg from the evaluated state of `pr` (in a solve: the
+start, fixed for the whole solve). Returns (H̄, Δz̄ per face, total weight)."""
+function tp_weights!(pr::TP, g, dx)
+    par = pr.par; kc, n1, nt, ny = pr.kc, pr.n1, pr.nt, pr.ny
+    Hb = gmedians(par, 1 ./ (g .* pr.q))
+    dzf = gmedians(par, pr.z[kc:nt-1, :, :] .- pr.z[kc+1:nt, :, :])
+    dzn = [m == 1 ? dzf[1] / 2 : m == n1 ? dzf[end] / 2 : (dzf[m-1] + dzf[m]) / 2 for m in 1:n1]
+    pr.wc = dzn .* Hb .^ 2
+    pr.wf = [Hb[f] * Hb[f+1] / dzf[f] for f in 1:n1-1]
+    κ = 2π / (par.NX * dx)
+    Wb = gmedians(par, pr.W)
+    pr.ereg = 1e-2 * κ^2 .* vcat(sum(pr.wc .* Wb .^ 2), pr.wc[2:end])
+    return Hb, dzf, (2 * sum(pr.wc) + sum(pr.wf)) * ny * par.NX
 end
 
 """
@@ -656,17 +838,18 @@ D2 (design/tau/SOLVER_TIME_DESIGN.md): `lm = :gain` sets the damping from the ga
 the accepted step (model 2α g·δ − α²‖Jδ‖²_W, g = −JᵀWR): ρ > 0.75 lowers μ ×3, ρ < 0.25 raises it to max(4μ, 1);
 `lm = :alpha` is the earlier rule (from the line-search length). `forcing = :ew` sets the CG tolerance from the outer
 progress, η = clamp(pred of the previous step, eta_min, eta_max), with at most `cg_cap` iterations; `forcing = :fixed`
-uses cg_tol and cg_maxit.
+uses cg_tol and cg_maxit. `precond` (D3b): :fourier (layer-median Fourier modes) or :block (exact column blocks, block
+Jacobi; `colblocks!`).
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
                    cg_tol = 1e-3, dc_cap = 3e5, du_cap = 2.0, lm_mu0 = 0.0, logf = s -> nothing, S = nothing,
                    rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing,
                    stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical, lm = :alpha, forcing = :fixed,
-                   cg_cap = 200, eta_min = 0.005, eta_max = 0.1)
+                   cg_cap = 200, eta_min = 0.005, eta_max = 0.1, precond = :fourier)
     nt, ny, nx = size(lT); NX = par.NX
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
-                     balance = balance)
+                     balance = balance, precond = precond)
     kc, n1 = pr.kc, pr.n1
     Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
@@ -675,16 +858,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                 lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false)
         return u, copy(z0), NaN, NaN, 0, kc, info
     end
-    # weights from the start (fixed during the solve): H̄² per volume
-    Hb = gmedians(par, 1 ./ (g .* pr.q))
-    dzf = gmedians(par, pr.z[kc:nt-1, :, :] .- pr.z[kc+1:nt, :, :])
-    dzn = [m == 1 ? dzf[1] / 2 : m == n1 ? dzf[end] / 2 : (dzf[m-1] + dzf[m]) / 2 for m in 1:n1]
-    pr.wc = dzn .* Hb .^ 2
-    pr.wf = [Hb[f] * Hb[f+1] / dzf[f] for f in 1:n1-1]
-    κ = 2π / (NX * dx)
-    Wb = gmedians(par, pr.W)
-    pr.ereg = 1e-2 * κ^2 .* vcat(sum(pr.wc .* Wb .^ 2), pr.wc[2:end])
-    Wtot = (2 * sum(pr.wc) + sum(pr.wf)) * ny * NX
+    Hb, dzf, Wtot = tp_weights!(pr, g, dx)
     k0 = argmin(abs.(lt))
     zq() = gquantiles(par, pr.z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3
     Φ, _ = evaluate!(pr, u, c); Φ0 = Φ

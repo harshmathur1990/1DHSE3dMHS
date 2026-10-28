@@ -24,6 +24,14 @@
             @test z1[1:kc, j, i] .- z1[kc, j, i] ≈ z0[1:kc, j, i] .- z0[kc, j, i]   # heights above the cut move as a block
         end
         @test z1[kc+1:nt, :, :] == z0[kc+1:nt, :, :]
+        uc = rand(nt - kc + 1, 2, 2); zc = rand(2, 2); uc[1, :, :] .= up[1, :, :]   # previous column HSE (same cut ln P)
+        u2 = copy(u); z2 = copy(z0)
+        H.PoissonTau.warm_start!(u2, z2, kc, up, cp, uc, zc)
+        @test u2[1:kc, :, :] == u[1:kc, :, :]
+        for i in 1:2, j in 1:2
+            @test u2[kc+1:nt, j, i] ≈ up[2:end, j, i] .+ (u[kc+1:nt, j, i] .- uc[2:end, j, i])   # + column-HSE response
+            @test z2[1:kc, j, i] ≈ z0[1:kc, j, i] .+ (cp[j, i] - zc[j, i])
+        end
     end
 
     @testset "validation" begin
