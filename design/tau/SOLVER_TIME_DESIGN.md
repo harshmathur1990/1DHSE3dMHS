@@ -1,6 +1,7 @@
 # Bounded, μ-independent solve time for `mhs-poisson-ltau`: design for review
 
-*Status: design for review, 27 Oct 2026, branch `viewing-angle`. Nothing here is implemented. Follows
+*Status: 28 Oct 2026, branch `solver-time`. D1, D0, the vertical-depth cut and D2 are implemented and measured (§6);
+D3 is revised in §6.4 and awaits a decision. Follows
 [`VIEWING_ANGLE_DESIGN.md`](VIEWING_ANGLE_DESIGN.md) and the P4 results (`HSEMHS/reports/viewing/`).*
 
 **Request (user, 27 Oct 2026):** the time to converge must be comparable to the μ = 1 mode and independent of μ.
@@ -115,3 +116,67 @@ asked for. The μ = 1 run also gets 3–10× faster than the 100-step runs.
 1. Approve D1–D4, or a subset (D3 matters only for μ ≲ 0.3).
 2. Defaults: `gn_tol` 1e-3 and `max_steps` 25, or other values. Make the new stop rule the default, or opt-in only?
 3. Run measurement §3.1 first (about 1.5 h on one node), then implement.
+
+## 6. Measurements (28 Oct 2026; full 504² × 95 synthetic cubes, 3 ranks × 32 threads, one hyades node per run)
+
+Scripts: `scripts/viewing/measure_steps.jl` (per-step snapshots), `measure_analyse.py`, `stop_rules.py` (replays stop
+rules on the snapshots). Runs in `out/solver/` on the cluster worktree.
+
+### 6.1 D1 and the cut at the vertical depth
+
+- Every step until 40 or more, the predicted decrease stays at 0.3–3 %: with `gn_tol` 1e-3 the 25-step budget is what
+  ends the solve. 1e-3 was met once in 40 steps (μ = 0.5, step 36).
+- With the cut at log10 τ_LOS = −4 the strong inclinations were wrong (μ = 0.3: 38.7 km rms z(τ=1); μ = 0.2: 57.9 km;
+  column HSE 25 km): the cut lay physically higher, at low β. **`cut_frame = vertical` (default)** places it at the same
+  vertical depth, log10 τ_LOS = cut − log10 μ: μ = 0.3: 21–25 km, μ = 0.2: 20–32 km. μ = 1 is unchanged.
+
+### 6.2 D0 (vertical balance) against the ray balance, with the vertical-depth cut (40 steps, D2)
+
+| μ | truth str−quiet | column HSE: rms / str−quiet | ray | vertical |
+|---|---|---|---|---|
+| 0.5 | −48.8 | 23.9 / −12.2 | 26.4 / −36.8 | 30.9 / −36.1 |
+| 0.5, φ 45° | −50.4 | 23.6 / −13.2 | 31.6 / −40.2 | – |
+| 0.3 | −36.4 | 25.3 / −0.3 | 24.1 / −27.1 | 21.0 / −12.1 |
+| 0.2 | −29.9 | 24.6 / +4.5 | 32.2 / −1.5 | 19.6 / +2.3 |
+
+Neither formulation is converged at μ ≤ 0.3 after 40 steps (the strong-field depression is still moving); the choice
+waits for converged solves. Both are kept (`balance`).
+
+### 6.3 D2 (gain-ratio LM, Eisenstat–Walker CG, cap 200)
+
+Steps until z(τ=1) changes by < 0.5 km rms per step on 2 consecutive steps (time, distance from the 40-step state):
+
+| μ | baseline | D2 |
+|---|---|---|
+| 1 | 10, 656 s, 3.5 km | 13, 418 s, 1.2 km |
+| 0.866 | 9, 392 s, 3.8 km | 12, 389 s, 3.3 km |
+| 0.707 | 15, 726 s, 2.4 km | 16, 622 s, 1.3 km |
+| 0.5 (ray) | 21, 876 s, 1.7 km | 16, 700 s, 1.2 km |
+| 0.5, φ 45° | 21, 1048 s, 2.5 km | 18, 949 s, 1.9 km |
+| 0.3 (vertical) | 20, 573 s, 4.2 km | 32, 1243 s, 3.3 km |
+| 0.2 (vertical) | 14, 376 s, 4.2 km | 21, 1960 s, 3.4 km |
+
+- μ ≥ 0.5: D2 reaches a given closeness to the final state sooner; early steps take 5–40 CG iterations (4–20 s).
+- The damping now rises (to 10⁴–10⁵) when the gain ratio drops; the gain ratio stays 0.1–0.5 in the tail even with
+  CG at 0.03, so the tail is partly nonlinearity, not only inexact CG.
+- μ ≤ 0.3: no gain. CG ends at the 200 cap with relative residual 0.1–0.5 (at times > 1), so the tail steps cost
+  70–150 s and the time is 2–5× that of μ = 1.
+- Stop rules replayed on the snapshots: "pred < 1e-2 on 2 steps" stops μ ≥ 0.5 at 17–33 steps within ≤ 2 km of the
+  final state; "Δz(τ=1) < 0.5 km rms on 2 steps" at 13–21 steps. Both are candidates; the defaults (1e-3, 25) stay.
+
+### 6.4 D3 revised: the slant is not where the preconditioner fails
+
+In the linearised operator the slant appears only (a) in the Lorentz-force coefficients (tan θ × local B gradients,
+different in every column) and (b) in the D0 coupling −Δz t·R̄_h. For the ray balance the field-free operator, which
+the layer-median preconditioner represents, has **no slant term**, so D3 as written (§2) would change nothing there;
+for the vertical balance it would add only (b). CG is already poor at μ = 1 in the tail (relative residual 0.05–0.26
+at 200 iterations) and worse at μ = 0.2 (ray 0.15–0.3, vertical 0.3–0.5): the deficiency is the field-dependent terms,
+which tan θ amplifies. Options:
+
+- **D3a** as designed, vertical balance only: per-mode Hermitian factorisation of A + s²B + i(k·t)C, binned in
+  (|k|, angle of k to t) to bound memory. Helps only (b).
+- **D3b** column-exact two-level preconditioner (both balances, every μ, including the μ = 1 tail): the Fourier
+  layer-median solve for the smooth part, then a per-column n₁ × n₁ correction holding the local W, dw, aχ and the
+  Lorentz ζ terms (block-Jacobi on the residual). Cost ≈ one extra banded solve per column per iteration.
+- **D3c** no new preconditioner: accept the μ ≤ 0.3 time, cap CG at 80 again in the tail (it does not converge anyway)
+  to halve the late-step cost.
