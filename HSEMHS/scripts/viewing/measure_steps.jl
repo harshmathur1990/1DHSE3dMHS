@@ -6,7 +6,8 @@ every step up to step 40 and every 10th step after that, for accuracy against th
 usage: mpiexecjl -n R julia --project=. -t T scripts/viewing/measure_steps.jl INPUT.nc OUTDIR MU AZIMUTH_DEG GEOMETRY [KEY=VALUE ...]
 KEY: max_steps, rtol, n_consec, cg_maxit, cg_tol, logtau_cut, stop (phi | gn), gn_tol, gn_consec, balance (vertical | ray),
 lm (alpha | gain | fixed), forcing (fixed | ew), cg_cap, eta_min, eta_max, precond, damping, klow, cap_frac, mlm_min,
-lm_mu0, qual_tol, qual_maxit (as the solve_tau keywords; defaults: the earlier rule,
+lm_mu0, qual_tol, qual_maxit (as the solve_tau keywords), start (directory of an earlier run: start from its final
+state, same ranks and cut), common_weights (1: the weights of the column-HSE start, for any start; defaults: the earlier rule,
 stop = phi, max_steps 100). logtau_cut is on the line-of-sight axis.
 OUTDIR/snap_r<rank>.h5: s<step>/{lnP, z} (and final/ at the returned state) (Float32, solved levels k_c … nt, this rank's x slab, Julia (τ, y, x)), with
 step attributes phi, pred, cg_its, cg_rel, alpha, seconds (and the work per step: cg_step, solves, evals, cap_scale); root
@@ -27,8 +28,10 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
                              "eta_min" => 0.005, "eta_max" => 0.1, "lm_mu0" => 0.0, "qual_tol" => 1e-2,
                              "qual_maxit" => 400)
     sy = Dict(:stop => :phi, :balance => :vertical, :lm => :alpha, :forcing => :fixed, :precond => :fourier, :damping => :reg)
+    start = ""; o["common_weights"] = 0.0
     for a in kv
         k, v = split(a, "=")
+        k == "start" && (start = String(v); continue)
         haskey(sy, Symbol(k)) && (sy[Symbol(k)] = Symbol(v); continue)
         haskey(o, k) || error("unknown key $k"); o[k] = parse(Float64, v)
     end
@@ -42,9 +45,25 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     lT = log.(T); g = 274.0
     lnP, z0, nf, _, _, nbad = H.PoissonTau.column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", mu = v.mu)
     nbad == 0 || error("column HSE failed in $nf columns")
-    logf(@sprintf("column HSE done; view μ %.3f φ %.1f %s; %s; options %s", v.mu, v.azimuth_deg, v.geometry, sy, o))
+    logf(@sprintf("column HSE done; view μ %.3f φ %.1f %s; %s; options %s%s", v.mu, v.azimuth_deg, v.geometry, sy, o,
+                  start == "" ? "" : "; start " * start))
     mkpath(outdir)
     kc = argmin(abs.(lt .- o["logtau_cut"]))
+    dx = x[2] - x[1]; dy = y[2] - y[1]
+    wts = nothing
+    if o["common_weights"] != 0                     # the objective of the column-HSE start (as a cold solve uses)
+        _, _, _, _, _, _, i0 = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, copy(lnP), copy(z0), dx, dy;
+                                                       logtau_cut = o["logtau_cut"], max_steps = 0, mu = v.mu,
+                                                       slant = H.slant(v), balance = sy[:balance], stationarity = false)
+        wts = i0.weights
+    end
+    if start != ""                                  # the final state of an earlier run (same ranks, cut and input)
+        sf = h5open(joinpath(start, "snap_r$(par.rank).h5"), "r")
+        read(attributes(sf)["kc"]) == kc && read(attributes(sf)["i0"]) == par.block.i0 || error("start: cut or slab differs")
+        su = Float64.(read(sf["final/lnP"])); sz = Float64.(read(sf["final/z"])); close(sf)
+        H.PoissonTau.warm_start!(lnP, z0, kc, su, sz[1, :, :])
+        logf("start: final state of " * start)
+    end
     f = h5open(joinpath(outdir, "snap_r$(par.rank).h5"), "w")
     a = attributes(f); a["i0"] = par.block.i0; a["kc"] = kc; a["mu"] = v.mu; a["azimuth_deg"] = v.azimuth_deg
     a["geometry"] = String(v.geometry); a["ranks"] = par.nranks; a["threads"] = Threads.nthreads()
@@ -59,7 +78,7 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     save(0, lnP, z0, (phi = NaN, pred = NaN, cg_its = 0, cg_rel = NaN, alpha = NaN, seconds = 0.0))
     BLAS.set_num_threads(min(32, Threads.nthreads()))
     ts = time()
-    u, z, Φ0, Φ, steps, _, info = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, lnP, z0, x[2] - x[1], y[2] - y[1];
+    u, z, Φ0, Φ, steps, _, info = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, lnP, z0, dx, dy; weights = wts,
                                      logtau_cut = o["logtau_cut"], max_steps = Int(o["max_steps"]), rtol = o["rtol"],
                                      n_consec = Int(o["n_consec"]), cg_maxit = Int(o["cg_maxit"]), cg_tol = o["cg_tol"],
                                      logf = logf, mu = v.mu, slant = H.slant(v), on_step = save, stop = sy[:stop],
