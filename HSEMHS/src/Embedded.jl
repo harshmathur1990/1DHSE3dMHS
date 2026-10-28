@@ -251,7 +251,9 @@ Outcome of one embedded solve, identical on every rank.
 `valid` is true when the returned fields are physically usable: EOS clean, all finite, P, ρ, χ₅₀₀ > 0, heights strictly
 decreasing and τ strictly increasing down every column, and (Poisson z) the hydrostatic continuation above the cut
 succeeded. `reason` is the first failed check (:eos_out_of_envelope, :continuation_failed, :nonfinite, :nonpositive,
-:folded) or else the solver's stopping reason (:converged, :no_descent, :max_steps; column modes: :converged). The
+:folded) or else the solver's stopping reason (:converged, :no_descent, :max_steps, :unresolved (τ grid, stop = :gn: the
+stop qualification did not decide the threshold; status `stalled`, details in stats["stop_check"]); column modes:
+:converged). The
 Poisson stopping rule is on relative decreases of Φ, which does not prove stationarity: `gn_decrement` (the relative
 decrease of Φ one further undamped Gauss–Newton step would predict) and `grad_norm` = ‖JᵀWR‖ measure it, `cg_its` and
 `cg_rel` describe that last linear solve, and `lm_mu` is the final Levenberg–Marquardt damping (τ grid). `phi0`/`phi`
@@ -669,6 +671,15 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
     st.phi0_zero = info.phi0_zero; st.gn_decrement = info.gn_decrement; st.grad_norm = info.grad_norm
     st.cg_its = info.cg_its; st.cg_rel = info.cg_rel; st.lm_mu = info.lm_mu
     st.stats["cut_level"] = kc
+    if info.stop_check !== nothing                                     # the last stop qualification (PoissonTau.qualify_stop)
+        q = info.stop_check
+        st.stats["stop_check"] = Dict{String,Any}("outcome" => String(q.outcome), "step" => q.step, "lower" => q.lower,
+                                                  "upper" => q.upper, "gn_tol" => q.gn_tol, "pred" => q.pred,
+                                                  "cg_its" => q.its, "true_rel" => q.true_rel, "at_returned_state" => q.step == steps)
+        info.reason == :unresolved &&
+            push!(st.messages, @sprintf("stop unresolved: regularised decrement in [%.2e, %.2e] straddles %.0e after %d CG products (step %d)",
+                                        q.lower, q.upper, q.gn_tol, q.its, q.step))
+    end
     tau_state!(ws, lT)
     return st
 end

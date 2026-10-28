@@ -843,21 +843,60 @@ function tp_weights!(pr::TP, g, dx)
 end
 
 """
-Stop certification at the evaluated state of `pr`: the undamped Gauss–Newton system (JᵀWJ + ereg0) δ = −JᵀWR solved by
-PCG to `tol`; returns pred = b·δ/Φ, the model decrease (2b·δ − ‖Jδ‖²_W)/Φ, the ereg part δ·ereg0·δ/Φ, the iterations
-and the true relative residual ‖b − Aδ‖/‖b‖. Uses `rhs` and `δ` as work arrays and leaves pr.ereg = ereg0, pr.mlm = 0.
+Stop qualification at the evaluated state of `pr` (design/CODEX_REVIEW_solver_time_round2_2026-10-28.md, finding 1):
+an interval for the regularised Gauss–Newton decrement d = bᵀA⁻¹b / Φ, A = JᵀWJ + D, D = diag(ereg0) > 0, b = −JᵀWR.
+For any approximate solution x with r = b − Ax, L = 2bᵀx − xᵀAx ≤ bᵀA⁻¹b ≤ U = L + rᵀD⁻¹r (the missing term is
+rᵀA⁻¹r and A ⪰ D). This bounds the regularised metric (H + D, not H alone), not heights or global optimality.
+PCG (undamped, mlm = 0) to `tol`; with `refine`, the tolerance is cut ×10 from the current x until the interval decides
+`gn_tol` or `maxit` products in all are spent. `outcome`:
+:qualified (U (1 + margin) < gn_tol), :not_stationary (L (1 − margin) > gn_tol), :undecided (the interval straddles
+gn_tol within the budget) or :invalid (Φ, ereg0 or b not finite and positive; a non-finite or inconsistent interval,
+e.g. a negative-curvature breakdown). b = 0 qualifies exactly (L = U = 0). Returns a NamedTuple with the outcome,
+`lower`, `upper` (/ Φ), `pred` = bᵀx/Φ, `model` = (2bᵀx − ‖Jx‖²_W)/Φ, `ereg` = xᵀDx/Φ, `its`, `true_rel` = ‖r‖/‖b‖,
+`grad_norm` = ‖b‖, `gn_tol`, `qual_tol`, and the `step` and `phi` at which it was evaluated. Uses `rhs` and `δ` as work
+arrays and leaves pr.ereg = ereg0, pr.mlm = 0.
 """
-function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400)
+function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400, gn_tol = 1e-3, refine = true,
+                      margin = 1e-6, step = 0)
     pr.ereg = copy(ereg0); pr.mlm = 0.0
     JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
+    nb = gnorm(par, rhs)
+    q(o, l, u, p, m, e, its, tr) = (outcome = o, lower = l, upper = u, pred = p, model = m, ereg = e, its = its,
+                                    true_rel = tr, grad_norm = nb, gn_tol = gn_tol, qual_tol = tol, step = step, phi = Φ)
+    (isfinite(Φ) && Φ > 0 && all(isfinite, ereg0) && all(>(0), ereg0) && isfinite(nb)) ||
+        return q(:invalid, NaN, NaN, NaN, NaN, NaN, 0, NaN)
+    fill!(δ, 0.0)
+    nb == 0 && return q(:qualified, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0)
     setprec!(pr)
-    its, _ = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol, maxit = maxit)
-    t = similar(δ); Aop!(pr, t, δ)
-    tr = gnorm(par, rhs .- t) / gnorm(par, rhs)
-    bd = gdot(par, δ, rhs)
-    jx, jy, jz = similar(δ), similar(δ), similar(δ); Jop!(pr, jx, jy, jz, δ)
-    e = gsum(par, sum(δ .^ 2 .* ereg0))
-    return (pred = bd / Φ, model = (2bd - wnorm2(pr, jx, jy, jz)) / Φ, ereg = e / Φ, its = its, true_rel = tr)
+    t = similar(δ); its = 0; tol_k = tol
+    while true
+        k, _ = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit - its, x0 = its > 0)
+        its += k
+        Aop!(pr, t, δ)
+        bx = gdot(par, δ, rhs); xAx = gdot(par, δ, t)
+        rD = gsum(par, sum((rhs .- t) .^ 2 ./ ereg0)); tr = gnorm(par, rhs .- t) / nb
+        e = gsum(par, sum(δ .^ 2 .* ereg0))
+        L = 2bx - xAx; U = L + rD
+        lo = L / Φ; up = U / Φ
+        vals = (lo, up, bx / Φ, (2bx - (xAx - e)) / Φ, e / Φ, its, tr)
+        all(isfinite, (L, U, xAx)) && L >= 0 && xAx >= 0 || return q(:invalid, vals...)
+        up * (1 + margin) < gn_tol && return q(:qualified, vals...)
+        lo * (1 - margin) > gn_tol && return q(:not_stationary, vals...)
+        (refine && its < maxit && tol_k > 1e-12) || return q(:undecided, vals...)
+        tol_k /= 10
+    end
+end
+
+"""Reused weights (`solve_tau` keyword): lengths n1, n1 − 1, n1, all finite and positive, and the cut level and grid
+of the solve that made them when recorded (info.weights carries kc, n1, NX, ny)."""
+function check_weights(w, n1, kc, NX, ny)
+    length(w.wc) == n1 && length(w.wf) == n1 - 1 && length(w.ereg) == n1 ||
+        error("solve_tau: weights have lengths $((length(w.wc), length(w.wf), length(w.ereg))), expected $((n1, n1 - 1, n1))")
+    all(v -> all(isfinite, v) && all(>(0), v), (w.wc, w.wf, w.ereg)) || error("solve_tau: weights must be finite and positive")
+    for (k, v) in ((:kc, kc), (:n1, n1), (:NX, NX), (:ny, ny))
+        hasproperty(w, k) && getproperty(w, k) != v && error("solve_tau: weights were made with $k = $(getproperty(w, k)), this solve has $v")
+    end
+    return nothing
 end
 
 """
@@ -873,7 +912,8 @@ Returns (u, z, Φ0, Φ, steps, kc, info). `info` (a NamedTuple) carries the stop
 Gauss–Newton decrement `gn_decrement` (the relative decrease of Φ a further undamped Gauss–Newton step would predict:
 a scale-free stationarity measure), the gradient norm `grad_norm` = ‖Jᵀ W R‖, the last linear solve (`cg_its`,
 `cg_rel`), the final damping `lm_mu`, `rms0`/`rms` = √(Φ/W) and `phi0_zero`. `S` reuses a cached SlabFFT for these
-grid sizes; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps. `mu` = cos θ
+grid sizes; `info.work` counts the CG iterations, linear solves (retries included), evaluations, qualification CG
+and final-diagnostic CG; `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps. `mu` = cos θ
 (lt is τ along the line of sight) and `slant` = (t_x, t_y) of the inclined geometry ((0, 0): vertical columns).
 `on_step(s, u, z, info)` (diagnostics) is called after every accepted step with the state (z not yet gauged) and
 `info = (phi, pred, cg_its, cg_rel, alpha, seconds)`; `pred` is the step's predicted relative decrease δ·(−JᵀWR)/Φ.
@@ -882,7 +922,8 @@ accepted steps: no Gauss–Newton step could lower Φ by more than that fraction
 `balance` (inclined geometry only): :vertical (default, D0) or :ray (the column residual along the ray).
 D2 (design/tau/SOLVER_TIME_DESIGN.md): `lm = :gain` sets the damping from the gain ratio ρ = actual / model decrease of
 the accepted step (model 2α g·δ − α²‖Jδ‖²_W, g = −JᵀWR): ρ > 0.75 lowers μ ×3, ρ < 0.25 raises it to max(4μ, 1);
-`lm = :alpha` is the earlier rule (from the line-search length). `forcing = :ew` sets the CG tolerance from the outer
+`lm = :alpha` is the earlier rule (from the line-search length); `lm = :fixed` keeps μ = lm_mu0 (raised only when no
+step decreases Φ; with `damping = :marquardt` and `cap_frac = 0`: fixed Marquardt damping, no cap retries). `forcing = :ew` sets the CG tolerance from the outer
 progress, η = clamp(pred of the previous step, eta_min, eta_max), with at most `cg_cap` iterations; `forcing = :fixed`
 uses cg_tol and cg_maxit. `precond` (D3b): :fourier (layer-median Fourier modes), :block (exact column blocks, block
 Jacobi; `colblocks!`) or :hybrid (both, the Fourier part on the modes |k| ≤ `klow` (mode index) only; D3c).
@@ -890,12 +931,14 @@ Jacobi; `colblocks!`) or :hybrid (both, the Fourier part on the modes |k| ≤ `k
 shape, from `mlm_min` up, and treats a step the caps would scale below `cap_frac` as outside the trust region (μ is
 raised and the step solved again): the column blocks expose near-null directions (ln P just below the cut) that the
 undamped step fills with huge values. A failed line search re-evaluates the state before the next solve.
-`stop = :gn` with `qualify` (default): when pred < gn_tol on gn_consec steps, the stop is certified at the current state
-by the undamped system (ereg only) solved to `qual_tol` (true residual, at most `qual_maxit` iterations): converged if
-its pred < gn_tol; the run continues if it is larger; reason :unqualified if the solve misses 2 qual_tol
-(`info.stop_check`: pred, model decrease 2b·δ − ‖Jδ‖²_W, the ereg part δ·ereg·δ, all / Φ, its, true_rel).
+`stop = :gn` with `qualify` (default): when pred < gn_tol on gn_consec steps, `qualify_stop` bounds the undamped
+regularised decrement at the current state (PCG from `qual_tol`, refined, at most `qual_maxit` products): converged if
+the upper bound is below gn_tol; the run continues if the lower bound is above; reason :unresolved if the interval
+still straddles gn_tol or is invalid (`info.stop_check`: the outcome, bounds, step and work of the last check; at the
+returned state it also supplies the stationarity diagnostics instead of a second, weaker solve).
 `weights` = (wc, wf, ereg) replaces the weights and regularisation computed from the start state (the objective of
-another solve of the same cube, so that different starts minimise the same Φ); `info.weights` returns those used.
+another solve of the same cube, so that different starts minimise the same Φ; checked by `check_weights`);
+`info.weights` returns those used, with the cut level and grid.
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
@@ -915,15 +958,17 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     _, bad = evaluate!(pr, u, c)
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
         info = (reason = :eos_out_of_envelope, gn_decrement = NaN, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
-                lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false, weights = nothing, stop_check = nothing)
+                lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false, weights = nothing, stop_check = nothing,
+                work = (cg = 0, solves = 0, evals = 0, qual_cg = 0, final_cg = 0))
         return u, copy(z0), NaN, NaN, 0, kc, info
     end
     Hb, dzf, Wtot = tp_weights!(pr, g, dx)
     if weights !== nothing                           # the objective of another solve (same cube, grid and cut)
+        check_weights(weights, n1, kc, NX, ny)
         pr.wc = copy(weights.wc); pr.wf = copy(weights.wf); pr.ereg = copy(weights.ereg)
         Wtot = (2 * sum(pr.wc) + sum(pr.wf)) * ny * NX
     end
-    wts = (wc = copy(pr.wc), wf = copy(pr.wf), ereg = copy(pr.ereg))
+    wts = (wc = copy(pr.wc), wf = copy(pr.wf), ereg = copy(pr.ereg), kc = kc, n1 = n1, NX = NX, ny = ny)
     k0 = argmin(abs.(lt))
     zq() = gquantiles(par, pr.z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3
     Φ, _ = evaluate!(pr, u, c); Φ0 = Φ
@@ -932,7 +977,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     reason = :max_steps
     if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0
         info = (reason = :converged, gn_decrement = 0.0, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
-                rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0, weights = wts, stop_check = nothing)
+                rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0, weights = wts, stop_check = nothing,
+                work = (cg = 0, solves = 0, evals = 0, qual_cg = 0, final_cg = 0))
         logf("start state already within rms_atol: no steps")
         return u, copy(pr.z), Φ0, Φ0, 0, kc, info
     end
@@ -941,13 +987,16 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     δ = Z(); rhs = Z(); ut = copy(u); ct = copy(c)
     ereg0 = copy(pr.ereg); Dlm = ereg0 ./ 1e-2
     μ = lm_mu0; steps = 0; nsmall = 0; npred = 0; qinfo = nothing
+    ncg = 0; nsolve = 0; neval = 0; nqual = 0                 # work: CG iterations, linear solves, evaluations, qualification CG
     η = eta_max; tol_k, maxit_k = forcing == :ew ? (η, cg_cap) : (cg_tol, cg_maxit)
     jx, jy, jz = Z(), Z(), Z()
     for s in 1:max_steps
         t0 = time()
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
         accepted = false; its = 0; rel = 0.0; α = 1.0; Φt = Inf; sc = 1.0; pred = NaN; jj = NaN
+        cg_s = 0; tries_s = 0; ev_s = 0
         for tries in 1:8
+            tries_s = tries
             if mq
                 pr.mlm = μ
             else
@@ -955,6 +1004,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             end
             setprec!(pr)
             its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit_k)
+            cg_s += its
             pred = gdot(par, δ, rhs) / Φ
             Jop!(pr, jx, jy, jz, δ)                   # ‖Jδ‖²_W at the linearisation state (before the line search)
             jj = wnorm2(pr, jx, jy, jz)
@@ -968,7 +1018,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             for ls in 1:4
                 ut .= u; @views ut[kc+1:nt, :, :] .+= α .* δ[2:end, :, :]
                 @views ct .= c .+ α .* δ[1, :, :]
-                Φt, bad = evaluate!(pr, ut, ct)
+                Φt, bad = evaluate!(pr, ut, ct); ev_s += 1
                 bad == 0 && Φt < Φ && (accepted = true; break)
                 α /= 2
             end
@@ -976,6 +1026,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             evaluate!(pr, u, c)                           # back to the linearisation state before solving again
             μ = max(4μ, mq ? mlm_min : 1.0)
         end
+        ncg += cg_s; nsolve += tries_s; neval += ev_s
         if !accepted
             evaluate!(pr, u, c)
             logf(@sprintf("step %2d: no decrease up to μ = %.3g; stopping", s, μ))
@@ -985,7 +1036,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         dec = (Φ - Φt) / Φ
         model = 2α * pred - α^2 * jj / Φ             # relative model decrease of the step αδ
         ρg = dec / model
-        if lm == :gain
+        if lm == :fixed                              # constant damping (raised only by a failed line search above)
+        elseif lm == :gain
             μ = !(model > 0) || ρg < 0.25 ? max(4μ, mq ? mlm_min : 1.0) : ρg > 0.75 ? μ / 3 : μ
         else
             μ = α == 1.0 ? μ / 3 : (α >= sc / 2 ? μ : 2μ)
@@ -994,29 +1046,31 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         u .= ut; c .= ct; Φ = Φt; steps = s
         dzmax = α * gmax(par, maximum(abs, @view δ[1, :, :]))
         nsmall = dec < rtol ? nsmall + 1 : 0
-        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e), α %.3g, μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
-                      s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, α, μ, dzmax / 1e3, zq()..., time() - t0))
+        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e; step %d its in %d solves, %d evaluations), α %.3g (cap scale %.3g), μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
+                      s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, cg_s, tries_s, ev_s, α, sc, μ, dzmax / 1e3, zq()..., time() - t0))
         on_step === nothing || on_step(s, u, pr.z, (phi = Φ, pred = pred, cg_its = its, cg_rel = rel, alpha = α,
-                                                    seconds = time() - t0, model = model, rho = ρg, cg_tol = tol_k, lm_mu = μ))
+                                                    seconds = time() - t0, model = model, rho = ρg, cg_tol = tol_k, lm_mu = μ,
+                                                    cg_step = cg_s, solves = tries_s, evals = ev_s, cap_scale = sc))
         forcing == :ew && isfinite(pred) && (tol_k = clamp(pred, eta_min, eta_max))
         npred = pred < gn_tol ? npred + 1 : 0
         if stop == :gn
             if npred >= gn_consec
                 qualify || (logf(@sprintf("converged: predicted decrease < %.0e on %d consecutive steps (last max|δc| %.1f m)",
                                           gn_tol, npred, dzmax)); reason = :converged; break)
-                # the steps' pred is that of the damped, inexactly solved system at the previous state: certify at this state
-                # with the undamped system (ereg only) solved to qual_tol, its true residual checked
-                q = qualify_stop(pr, par, rhs, δ, ereg0, Φ; tol = qual_tol, maxit = qual_maxit)
-                qinfo = q
-                logf(@sprintf("stop check: undamped Gauss–Newton pred %.2e (model %.2e, ereg part %.2e) | CG %d its, true rel %.1e (tol %.0e)",
-                              q.pred, q.model, q.ereg, q.its, q.true_rel, qual_tol))
-                if q.true_rel > 2 * qual_tol
-                    logf("not certified: the linear solve did not reach the qualification tolerance; stopping"); reason = :unqualified; break
-                elseif q.pred < gn_tol
-                    logf(@sprintf("converged: certified predicted decrease %.2e < %.0e (last max|δc| %.1f m)", q.pred, gn_tol, dzmax))
+                # the steps' pred is that of the damped, inexactly solved system at the previous state: qualify at this
+                # state with an interval for the undamped regularised decrement (qualify_stop)
+                q = qualify_stop(pr, par, rhs, δ, ereg0, Φ; tol = qual_tol, maxit = qual_maxit, gn_tol = gn_tol, step = s)
+                qinfo = q; nqual += q.its
+                logf(@sprintf("stop check (step %d): %s, regularised decrement in [%.2e, %.2e] (tol %.0e) | pred %.2e, model %.2e, ereg part %.2e | CG %d its, true rel %.1e",
+                              s, q.outcome, q.lower, q.upper, gn_tol, q.pred, q.model, q.ereg, q.its, q.true_rel))
+                if q.outcome == :qualified
+                    logf(@sprintf("converged: decrement < %.0e qualified (last max|δc| %.1f m)", gn_tol, dzmax))
                     reason = :converged; break
+                elseif q.outcome == :not_stationary
+                    npred = 0                                    # the decrement is above the threshold: carry on
                 else
-                    npred = 0                                    # an accurate step still predicts more: carry on
+                    logf("stop unresolved: the qualification did not decide the threshold within its budget; stopping")
+                    reason = :unresolved; break
                 end
             end
         else
@@ -1029,7 +1083,10 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     # stationarity at the returned state (pr holds its evaluation): undamped Gauss–Newton step δ from (JᵀWJ + ereg) δ =
     # −JᵀWR and the predicted relative decrease δ·(−JᵀWR)/Φ. Diagnostics only: u and z are not changed.
     gnd = NaN; gn = NaN; its = 0; rel = NaN
-    if stationarity
+    if qinfo !== nothing && qinfo.step == steps && qinfo.outcome != :invalid   # a qualification at the returned state
+        gnd = qinfo.pred; gn = qinfo.grad_norm; its = qinfo.its; rel = qinfo.true_rel
+        logf(@sprintf("stationarity: from the stop check at step %d, decrement in [%.3e, %.3e]", steps, qinfo.lower, qinfo.upper))
+    elseif stationarity
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
         gn = gnorm(par, rhs)
         setprec!(pr)
@@ -1038,7 +1095,10 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         logf(@sprintf("stationarity: Gauss–Newton decrement %.3e, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd, gn, its, rel))
     end
     info = (reason = reason, gn_decrement = gnd, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
-            rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo)
+            rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo,
+            work = (cg = ncg, solves = nsolve, evals = neval, qual_cg = nqual, final_cg = its))
+    logf(@sprintf("work: %d CG iterations in %d linear solves, %d evaluations; qualification %d CG; final diagnostic %d CG",
+                  ncg, nsolve, neval, nqual, its))
     return u, copy(pr.z), Φ0, Φ, steps, kc, info
 end
 

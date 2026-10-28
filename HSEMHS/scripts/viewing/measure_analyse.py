@@ -45,7 +45,11 @@ cum = 0.0
 rows = []
 print(f"{label}: steps {hs[0].attrs.get('steps')}, {hs[0].attrs.get('reason')}, solve {hs[0].attrs.get('solve_seconds', np.nan):.0f} s; "
       f"Bifrost strong−quiet {z1t[strong].mean() / 1e3 - z1t[quiet].mean() / 1e3:+.1f} km")
-print("step    Φ/Φ0   pred     CG  rel    s/step   cum s | z1 err rms  Δ from final rms/max | str−quiet | rms ΔlnP " +
+work = {k[5:]: hs[0].attrs[k] for k in hs[0].attrs if k.startswith("work_")}
+qual = {k[5:]: hs[0].attrs[k] for k in hs[0].attrs if k.startswith("qual_")}
+work and print("work: " + ", ".join(f"{k} {v}" for k, v in work.items()))
+qual and print("last stop check: " + ", ".join(f"{k} {v}" for k, v in qual.items()))
+print("step    Φ/Φ0   pred     CG  rel   CGstep solves  ρ    cap   s/step   cum s | z1 err rms  Δ from final rms/max | str−quiet | rms ΔlnP " +
       " ".join(f"[{a},{b})" for a, b in bands))
 phi0 = hs[0].attrs["phi0"]
 for n in order:
@@ -59,9 +63,12 @@ for n in order:
     w = z1[strong].mean() / 1e3 - z1[quiet].mean() / 1e3
     e = rms(z1 - z1t) / 1e3; dfin = rms(z1 - zf) / 1e3; dmax = np.max(np.abs(z1 - zf)) / 1e3
     row = dict(step=n, phi=a["phi"] / phi0, pred=a["pred"], cg=a["cg_its"], rel=a["cg_rel"], sec=a["seconds"], cum=cum,
-               err=e, dfin=dfin, dmax=dmax, wil=w, b0=b[0], b1=b[1], b2=b[2])
+               err=e, dfin=dfin, dmax=dmax, wil=w, b0=b[0], b1=b[1], b2=b[2],
+               cgstep=a.get("cg_step", np.nan), solves=a.get("solves", np.nan), rho=a.get("rho", np.nan),
+               cap=a.get("cap_scale", np.nan), model=a.get("model", np.nan))
     rows.append(row)
-    print(f"{n:>6s} {row['phi']:8.2e} {row['pred']:8.1e} {row['cg']:3.0f} {row['rel']:6.2f} {row['sec']:7.1f} {cum:7.0f} | "
+    print(f"{n:>6s} {row['phi']:8.2e} {row['pred']:8.1e} {row['cg']:3.0f} {row['rel']:6.2f} {row['cgstep']:5.0f} {row['solves']:4.0f} "
+          f"{row['rho']:5.2f} {row['cap']:5.2f} {row['sec']:7.1f} {cum:7.0f} | "
           f"{e:7.1f} km  {dfin:6.2f} / {dmax:6.1f} km | {w:+6.1f} | " + " ".join(f"{x:.4f}" for x in b))
 with open(f"{run}/steps.csv", "w") as f:
     f.write(",".join(rows[0].keys()) + "\n")

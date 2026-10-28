@@ -48,8 +48,9 @@
                               max_steps = 15, mu = v.mu, slant = H.slant(v), precond = p, damping = d, stop = :gn, lm = :gain,
                               forcing = :ew, stationarity = false)
         f = run(:fourier)
-        # stop certification: heavy damping makes the step's pred small though the gradient is not; a capped solve is not
-        # certified; a solve whose stop cannot be certified ends :unqualified
+        # stop qualification (qualify_stop): heavy damping makes the step's pred small though the gradient is not; the
+        # decrement interval [L, U] contains bᵀA⁻¹b/Φ of the dense solve at any CG budget and narrows with it; b = 0
+        # qualifies exactly; non-finite or non-positive inputs are :invalid; a straddling interval is :undecided
         pr, cc = PT.tp_setup(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, z0, dx, dy; logtau_cut = -4.0, mu = v.mu,
                              slant = H.slant(v), precond = :block)
         PT.evaluate!(pr, lnP, cc); PT.tp_weights!(pr, g, dx); Φq, _ = PT.evaluate!(pr, lnP, cc)
@@ -58,15 +59,37 @@
         pr.ereg = e0 .+ 1e6 .* e0 ./ 1e-2; PT.setprec!(pr)
         PT.pcg!(PT.Aop!, PT.Minv!, par, pr, d, b; tol = 1e-6, maxit = 400)
         pdamped = H.gdot(par, d, b) / Φq
-        q = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-3, maxit = 400)
-        @test pdamped < 1e-3 && q.pred > 100 * pdamped && q.true_rel < 2e-3
-        @test pr.ereg == e0 && pr.mlm == 0
-        q1 = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-8, maxit = 1)
-        @test q1.its == 1 && q1.true_rel > 1e-3
+        pr.ereg = copy(e0)
+        par.nranks == 1 || error("the dense check needs one rank")
+        n = length(b); A = zeros(n, n); ev = zero(b); ov = zero(b)
+        for k in 1:n
+            fill!(ev, 0.0); ev[k] = 1.0; PT.Aop!(pr, ov, ev); A[:, k] = vec(ov)
+        end
+        dex = dot(vec(b), cholesky(Symmetric((A .+ A') ./ 2)) \ vec(b)) / Φq          # bᵀA⁻¹b / Φ
+        qs = [PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-12, maxit = m, gn_tol = 1e-3, refine = false)
+              for m in (1, 5, 30, 400)]
+        @test all(q -> q.lower <= dex * (1 + 1e-9) && dex <= q.upper * (1 + 1e-9), qs)
+        @test qs[end].upper - qs[end].lower < 1e-3 * (qs[1].upper - qs[1].lower)
+        @test pdamped < 1e-3 && qs[end].pred > 100 * pdamped && qs[end].outcome == :not_stationary
+        @test pr.ereg == e0 && pr.mlm == 0 && qs[end].step == 0 && qs[end].phi == Φq
+        q1 = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-12, maxit = 1, gn_tol = dex)
+        @test q1.its == 1 && q1.outcome == :undecided
+        qq = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-2, maxit = 400, gn_tol = 2dex)
+        @test qq.outcome == :qualified && qq.upper < 2dex                       # refined until the interval decides
+        @test PT.qualify_stop(pr, par, similar(b), similar(b), e0, NaN).outcome == :invalid
+        @test PT.qualify_stop(pr, par, similar(b), similar(b), vcat(0.0, e0[2:end]), Φq).outcome == :invalid
+        R0 = (copy(pr.Rx), copy(pr.Ry), copy(pr.Rz)); pr.Rx .= 0; pr.Ry .= 0; pr.Rz .= 0
+        qz = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq)
+        @test qz.outcome == :qualified && qz.lower == 0 && qz.upper == 0 && qz.true_rel == 0 && qz.grad_norm == 0
+        pr.Rx .= R0[1]; pr.Ry .= R0[2]; pr.Rz .= R0[3]
         u5 = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
                           max_steps = 10, mu = v.mu, slant = H.slant(v), stop = :gn, gn_tol = 1.0, gn_consec = 1,
-                          lm = :gain, forcing = :ew, stationarity = false, qual_tol = 1e-8, qual_maxit = 1)
-        @test u5[7].reason == :unqualified && u5[5] == 1 && u5[7].stop_check.true_rel > 2e-8
+                          lm = :gain, forcing = :ew, qual_tol = 1e-12, qual_maxit = 1)
+        q5 = u5[7].stop_check
+        @test q5.outcome in (:undecided, :qualified, :not_stationary)
+        @test q5.step >= 1 && q5.its >= 1
+        q5.outcome == :undecided && @test u5[7].reason == :unresolved && u5[5] == q5.step
+        q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].gn_decrement == q5.pred      # reused, not re-solved
         # the objective of another solve: same start and weights → the same solve; another start uses the weights given
         sv(u0, zz; w = nothing) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, u0, zz, dx, dy; logtau_cut = -4.0,
                                      max_steps = 5, mu = v.mu, slant = H.slant(v), stop = :gn, lm = :gain, forcing = :ew,
@@ -77,6 +100,11 @@
         w5 = sv(copy(f5[1]), copy(f5[2]); w = f5[7].weights)
         @test w5[7].weights.wc == f5[7].weights.wc && w5[7].weights.ereg == f5[7].weights.ereg
         @test w5[3] <= f5[4] * (1 + 1e-10)                                # starts at the first solve's Φ (same objective)
+        @test w5[7].weights.kc == f5[7].weights.kc && w5[7].weights.n1 == f5[7].weights.n1
+        wbad = merge(f5[7].weights, (ereg = -f5[7].weights.ereg,))
+        @test_throws ErrorException sv(copy(lnP), copy(z0); w = wbad)
+        @test_throws ErrorException sv(copy(lnP), copy(z0); w = merge(f5[7].weights, (wf = f5[7].weights.wc,)))
+        @test_throws ErrorException sv(copy(lnP), copy(z0); w = merge(f5[7].weights, (kc = f5[7].weights.kc + 1,)))
         for (p, d) in ((:block, :reg), (:hybrid, :reg), (:hybrid, :marquardt))
             b = run(p; d = d)
             @test b[7].reason in (:converged, :max_steps)

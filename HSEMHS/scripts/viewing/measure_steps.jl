@@ -5,10 +5,12 @@ every step up to step 40 and every 10th step after that, for accuracy against th
 
 usage: mpiexecjl -n R julia --project=. -t T scripts/viewing/measure_steps.jl INPUT.nc OUTDIR MU AZIMUTH_DEG GEOMETRY [KEY=VALUE ...]
 KEY: max_steps, rtol, n_consec, cg_maxit, cg_tol, logtau_cut, stop (phi | gn), gn_tol, gn_consec, balance (vertical | ray),
-lm (alpha | gain), forcing (fixed | ew), cg_cap, eta_min, eta_max (as the solve_tau keywords; defaults: the earlier rule,
+lm (alpha | gain | fixed), forcing (fixed | ew), cg_cap, eta_min, eta_max, precond, damping, klow, cap_frac, mlm_min,
+lm_mu0, qual_tol, qual_maxit (as the solve_tau keywords; defaults: the earlier rule,
 stop = phi, max_steps 100). logtau_cut is on the line-of-sight axis.
 OUTDIR/snap_r<rank>.h5: s<step>/{lnP, z} (and final/ at the returned state) (Float32, solved levels k_c … nt, this rank's x slab, Julia (τ, y, x)), with
-step attributes phi, pred, cg_its, cg_rel, alpha, seconds; root attributes i0 (first global x), kc, view.
+step attributes phi, pred, cg_its, cg_rel, alpha, seconds (and the work per step: cg_step, solves, evals, cap_scale); root
+attributes i0 (first global x), kc, view, work_* (info.work) and qual_* (the last stop check).
 =#
 using HSEMHS
 using HDF5
@@ -22,7 +24,8 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     H.ensure_mpi()
     o = Dict{String,Float64}("max_steps" => 100, "rtol" => 1e-4, "n_consec" => 3, "cg_maxit" => 80, "cg_tol" => 1e-3,
                              "logtau_cut" => -4.0, "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200, "klow" => 8, "cap_frac" => 0.5, "mlm_min" => 0.01,
-                             "eta_min" => 0.005, "eta_max" => 0.1)
+                             "eta_min" => 0.005, "eta_max" => 0.1, "lm_mu0" => 0.0, "qual_tol" => 1e-2,
+                             "qual_maxit" => 400)
     sy = Dict(:stop => :phi, :balance => :vertical, :lm => :alpha, :forcing => :fixed, :precond => :fourier, :damping => :reg)
     for a in kv
         k, v = split(a, "=")
@@ -63,12 +66,18 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
                                      gn_tol = o["gn_tol"], gn_consec = Int(o["gn_consec"]), balance = sy[:balance],
                                      lm = sy[:lm], forcing = sy[:forcing], precond = sy[:precond], damping = sy[:damping], klow = Int(o["klow"]), cap_frac = o["cap_frac"],
                                mlm_min = o["mlm_min"], cg_cap = Int(o["cg_cap"]),
-                                     eta_min = o["eta_min"], eta_max = o["eta_max"])
+                                     eta_min = o["eta_min"], eta_max = o["eta_max"], lm_mu0 = o["lm_mu0"],
+                                     qual_tol = o["qual_tol"], qual_maxit = Int(o["qual_maxit"]))
     tsolve = time() - ts
     BLAS.set_num_threads(1)
     save(steps, u, z, (phi = Φ, pred = info.gn_decrement, cg_its = info.cg_its, cg_rel = info.cg_rel, alpha = NaN,
                        seconds = tsolve); name = "final")
     a["steps"] = steps; a["reason"] = String(info.reason); a["solve_seconds"] = tsolve; a["phi0"] = Φ0
+    for (k, val) in pairs(info.work); a["work_$k"] = val; end
+    if info.stop_check !== nothing
+        q = info.stop_check
+        a["qual_outcome"] = String(q.outcome); a["qual_step"] = q.step; a["qual_lower"] = q.lower; a["qual_upper"] = q.upper
+    end
     close(f)
     logf(@sprintf("solve: %d steps, %s, %.1f s, Φ/Φ₀ %.3e, GN decrement %.2e", steps, info.reason, tsolve, Φ / Φ0, info.gn_decrement))
 end

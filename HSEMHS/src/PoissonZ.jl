@@ -215,10 +215,15 @@ function tbcast!(f, outs, ins...)
     end
 end
 
-"""Preconditioned CG on Aop!/Minv! with global inner products (generic over the problem type)."""
-function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80)
-    fill!(xs, 0.0)
-    r = copy(b); zv = similar(b); p = similar(b); Ap = similar(b)
+"""Preconditioned CG on Aop!/Minv! with global inner products (generic over the problem type). Starts from xs = 0, or
+from the given xs with `x0 = true` (one extra operator product)."""
+function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80, x0 = false)
+    zv = similar(b); p = similar(b); Ap = similar(b)
+    if x0
+        Aop!(pr, Ap, xs); r = b .- Ap
+    else
+        fill!(xs, 0.0); r = copy(b)
+    end
     Minv!(pr, zv, r); p .= zv; rz = gdot(par, r, zv); nb = gnorm(par, b); it = 0; rel = 1.0
     nb == 0 && return 0, 0.0
     for outer it in 1:maxit
