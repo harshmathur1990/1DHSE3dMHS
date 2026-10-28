@@ -180,3 +180,97 @@ which tan θ amplifies. Options:
   Lorentz ζ terms (block-Jacobi on the residual). Cost ≈ one extra banded solve per column per iteration.
 - **D3c** no new preconditioner: accept the μ ≤ 0.3 time, cap CG at 80 again in the tail (it does not converge anyway)
   to halve the late-step cost.
+
+### 6.5 D3b, D3c, D3h and D4a (28 Oct; details in `design/CODEX_BRIEF_solver_time_round2_2026-10-28.md`)
+
+- **D3b** (column blocks, `precond = block`), **D3h** (Fourier + column-block correction, `hybrid`) and **D3c**
+  (Marquardt damping) are implemented in `PoissonTau.jl`. At μ = 1, D3h reached Φ/Φ₀ 2.62e-2 in 1308 s against D2's
+  2472 s; D3b reached 2.56e-2 but with 33 km rms z(τ=1) error against D2's 22.5 km. D3b stopped with `no_descent` at
+  step 28 at μ0.3 vertical. D3c with the old hybrid took 4082 s.
+- The D4a warm-start numbers in the first brief came from an aliased script; D4b (warm start with common weights) has
+  not been run.
+- `hybrid` is retired as a candidate (damping inconsistent between its parts); the frozen labs below use `fourier` and
+  `block`.
+
+### 6.6 Frozen systems (`scripts/viewing/frozen_lab.jl`, full cubes and crops)
+
+- Algebra sound: adjoint, finite differences, symmetry and positivity of A and of every M⁻¹, column blocks against
+  probes. The four checkerboard cut-height modes (constant, (−1)ⁱ, (−1)ʲ, (−1)ⁱ⁺ʲ) are exact null modes of JᵀWJ.
+- At small μ the undamped full-cube solves miss tol 1e-3 in 600 block iterations; the unresolved part is the
+  large-scale (|k| ≤ 2) cut height. Block with Marquardt damping ≥ 0.01 converges in ≤ 141 iterations (3 cases).
+- Balanced deflation with cut-height modes (gauge, |k| ≤ 2, |k| ≤ 4) or per-level |k| ≤ 1 modes: at most 20 % fewer
+  iterations, nothing at μ0.3 vertical.
+
+### 6.7 Damped block end-to-end (40 steps, `lm = fixed` / adaptive, 28 Oct)
+
+| run | Φ/Φ₀ | z(τ=1) rms | str−quiet | time |
+|---|---|---|---|---|
+| μ1 fixed 0.01 / 0.1 / adaptive | 2.59 / 2.85 / 2.94e-2 | 36.7 / 35.2 / 32.7 km | −25.8 / −13.2 / −19.4 | 529 / 284 / 354 s |
+| μ0.3 vertical fixed 0.01 / 0.1 / adaptive | 2.58e-2 / 0.309 / 2.92e-2 | 25.3 / 26.4 / 25.9 km | | 142 / 227 / 215 s |
+| μ0.3 ray fixed 0.01 / adaptive | 5.30 / 5.44e-3 | 41.7 / 39.4 km | | 599 / 585 s |
+| D2 μ1 / μ0.3 vertical / μ0.3 ray | 2.55e-2 / 5.5e-5 / 5.1e-3 | 22.5 / 21.0 / 24.1 km | −74 / – / – | 2472 s (μ1) |
+
+Damped block runs are fast per step but leave the large-scale heights where they are: Φ is flat along those modes and
+only the Fourier preconditioner moves them.
+
+### 6.8 Common-objective reference runs (80 steps, Fourier, η ≤ 0.01, CG cap 400, `common_weights`, 29 Oct)
+
+Each case from the column-HSE start and from the damped-block (fixed 0.01) endpoint, with the column-HSE start's
+weights for both. Φ in units of the column-HSE start's Φ₀.
+
+| case | start | final Φ/Φ₀ | z(τ=1) rms | str−quiet (truth) | CG / time |
+|---|---|---|---|---|---|
+| μ1 ray, cut −4 | column HSE | 2.58e-2 | 22.6 km | −75.5 (−76.6) | 13 034 / 5639 s |
+| | block endpoint | ≈2.52e-2 | 22.6 km | −73.6 | 23 520 / 7473 s |
+| μ0.3 ray, cut −3.5 | column HSE | 4.60e-3 | 28.7 km | −37.4 (−36.4) | 29 770 / 9968 s |
+| | block endpoint | ≈4.66e-3 | 30.3 km | −35.9 | 28 181 / 9076 s |
+| μ0.3 vertical | column HSE | 3.98e-5 | 25.8 km | −26.1 (−36.4) | 30 455 / 16 262 s |
+| | block endpoint | no_descent at step 2 (see below) | | | |
+
+- μ1: both starts reach the same heights; the block endpoint's 36.7 km was a stall in flat large-scale modes.
+- μ0.3: none converged (pred 1e-4 – 2e-3 at step 80, CG at the 400 cap with relative residual 0.3–0.7). Φ keeps
+  falling slowly while the z(τ=1) spread widens (p1/p99 −22 / +54 km at step 10 → −47 / +80 km at step 79) and the
+  height error grows from 21–24 km (D2 at 40 steps) to 26–30 km. At μ0.3 lower Φ does not mean better heights.
+- The μ0.3 vertical block-endpoint failure: every trial point of step 2 left the EOS table (32 of 32, μ up to 4e3;
+  damping by multiples of ereg barely changes the step). With backtracking continued while out of the table (commit
+  92d029e) the run proceeds at α ≈ 1e-3, ρ ≈ 1: a feasibility barrier, not a model failure.
+
+### 6.9 Spectrum on 16 × 16 crops (`frozen_lab.jl parts=spectral`, dense generalised A q = λ M q, M = column blocks)
+
+| case | λmin / λmax | λ < 0.1 λmax: count (weight of b) | block CG to 1e-3 / 1e-5 |
+|---|---|---|---|
+| μ1 ray | 2.0e-4 / 3.1 | 182 of 14 080 (0.037) | 93 / 146 |
+| μ0.3 ray | 1.1e-5 / 3.8 | 675 of 12 800 (0.005) | 67 / 176 |
+| μ0.3 vertical | 1.8e-5 / 3.7 | 2031 of 12 800 (0.103) | 107 / 385 |
+
+- The 4 smallest λ are the checkerboard cut-height modes, well separated, with weight of b ≤ 1e-8: they cost nothing.
+- Ritz pairs: at μ1 the smallest are exact (20 of 32 with residual < 1e-3 without reorthogonalisation, 25 with). At
+  μ0.3 none of 32 converge in 300 iterations, with or without reorthogonalisation: the low spectrum is a dense band.
+  The earlier Ritz-deflation trials used unconverged vectors.
+- Deflation, CG iterations to 1e-3 / 1e-5:
+
+| coarse space | μ1 | μ0.3 vertical |
+|---|---|---|
+| none | 93 / 146 | 107 / 385 |
+| cut height \|k\| ≤ 2 (16), c only | 45 / 81 | 96 / 174 |
+| the same, column-block energy extension | 44 / 79 | 95 / 171 |
+| the same, exact energy extension | 44 / 82 | 109 / 199 |
+| exact smallest 64 eigenvectors | 15 / 24 | 33 / 51 |
+
+  The energy extension lowers the coarse vectors' Rayleigh quotients (exact 5–10× lower) but changes the iterations
+  by a few. Even the exact eigenvectors give 3×; a fixed coarse space cannot hold a band that is 16 % of the unknowns.
+
+### 6.10 Block CG against crop size (10 D2 steps on each crop; tol 1e-3; Marquardt damping 0 / 0.01 / 0.1)
+
+| crop | μ1 | μ0.3 vertical | μ0.3 ray |
+|---|---|---|---|
+| 8² | 101 / 65 / 34 | 54 / 51 / 29 | 146 / 81 / 37 |
+| 16² | 93 / – / – | 107 / – / – | 67 / – / – |
+| 32² | 49 / 43 / 23 | 89 / 52 / 37 | 86 / 53 / 27 |
+| 64² | 33 / 50 / 22 | 208 / 88 / 42 | 448 / 93 / 42 |
+| 128² | 154 / 56 / 29 | 200 / 74 / 38 | > 600 / 107 / 50 |
+| 504² (full) | 131 / – / – | > 600 / ≤ 141 / – | – |
+
+Each crop has its own state (the larger crops are further from converged: pred 0.07–0.34 against ≤ 0.05), so this is
+not a clean scaling test. Undamped, the μ0.3 iterations grow with the crop; with damping 0.1 they stay at 22–50 at
+every size and μ.
