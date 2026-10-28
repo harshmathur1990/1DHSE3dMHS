@@ -59,10 +59,13 @@ end
 """
 Gauss–Newton solve on the τ grid (`[poisson]`). `stop = :gn` (default) stops when the predicted relative decrease of a
 Gauss–Newton step is below `gn_tol` on `gn_consec` consecutive steps; `stop = :phi` is the earlier rule (ΔΦ/Φ < rtol on
-n_consec consecutive steps). `max_steps` bounds the solve in both cases.
+n_consec consecutive steps). `max_steps` bounds the solve in both cases. `cut_frame = :vertical` (default) places the
+cut at the vertical depth log10 τ = `logtau_cut`, which is log10 τ_LOS = `logtau_cut` − log10 μ on the line-of-sight
+axis; `cut_frame = :los` places it at log10 τ_LOS = `logtau_cut`. The two agree at μ = 1.
 """
 Base.@kwdef struct PoissonTauOptions
     logtau_cut::Float64 = -4.0
+    cut_frame::Symbol = :vertical     # :vertical | :los
     max_steps::Int = 25
     stop::Symbol = :gn                # :gn | :phi
     gn_tol::Float64 = 1e-3
@@ -166,7 +169,9 @@ function cut_levels(o::PoissonZOptions, z)
     kc = findfirst(<=(o.z_cut_m), z)
     return kc, kc === nothing ? 0 : length(z) - kc + 1
 end
-cut_levels(o::PoissonTauOptions, lt) = (kc = argmin(abs.(lt .- o.logtau_cut)); (kc, length(lt) - kc + 1))
+"""The cut on the τ axis of the input (line of sight) for viewing angle μ."""
+los_cut(o::PoissonTauOptions, mu) = o.cut_frame == :vertical ? o.logtau_cut - log10(mu) : o.logtau_cut
+cut_levels(o::PoissonTauOptions, lt, mu = 1.0) = (kc = argmin(abs.(lt .- los_cut(o, mu))); (kc, length(lt) - kc + 1))
 
 function option_errors(o::PoissonZOptions, z::AbstractVector)
     e = solver_errors(String[], o)
@@ -181,18 +186,20 @@ function option_errors(o::PoissonZOptions, z::AbstractVector)
     return e
 end
 
-function option_errors(o::PoissonTauOptions, lt::AbstractVector)
+function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0)
     e = solver_errors(String[], o)
+    push_if!(e, o.cut_frame in (:vertical, :los), "poisson cut_frame must be :vertical or :los, got :$(o.cut_frame)")
+    o.cut_frame in (:vertical, :los) || return e
+    c = los_cut(o, mu); at = o.logtau_cut == c ? "logtau_cut = $c" : "logtau_cut = $(o.logtau_cut) (log10 τ_LOS = $(round(c; digits = 3)) at μ = $mu)"
     push_if!(e, o.dc_cap_m > 0 && o.du_cap > 0, "poisson dc_cap_m and du_cap must be positive")
     push_if!(e, o.stop in (:gn, :phi), "poisson stop must be :gn or :phi, got :$(o.stop)")
     push_if!(e, 0 < o.gn_tol < 1, "poisson gn_tol must be in (0, 1)")
     push_if!(e, o.gn_consec >= 1, "poisson gn_consec must be ≥ 1")
     push_if!(e, o.lm_mu0 >= 0, "poisson lm_mu0 must be ≥ 0")
-    push_if!(e, lt[1] <= o.logtau_cut <= lt[end], "logtau_cut = $(o.logtau_cut) is outside the axis [$(lt[1]), $(lt[end])]")
-    kc, n = cut_levels(o, lt)
-    push_if!(e, kc >= 2, "logtau_cut = $(o.logtau_cut) selects the top level; the cut must leave at least one fixed level above it")
-    push_if!(e, n >= POISSON_TAU_MIN_LEVELS,
-             "logtau_cut = $(o.logtau_cut) leaves $n solved level(s); at least $POISSON_TAU_MIN_LEVELS are required")
+    push_if!(e, lt[1] <= c <= lt[end], "$at is outside the axis [$(lt[1]), $(lt[end])]")
+    kc, n = cut_levels(o, lt, mu)
+    push_if!(e, kc >= 2, "$at selects the top level; the cut must leave at least one fixed level above it")
+    push_if!(e, n >= POISSON_TAU_MIN_LEVELS, "$at leaves $n solved level(s); at least $POISSON_TAU_MIN_LEVELS are required")
     return e
 end
 
@@ -378,7 +385,7 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         if poisson_mode(mode)
             want = height_mode(mode) ? PoissonZOptions : PoissonTauOptions
             poisson isa want || invalid("mode :$mode takes poisson::$want")
-            append!(errs, option_errors(poisson, ax))
+            append!(errs, height_mode(mode) ? option_errors(poisson, ax) : option_errors(poisson, ax, view.mu))
         else
             poisson === nothing || invalid("mode :$mode takes no poisson options")
         end
@@ -395,7 +402,7 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
     b = par.block
     fft = nothing
     if poisson_mode(mode)
-        _, n = cut_levels(poisson, ax)
+        _, n = height_mode(mode) ? cut_levels(poisson, ax) : cut_levels(poisson, ax, view.mu)
         fft = SlabFFT(par, n, length(ys))
     end
     res = EquilibriumResult(length(ax), length(ys), b.nx)
@@ -626,7 +633,7 @@ end
 function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     par = ws.par; res = ws.res; o = ws.poisson; lt = ws.axis
     u, z, Φ0, Φ, steps, kc, info = PoissonTau.solve_tau(par, ws.eos, ws.g, lt, lT, bx, by, bz, copy(res.lnP), res.z,
-                                                        ws.dx, ws.dy; logtau_cut = o.logtau_cut, max_steps = o.max_steps,
+                                                        ws.dx, ws.dy; logtau_cut = los_cut(o, ws.view.mu), max_steps = o.max_steps,
                                                         rtol = o.rtol, n_consec = o.n_consec, cg_maxit = o.cg_maxit,
                                                         stop = o.stop, gn_tol = o.gn_tol, gn_consec = o.gn_consec,
                                                         cg_tol = o.cg_tol, dc_cap = o.dc_cap_m, du_cap = o.du_cap,

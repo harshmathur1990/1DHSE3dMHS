@@ -10,8 +10,9 @@ include("view_helpers.jl")
     tab = H.load_table(ETABLE)
     fx = load_tau_fixture("11x12", Colon())
     g = 274.0
-    function mk(mode, view; lt = fx.lt, cut = -4.0)
-        poi = mode == :mhs_poisson_ltau ? H.PoissonTauOptions(logtau_cut = cut, max_steps = 30, rtol = 1e-4) : nothing
+    function mk(mode, view; lt = fx.lt, cut = -4.0, frame = :vertical)
+        poi = mode == :mhs_poisson_ltau ? H.PoissonTauOptions(logtau_cut = cut, cut_frame = frame, max_steps = 30, rtol = 1e-4) :
+              nothing
         H.prepare_embedded(comm, mode; axis = lt, x = fx.x, y = fx.y, eos = tab, g = g,
                            column = H.ColumnTauOptions(align = "ptot"), poisson = poi, view = view)
     end
@@ -28,6 +29,13 @@ include("view_helpers.jl")
         @test t[1] ≈ 0.0 atol = 1e-12
         @test t[2] ≈ sqrt(3.0)
         @test_throws H.InvalidInput mk(:column_hse_ltau, H.ViewOptions(mu = -0.1))
+        o = H.PoissonTauOptions()                                                    # cut at the vertical depth by default
+        @test H.los_cut(o, 1.0) == -4.0
+        @test H.los_cut(o, 0.5) ≈ -4.0 + log10(2.0)
+        @test H.los_cut(H.PoissonTauOptions(cut_frame = :los), 0.5) == -4.0
+        @test H.cut_levels(o, fx.lt, 0.5)[1] == argmin(abs.(fx.lt .- (-4.0 + log10(2.0))))
+        @test !isempty(H.option_errors(H.PoissonTauOptions(cut_frame = :ray), fx.lt))
+        @test !isempty(H.option_errors(H.PoissonTauOptions(logtau_cut = fx.lt[end-3]), fx.lt, 0.1))   # pushed below the axis
         fz = load_z_fixture("11x12", Colon())
         zprep(col, v) = H.prepare_embedded(comm, :column_hse_z; axis = fz.z, x = fz.x, y = fz.y, eos = tab, g = fz.g,
                                            column = col, view = v)
@@ -46,10 +54,11 @@ include("view_helpers.jl")
         end
     end
 
-    @testset "plane-parallel μ = vertical view on log τ + log10 μ ($mode)" for mode in (:column_hse_ltau, :mhs_poisson_ltau)
+    @testset "plane-parallel μ = vertical view on log τ + log10 μ ($mode, cut $frame)" for mode in (:column_hse_ltau, :mhs_poisson_ltau),
+                                                                                       frame in (:vertical, :los)
         μ = 0.6
-        a = solve(mk(mode, H.ViewOptions(mu = μ)))
-        b = solve(mk(mode, H.ViewOptions(); lt = fx.lt .+ log10(μ), cut = -4.0 + log10(μ)))
+        a = solve(mk(mode, H.ViewOptions(mu = μ); frame))
+        b = solve(mk(mode, H.ViewOptions(); lt = fx.lt .+ log10(μ), cut = frame == :vertical ? -4.0 : -4.0 + log10(μ)))
         @test a.status.valid && b.status.valid
         tol = mode == :column_hse_ltau ? 1e-10 : 1e-5
         @test maximum(abs, a.lnP .- b.lnP) < tol

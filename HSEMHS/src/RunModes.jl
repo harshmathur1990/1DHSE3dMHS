@@ -36,7 +36,7 @@ function tau_setup(cfg, tag, mode::Symbol)
     G = cfg.tau_grid; P = cfg.poisson
     column = ColumnTauOptions(align = G.align)
     poisson = mode == :mhs_poisson_ltau ?
-              PoissonTauOptions(logtau_cut = P.logtau_cut, max_steps = P.max_steps == 0 ? 25 : P.max_steps, rtol = P.rtol,
+              PoissonTauOptions(logtau_cut = P.logtau_cut, cut_frame = Symbol(P.cut_frame), max_steps = P.max_steps == 0 ? 25 : P.max_steps, rtol = P.rtol,
                                 n_consec = P.n_consec, stop = Symbol(P.stop), gn_tol = P.gn_tol, gn_consec = P.gn_consec,
                                 cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0) : nothing
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] %s: %s", time() - t0, tag, s)); flush(stdout))
@@ -131,7 +131,8 @@ function run_mhs_poisson_ltau(cfg::Config)
         s.logm(@sprintf("solve done in %d steps, Φ/Φ₀ %.3e; gauge shift %.1f km", st.steps, st.phi / st.phi0,
                         st.stats["gauge_shift_m"] / 1e3))
         write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "mhs-poisson-ltau",
-                       "logtau_cut" => s.lt[st.stats["cut_level"]], "phi_start" => st.phi0, "phi_end" => st.phi,
+                       "logtau_cut" => s.lt[st.stats["cut_level"]], "logtau_cut_frame" => String(s.ws.poisson.cut_frame),
+                       "phi_start" => st.phi0, "phi_end" => st.phi,
                        "steps" => st.steps, "align" => G.align,
                        "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement))
     finally

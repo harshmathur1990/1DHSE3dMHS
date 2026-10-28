@@ -98,6 +98,7 @@ const CONFIG_SCHEMA = [
     "poisson" => [                   # mhs-poisson-z and mhs-poisson-ltau
         "z_cut_m" => 1.0e6,            # z: solved region z ≤ z_cut, column HSE above
         "logtau_cut" => -4.0,          # ltau: solved levels log10 τ ≥ logtau_cut, τ-hydrostatic above
+        "cut_frame" => "vertical",     # ltau: vertical (cut at vertical log10 τ = logtau_cut, LOS logtau_cut − log10 μ) | los
         "max_steps" => 0,              # Gauss–Newton steps; 0: mode default (ltau 25, z 100)
         "stop" => "gn",                # ltau: gn (predicted decrease < gn_tol on gn_consec steps) | phi; z: always phi
         "gn_tol" => 1.0e-3,
