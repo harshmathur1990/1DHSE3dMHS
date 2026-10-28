@@ -21,6 +21,7 @@
         @test pr.prec == :block
         PT.evaluate!(pr, lnP, c); PT.tp_weights!(pr, g, dx); PT.evaluate!(pr, lnP, c)
         PT.setprec!(pr)
+        bal == :ray && (pr.mlm = 0.3; PT.setprec!(pr))                      # Marquardt damping in the operator and blocks
         n1 = pr.n1
         e = zeros(n1, ny, nx); out = similar(e)
         for (j, i) in ((1, 1), (ny, nx), (5, 6), (ny, 1))
@@ -47,6 +48,16 @@
                               max_steps = 15, mu = v.mu, slant = H.slant(v), precond = p, damping = d, stop = :gn, lm = :gain,
                               forcing = :ew, stationarity = false)
         f = run(:fourier)
+        # the objective of another solve: same start and weights → the same solve; another start uses the weights given
+        sv(u0, zz; w = nothing) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, u0, zz, dx, dy; logtau_cut = -4.0,
+                                     max_steps = 5, mu = v.mu, slant = H.slant(v), stop = :gn, lm = :gain, forcing = :ew,
+                                     stationarity = false, weights = w)
+        f5 = sv(copy(lnP), copy(z0))
+        r5 = sv(copy(lnP), copy(z0); w = f5[7].weights)
+        @test r5[3] == f5[3] && r5[4] == f5[4] && r5[1] == f5[1]
+        w5 = sv(copy(f5[1]), copy(f5[2]); w = f5[7].weights)
+        @test w5[7].weights.wc == f5[7].weights.wc && w5[7].weights.ereg == f5[7].weights.ereg
+        @test w5[3] <= f5[4] * (1 + 1e-10)                                # starts at the first solve's Φ (same objective)
         for (p, d) in ((:block, :reg), (:hybrid, :reg), (:hybrid, :marquardt))
             b = run(p; d = d)
             @test b[7].reason in (:converged, :max_steps)

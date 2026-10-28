@@ -12,9 +12,10 @@ usage: mpiexecjl -n R julia --project=. -t T scripts/viewing/measure_warm.jl INP
 For every step of 3 and 4: rms and max distance of z(τ_LOS = 1) (mean removed) and rms ln P distance on the solved
 levels from the reference's final state, the predicted decrease, CG iterations and cumulative seconds → stdout and
 OUTDIR/warm.csv. KEY: as measure_steps.jl (max_steps, logtau_cut (line of sight), stop, gn_tol, gn_consec, balance, lm,
-forcing, precond, cg_cap, eta_min, eta_max, cg_maxit, cg_tol) plus first_steps, ref_steps, seed, warm. The step-0 heights
-below the cut are those of the column HSE in both trajectories (the warm start's heights follow from its ln P only
-when the solve evaluates it): compare step 0 by ln P.
+forcing, precond, cg_cap, eta_min, eta_max, cg_maxit, cg_tol) plus first_steps, ref_steps, seed, warm and
+common_weights (1, default: the warm solve minimises the reference's Φ, i.e. its weights and regularisation; 0: weights
+from its own start). Step-0 heights are those of the start state (evaluated from its ln P and cut heights).
+The column HSE of the first cube (the D4b baseline) is kept unchanged (checked).
 =#
 using HSEMHS
 using MPI
@@ -46,7 +47,7 @@ function main(path, outdir, mu_s, az_s, geom, eps_s, kv...)
     H.ensure_mpi()
     o = Dict{String,Float64}("max_steps" => 25, "first_steps" => 25, "ref_steps" => 40, "logtau_cut" => -4.0,
                              "gn_tol" => 1e-3, "gn_consec" => 2, "cg_cap" => 200, "klow" => 8, "cap_frac" => 0.5, "mlm_min" => 0.01, "eta_min" => 0.005, "eta_max" => 0.1,
-                             "cg_maxit" => 80, "cg_tol" => 1e-3, "seed" => 1)
+                             "cg_maxit" => 80, "cg_tol" => 1e-3, "seed" => 1, "common_weights" => 1)
     sy = Dict(:stop => :gn, :balance => :ray, :lm => :gain, :forcing => :ew, :precond => :fourier, :damping => :reg, :warm => :column)
     for a in kv
         k, v = split(a, "=")
@@ -63,29 +64,37 @@ function main(path, outdir, mu_s, az_s, geom, eps_s, kv...)
     lt, x, y, T, Bx, By, Bz = H.PoissonTau.read_tau_input(par, path)
     lT = log.(T); g = 274.0; dx = x[2] - x[1]; dy = y[2] - y[1]
     kc = argmin(abs.(lt .- o["logtau_cut"])); k0 = argmin(abs.(lt)); N = NX * NY
-    solve(lTs, u, z0, nsteps, on_step) =
+    solve(lTs, u, z0, nsteps, on_step; weights = nothing) =
         H.PoissonTau.solve_tau(par, tab, g, lt, lTs, Bx, By, Bz, u, z0, dx, dy; logtau_cut = o["logtau_cut"],
                                max_steps = Int(nsteps), cg_maxit = Int(o["cg_maxit"]), cg_tol = o["cg_tol"], logf = quiet,
                                mu = v.mu, slant = H.slant(v), on_step = on_step, stop = sy[:stop], gn_tol = o["gn_tol"],
                                gn_consec = Int(o["gn_consec"]), balance = sy[:balance], lm = sy[:lm],
                                forcing = sy[:forcing], precond = sy[:precond], damping = sy[:damping], klow = Int(o["klow"]), cap_frac = o["cap_frac"],
                                mlm_min = o["mlm_min"], cg_cap = Int(o["cg_cap"]), eta_min = o["eta_min"],
-                               eta_max = o["eta_max"], stationarity = false)
+                               eta_max = o["eta_max"], stationarity = false, weights = weights)
     column(lTs) = (r = H.PoissonTau.column_hse_tau(par, lt, lTs, Bx, By, Bz, tab, g; align = "ptot", mu = v.mu);
                    r[6] == 0 || error("column HSE failed"); (r[1], r[2]))
     z1(z) = (a = z[k0, :, :]; a .- H.gsum(par, sum(a)) / N)
+    function zstart(lTs, u, z0)                                # heights of the start state (u, cut heights of z0)
+        pr, c = H.PoissonTau.tp_setup(par, tab, g, lt, lTs, Bx, By, Bz, z0, dx, dy; logtau_cut = o["logtau_cut"],
+                                      mu = v.mu, slant = H.slant(v), balance = sy[:balance])
+        H.PoissonTau.evaluate!(pr, u, c)
+        return copy(pr.z)
+    end
 
     BLAS.set_num_threads(min(32, Threads.nthreads()))
     u0, z0 = column(lT)
+    u0c, z0c = copy(u0), copy(z0)                             # the D4b baseline: must survive the first solve
     ts = time()
-    ua, za, _, _, sa, _, ia = solve(lT, u0, z0, o["first_steps"], nothing)
+    ua, za, _, _, sa, _, ia = solve(lT, copy(u0), copy(z0), o["first_steps"], nothing)
+    (u0 == u0c && z0 == z0c) || error("the first solve modified the column-HSE baseline")
     H.PoissonTau.gauge!(par, za, lt)
     logf(@sprintf("first solve: %d steps, %s, %.0f s", sa, ia.reason, time() - ts))
 
     lT2 = lT .+ perturbation(par, lt, NX, NY, size(lT, 3), parse(Float64, eps_s), Int(o["seed"]))
     u1, z1c = column(lT2)
     rec(tr) = (s, u, z, info) -> push!(tr, (s, z1(z), Float32.(u[kc:end, :, :]), info.pred, info.cg_its, info.seconds))
-    cold = Any[(0, z1(z1c), Float32.(u1[kc:end, :, :]), NaN, 0, 0.0)]
+    cold = Any[(0, z1(zstart(lT2, u1, z1c)), Float32.(u1[kc:end, :, :]), NaN, 0, 0.0)]
     ts = time()
     ur, zr, _, _, sr, _, ir = solve(lT2, copy(u1), copy(z1c), o["ref_steps"], rec(cold))
     logf(@sprintf("reference (cold) solve of the perturbed cube: %d steps, %s, %.0f s", sr, ir.reason, time() - ts))
@@ -95,9 +104,9 @@ function main(path, outdir, mu_s, az_s, geom, eps_s, kv...)
     else                                                      # D4a: shifted by the change at the cut
         H.PoissonTau.warm_start!(uw, zw, kc, ua[kc:end, :, :], za[kc, :, :])
     end
-    warm = Any[(0, z1(zw), Float32.(uw[kc:end, :, :]), NaN, 0, 0.0)]
+    warm = Any[(0, z1(zstart(lT2, uw, zw)), Float32.(uw[kc:end, :, :]), NaN, 0, 0.0)]
     ts = time()
-    _, _, _, _, sw, _, iw = solve(lT2, uw, zw, o["max_steps"], rec(warm))
+    _, _, _, _, sw, _, iw = solve(lT2, uw, zw, o["max_steps"], rec(warm); weights = o["common_weights"] > 0 ? ir.weights : nothing)
     logf(@sprintf("warm solve of the perturbed cube: %d steps, %s, %.0f s", sw, iw.reason, time() - ts))
     BLAS.set_num_threads(1)
 

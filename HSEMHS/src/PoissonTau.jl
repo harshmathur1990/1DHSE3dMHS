@@ -237,6 +237,7 @@ mutable struct TP
     wk::Vector{Float64}                             # per T column: 1 for the modes the Fourier part acts on, else 0
     dlm::Array{Float64,3}                           # :block, :hybrid: diag(JᵀWJ), set by colblocks! (Marquardt damping)
     mlm::Float64                                    # Marquardt damping: the operator adds mlm · dlm
+    fdamp::Bool                                     # :hybrid: the Fourier part includes mlm × the layer medians of dlm
 end
 
 inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
@@ -535,7 +536,8 @@ end
 """Preconditioner at the current state and regularisation of `pr`: :fourier, the layer-median operator A + s² B per
 horizontal mode, diagonalised (M⁻¹ = Qᵀ diag(1/(1 + s²λ)) Q); :block, the exact column blocks (block Jacobi);
 :hybrid, both added, the Fourier part on the modes |k| ≤ klow only (the large scales, which block Jacobi cannot
-propagate and which barely show in the residual: design/tau/SOLVER_TIME_DESIGN.md D3c)."""
+propagate and which barely show in the residual: design/tau/SOLVER_TIME_DESIGN.md D3c). With Marquardt damping
+(mlm > 0) the Fourier part adds mlm × the layer medians of diag(JᵀWJ) unless `pr.fdamp` is false."""
 function setprec!(pr::TP)
     pr.prec == :fourier || colblocks!(pr)
     pr.prec == :block && return pr
@@ -557,7 +559,8 @@ function setprec!(pr::TP)
         end
     end
     Gh = -(W .* S); for m in 2:n1; Gh[m, m] -= 1; end
-    A = Gz' * Diagonal(pr.wf) * Gz + Diagonal(pr.ereg)
+    d = pr.fdamp && pr.mlm > 0 ? pr.ereg .+ pr.mlm .* gmedians(par, pr.dlm) : pr.ereg   # the damping of Aop!, layer medians
+    A = Gz' * Diagonal(pr.wf) * Gz + Diagonal(d)
     B = Gh' * Diagonal(pr.wc) * Gh
     Li = inv(Matrix(cholesky(Symmetric(A)).L))
     E = eigen(Symmetric(Li * B * Li'))
@@ -820,7 +823,7 @@ function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
             Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z(),
-            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0)
+            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0, true)
     return pr, c
 end
 
@@ -869,6 +872,8 @@ Jacobi; `colblocks!`) or :hybrid (both, the Fourier part on the modes |k| ≤ `k
 shape, from `mlm_min` up, and treats a step the caps would scale below `cap_frac` as outside the trust region (μ is
 raised and the step solved again): the column blocks expose near-null directions (ln P just below the cut) that the
 undamped step fills with huge values. A failed line search re-evaluates the state before the next solve.
+`weights` = (wc, wf, ereg) replaces the weights and regularisation computed from the start state (the objective of
+another solve of the same cube, so that different starts minimise the same Φ); `info.weights` returns those used.
 """
 function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = -4.0, max_steps = 60, rtol = 1e-4,
                    n_consec = 3, cg_maxit = 80,
@@ -876,7 +881,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                    rms_atol = 0.0, stationarity = true, mu = 1.0, slant = (0.0, 0.0), on_step = nothing,
                    stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical, lm = :alpha, forcing = :fixed,
                    cg_cap = 200, eta_min = 0.005, eta_max = 0.1, precond = :fourier, klow = 8,
-                   damping = :reg, cap_frac = 0.5, mlm_min = 0.01)
+                   damping = :reg, cap_frac = 0.5, mlm_min = 0.01, weights = nothing)
     nt, ny, nx = size(lT); NX = par.NX
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
                      balance = balance, precond = precond, klow = klow)
@@ -887,10 +892,15 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     _, bad = evaluate!(pr, u, c)
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
         info = (reason = :eos_out_of_envelope, gn_decrement = NaN, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
-                lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false)
+                lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false, weights = nothing)
         return u, copy(z0), NaN, NaN, 0, kc, info
     end
     Hb, dzf, Wtot = tp_weights!(pr, g, dx)
+    if weights !== nothing                           # the objective of another solve (same cube, grid and cut)
+        pr.wc = copy(weights.wc); pr.wf = copy(weights.wf); pr.ereg = copy(weights.ereg)
+        Wtot = (2 * sum(pr.wc) + sum(pr.wf)) * ny * NX
+    end
+    wts = (wc = copy(pr.wc), wf = copy(pr.wf), ereg = copy(pr.ereg))
     k0 = argmin(abs.(lt))
     zq() = gquantiles(par, pr.z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3
     Φ, _ = evaluate!(pr, u, c); Φ0 = Φ
@@ -899,7 +909,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     reason = :max_steps
     if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0
         info = (reason = :converged, gn_decrement = 0.0, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
-                rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0)
+                rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0, weights = wts)
         logf("start state already within rms_atol: no steps")
         return u, copy(pr.z), Φ0, Φ0, 0, kc, info
     end
@@ -989,7 +999,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         logf(@sprintf("stationarity: Gauss–Newton decrement %.3e, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd, gn, its, rel))
     end
     info = (reason = reason, gn_decrement = gnd, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
-            rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false)
+            rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts)
     return u, copy(pr.z), Φ0, Φ, steps, kc, info
 end
 

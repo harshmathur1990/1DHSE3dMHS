@@ -53,6 +53,10 @@
         c = H.snapshot(H.solve_embedded!(ws2, fx.lnT, fx.Bx, fx.By, fx.Bz))
         H.free_embedded!(ws2)
         @test isequal(a.lnP, c.lnP) && isequal(a.z, c.z)                     # the fallback is the cold solve
+        kc = H.cut_levels(ws.poisson, fx.lt, v.mu)[1]                         # cached D4b state: solution and its column HSE
+        @test ws.warm[1] == a.lnP[kc:end, :, :] && ws.warm[2] == a.z[kc, :, :]
+        @test ws.warm[3] ≈ log.(a.Pgas_start[kc:end, :, :]) rtol = 1e-12       # the baseline is the column HSE, not the solution
+        @test maximum(abs, ws.warm[3] .- ws.warm[1]) > 1e-3
         b = H.snapshot(H.solve_embedded!(ws, fx.lnT, fx.Bx, fx.By, fx.Bz; start = :previous))  # same input again
         @test b.status.valid
         @test b.status.stats["start"] == "previous"
