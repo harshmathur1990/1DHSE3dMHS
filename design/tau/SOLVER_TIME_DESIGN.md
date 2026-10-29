@@ -299,9 +299,20 @@ fixed, while a solve may change both, so they are not lower bounds on the error 
 
 Candidate sources, not yet separated: the snapshot density against the EOS; the generator's interpolation of χ from the
 geometric grid against the solver's χ(interpolated T, solved P); the trapezoid τ–z quadrature; the fixed column-HSE cut
-pressure and upper geometry; and forces the snapshot does not balance (it is not static). The 23.6 km map discrepancy
-and the 22.6 km μ1 solve error have similar size, but they are different error fields; that they are related is a
-hypothesis until their gauge-aligned maps are compared.
+pressure and upper geometry; and forces the snapshot does not balance (it is not static). **Spatial comparison** (`error_maps.py`, gauge-aligned): the 23.6 km map discrepancy e_m and the 22.6 km μ1 solve
+error e_s are similar in size but are unrelated fields.
+
+| μ1, ref column start (block start and truth start alike) | e_s rms | e_m rms | corr(e_s, e_m) | rms(e_s − e_m) | corr(e_s, cut ΔlnP) |
+|---|---|---|---|---|---|
+| full resolution | 22.6 km | 22.6 km | +0.015 | 31.7 km | −0.03 |
+| scales > 1 Mm (21 × 21 box-car) | 14.6 | 1.5 | +0.06 | 14.6 | −0.04 |
+| scales < 1 Mm | 14.0 | 22.6 | +0.01 | 26.4 | −0.02 |
+
+- At μ1 the solved error is not the solver-map discrepancy, and not the cut-pressure mismatch. Against the
+  model-projected truth (z_truth + e_m) it is larger (31.7 km). So the 22.6 km is not explained by either. The
+  remaining candidates (non-static snapshot forces, the EOS density offset, horizontal discretisation) are untested.
+- At μ0.3 vertical, e_s (25.8 km) is mostly large-scale (21.6 km). In strong-field columns that large-scale part is
+  anti-correlated with e_m (−0.49, slope −1.1); elsewhere |corr| ≤ 0.1.
 
 Truth starts (common weights; Φ in units of the column-HSE start's Φ₀): from the truth shifted per column to the
 column-HSE cut pressure, μ1 ends at the column start's heights (22.4 km, Φ 0.024 against 0.026), which shows
