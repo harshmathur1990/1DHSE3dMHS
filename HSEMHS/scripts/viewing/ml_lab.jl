@@ -17,6 +17,8 @@ lab:  julia ... ml_lab.jl lab FROZEN.h5 [KEY=VALUE ...]
                                     ω λmax(B⁻¹A) < 2, ω = `omega`/λmax with λmax by power iteration)
         add:a:k / mult:a:k          the same with k column shapes per aggregate: the k smallest eigenvectors of the
                                     aggregate's diagonal block of A_c (compact coarse space, A_c' = Vᵀ A_c V)
+        addb:a[:k] / multb:a[:k]    four branches per aggregate: the smooth basis and its (−1)ⁱ, (−1)ʲ, (−1)ⁱ⁺ʲ modulations
+                                    (the centred differences' Nyquist branches; a even)
       For each: setup time, PCG to tol 1e-3 and 1e-5 (iterations, A and M⁻¹ applications, the true relative residual
       recomputed, solve time), and against a tight reference δ (block PCG to 1e-10): scaled ‖δ − δ_ref‖ / ‖δ_ref‖ and
       the model decrease δ·b/Φ against the reference's.
@@ -85,7 +87,8 @@ end
 # two-level preconditioner
 # ---------------------------------------------------------------------------------------------------------------------
 mutable struct TwoLevel
-    a::Int; nay::Int; nax::Int; k::Int            # aggregate size, aggregates in y and x, shapes per aggregate (0: all n1)
+    a::Int; nay::Int; nax::Int; k::Int            # aggregate size, aggregates in y and x, shapes per group (0: all n1)
+    nq::Int                                       # branches: 1 (smooth) or 4 (smooth, (−1)ⁱ, (−1)ʲ, (−1)ⁱ⁺ʲ modulated)
     V::Vector{Matrix{Float64}}                    # per aggregate: n1 × k shapes (k > 0)
     F::Any                                        # Cholesky of A_c
     mult::Bool; ω::Float64
@@ -96,33 +99,38 @@ end
 
 agg(T::TwoLevel, j, i) = (cld(j, T.a), cld(i, T.a))
 aidx(T::TwoLevel, by, bx) = by + T.nay * (bx - 1)
+gidx(T::TwoLevel, q, by, bx) = q + T.nq * (aidx(T, by, bx) - 1)          # group (branch q of aggregate (by, bx))
+sgn(q, j, i) = q == 1 ? 1.0 : q == 2 ? (-1.0)^i : q == 3 ? (-1.0)^j : (-1.0)^(i + j)
+ngroups(T::TwoLevel) = T.nq * T.nay * T.nax
 
 function restrict(T::TwoLevel, r)                  # Pᵀ r
-    n1 = size(r, 1); S = zeros(n1, T.nay, T.nax)
+    n1 = size(r, 1); S = zeros(n1, ngroups(T))
     @inbounds for i in axes(r, 3), j in axes(r, 2)
         by, bx = agg(T, j, i)
-        for m in 1:n1; S[m, by, bx] += r[m, j, i]; end
+        for q in 1:T.nq
+            g = gidx(T, q, by, bx); sg = sgn(q, j, i)
+            for m in 1:n1; S[m, g] += sg * r[m, j, i]; end
+        end
     end
     T.k == 0 && return vec(S)
-    y = zeros(T.k * T.nay * T.nax)
-    for bx in 1:T.nax, by in 1:T.nay
-        b = aidx(T, by, bx); y[(b-1)*T.k+1:b*T.k] = T.V[b]' * @view S[:, by, bx]
-    end
+    y = zeros(T.k * ngroups(T))
+    for g in 1:ngroups(T); y[(g-1)*T.k+1:g*T.k] = T.V[g]' * @view S[:, g]; end
     return y
 end
 
 function prolong!(T::TwoLevel, out, y, n1)         # out += P y
     if T.k == 0
-        Y = reshape(y, n1, T.nay, T.nax)
+        Y = reshape(y, n1, ngroups(T))
     else
-        Y = zeros(n1, T.nay, T.nax)
-        for bx in 1:T.nax, by in 1:T.nay
-            b = aidx(T, by, bx); Y[:, by, bx] = T.V[b] * y[(b-1)*T.k+1:b*T.k]
-        end
+        Y = zeros(n1, ngroups(T))
+        for g in 1:ngroups(T); Y[:, g] = T.V[g] * y[(g-1)*T.k+1:g*T.k]; end
     end
     @inbounds for i in axes(out, 3), j in axes(out, 2)
         by, bx = agg(T, j, i)
-        for m in 1:n1; out[m, j, i] += Y[m, by, bx]; end
+        for q in 1:T.nq
+            g = gidx(T, q, by, bx); sg = sgn(q, j, i)
+            for m in 1:n1; out[m, j, i] += sg * Y[m, g]; end
+        end
     end
     return out
 end
@@ -130,48 +138,52 @@ end
 """Galerkin A_c = Pᵀ A P (every level of each aggregate) by coloured probes: aggregates c apart in each direction share a
 probe (A couples columns ≤ 2 apart, i.e. aggregates ≤ 1 apart for a ≥ 2)."""
 function galerkin(pr, T::TwoLevel)
-    n1 = pr.n1; nay, nax = T.nay, T.nax; nc = n1 * nay * nax
+    n1 = pr.n1; nay, nax = T.nay, T.nax; nc = n1 * ngroups(T)
     col(n) = n < 3 ? n : first(c for c in 3:n if n % c == 0)
     cy, cx = col(nay), col(nax)
     Is = Int[]; Js = Int[]; Vs = Float64[]
     v = zeros(n1, pr.ny, pr.nx); w = similar(v)
-    for oy in 1:cy, ox in 1:cx, m in 1:n1
+    for oy in 1:cy, ox in 1:cx, q in 1:T.nq, m in 1:n1
         fill!(v, 0.0)
         for i in 1:pr.nx, j in 1:pr.ny
             by, bx = agg(T, j, i)
-            ((by - oy) % cy == 0 && (bx - ox) % cx == 0) && (v[m, j, i] = 1.0)
+            ((by - oy) % cy == 0 && (bx - ox) % cx == 0) && (v[m, j, i] = sgn(q, j, i))
         end
         PT.Aop!(pr, w, v)
-        S = zeros(n1, nay, nax)
+        S = zeros(n1, ngroups(T))
         for i in 1:pr.nx, j in 1:pr.ny
             by, bx = agg(T, j, i)
-            for l in 1:n1; S[l, by, bx] += w[l, j, i]; end
+            for q2 in 1:T.nq
+                g = gidx(T, q2, by, bx); sg = sgn(q2, j, i)
+                for l in 1:n1; S[l, g] += sg * w[l, j, i]; end
+            end
         end
         for bx in 1:nax, by in 1:nay                # target aggregate (by, bx): its source in this colour is the one
             ys_ = unique(filter(yy -> (yy - oy) % cy == 0, [mod1(by + d, nay) for d in -1:1]))   # within ±1 (periodic)
             xs_ = unique(filter(xx -> (xx - ox) % cx == 0, [mod1(bx + d, nax) for d in -1:1]))
             (isempty(ys_) || isempty(xs_)) && continue
             (length(ys_) == 1 && length(xs_) == 1) || error("galerkin: colouring not unique")
-            ys = ys_[1]; xs = xs_[1]
-            for l in 1:n1
-                val = S[l, by, bx]; val == 0 && continue
-                push!(Is, l + n1 * (aidx(T, by, bx) - 1)); push!(Js, m + n1 * (aidx(T, ys, xs) - 1)); push!(Vs, val)
+            src = gidx(T, q, ys_[1], xs_[1])
+            for q2 in 1:T.nq, l in 1:n1
+                val = S[l, gidx(T, q2, by, bx)]; val == 0 && continue
+                push!(Is, l + n1 * (gidx(T, q2, by, bx) - 1)); push!(Js, m + n1 * (src - 1)); push!(Vs, val)
             end
         end
     end
     return sparse(Is, Js, Vs, nc, nc)
 end
 
-function twolevel(pr, a, k, mult, ω)
+function twolevel(pr, a, k, mult, ω; nq = 1)
     t0 = time()
-    T = TwoLevel(a, cld(pr.ny, a), cld(pr.nx, a), k, Matrix{Float64}[], nothing, mult, ω, 0, 0.0, 0, 0, 0, NaN, nothing)
+    T = TwoLevel(a, cld(pr.ny, a), cld(pr.nx, a), k, nq, Matrix{Float64}[], nothing, mult, ω, 0, 0.0, 0, 0, 0, NaN, nothing)
     (pr.ny % a == 0 && pr.nx % a == 0) || error("grid $(pr.ny) × $(pr.nx) not divisible by aggregate size $a")
+    nq == 4 && isodd(a) && error("branch coarse spaces need an even aggregate size")
     Ac = galerkin(pr, T)
     T.sym = norm(Ac - Ac', 1) / norm(Ac, 1)
     Ac = (Ac + Ac') / 2
     n1 = pr.n1
     if k > 0
-        nb = T.nay * T.nax; Vb = Vector{Matrix{Float64}}(undef, nb)
+        nb = ngroups(T); Vb = Vector{Matrix{Float64}}(undef, nb)
         for b in 1:nb
             r = (b-1)*n1+1:b*n1
             E = eigen(Symmetric(Matrix(Ac[r, r])))
@@ -270,9 +282,10 @@ function lab(path, kv...)
             prx = p2; M! = PT.Minv!
         else
             parts = split(pname, ":"); a = parse(Int, parts[2]); kk = length(parts) > 2 ? parse(Int, parts[3]) : 0
-            ncoarse = (kk == 0 ? n1 : kk) * cld(ny, a) * cld(nx, a)
+            nq = endswith(parts[1], "b") ? 4 : 1
+            ncoarse = nq * (kk == 0 ? n1 : kk) * cld(ny, a) * cld(nx, a)
             ncoarse > o["max_coarse"] && (logf(@sprintf("%-10s skipped: %d coarse unknowns > max_coarse", pname, ncoarse)); continue)
-            T = try twolevel(pr, a, kk, parts[1] == "mult", o["omega"] / λB) catch e
+            T = try twolevel(pr, a, kk, startswith(parts[1], "mult"), o["omega"] / λB; nq = nq) catch e
                 logf("$pname: setup failed: $(sprint(showerror, e))"); continue end
             setup = T.tsetup; prx = pr; M! = (p, out, r) -> ml_apply!(p, T, out, r)
         end

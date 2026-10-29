@@ -9,14 +9,16 @@ lm (alpha | gain | fixed), forcing (fixed | ew), cg_cap, eta_min, eta_max, preco
 lm_mu0, qual_tol, qual_maxit, feas (as the solve_tau keywords), start (truth:TRUTH.h5: the truth ln P below the cut,
 shifted per column to the fixed column-HSE cut pressure, or unshifted with truth_raw=1, and the upper structure moved to
 the truth cut height; else the directory of an earlier run: start from its final
-state, Float64 when saved; the run's ranks, slab, grid, cut, view, balance, input and boundary must match), boundary
+state, Float64 when saved; the run's ranks, slab, grid, cut, view, balance, boundary and input must match; the input is
+identified by its path, byte size, Σ log τ and the global sums of T, B_x, B_y, B_z (a content fingerprint, not a
+cryptographic checksum)), boundary
 (column: the production fixed levels from column HSE; truth:TRUTH.h5: experimental, the truth's ln P and heights on the
 levels down to the cut, the column-HSE start below the cut shifted per column to the truth cut pressure), common_weights (1: the weights of the column-HSE start, for any start; defaults: the earlier rule,
 stop = phi, max_steps 100), perturb_lnp, perturb_c_km (a smooth |k| = 1 perturbation of the start: ln P ×
 exp(−log τ²/2), cut height in km). logtau_cut is on the line-of-sight axis.
 OUTDIR/snap_r<rank>.h5: s<step>/{lnP, z} (and final/ at the returned state) (Float32, solved levels k_c … nt, this rank's x slab, Julia (τ, y, x)), with
 step attributes phi, phi_h, phi_v, phi_v3 (the vertical part on the first 3 faces below the cut), pred, cg_its, cg_rel, alpha, seconds (and the work per step: cg_step, solves, evals, cap_scale); s0
-holds the evaluated start state (its heights from the start ln P and cut heights); final64/{lnP, z} the returned state in
+holds the evaluated start state (with defect_{horizontal,vertical}_{all,cut,interior,bottom}: PoissonTau.defect_parts) (its heights from the start ln P and cut heights); final64/{lnP, z} the returned state in
 Float64 (the restart checkpoint); weights/{wc, wf, ereg} the solve's objective; root attributes i0 (first global x), kc,
 NX, NY, nt, logtau_cut, balance, input (path, size, Σ log τ), view, work_* (info.work) and qual_* (the last stop check).
 =#
@@ -85,6 +87,7 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
                             "logtau_cut" => o["logtau_cut"], "balance" => String(sy[:balance]), "mu" => v.mu,
                             "azimuth_deg" => v.azimuth_deg, "geometry" => String(v.geometry),
                             "input" => abspath(path), "input_bytes" => filesize(path), "input_lt_sum" => sum(lt),
+                            "input_content_sums" => vcat([H.gsum(par, sum(Float64, A)) for A in (T, Bx, By, Bz)], sum(x), sum(y)),
                             "boundary" => boundary)
     if startswith(start, "truth:")                  # the truth-derived state (design/CODEX_REVIEW_solver_time_round3)
         tf = h5open(start[7:end], "r")
@@ -150,7 +153,8 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     else
         pr0.wc = copy(wts.wc); pr0.wf = copy(wts.wf); pr0.ereg = copy(wts.ereg)
     end
-    φh0, φv0, φt0 = bad0 == 0 ? H.PoissonTau.phi_parts(pr0) : (NaN, NaN, NaN); pr0 = nothing
+    φh0, φv0, φt0 = bad0 == 0 ? H.PoissonTau.phi_parts(pr0) : (NaN, NaN, NaN)
+    dp0 = bad0 == 0 ? H.PoissonTau.defect_parts(pr0) : nothing; pr0 = nothing
     f = h5open(joinpath(outdir, "snap_r$(par.rank).h5"), "w")
     a = attributes(f); a["i0"] = par.block.i0; a["kc"] = kc; a["mu"] = v.mu; a["azimuth_deg"] = v.azimuth_deg
     a["geometry"] = String(v.geometry); a["ranks"] = par.nranks; a["threads"] = Threads.nthreads()
@@ -166,6 +170,10 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     end
     save(0, lnP, zs0, (phi = φh0 + φv0, pred = NaN, cg_its = 0, cg_rel = NaN, alpha = NaN, seconds = 0.0, phi_h = φh0,
                        phi_v = φv0, phi_v3 = φt0))
+    if dp0 !== nothing                               # the start's residual in fixed units (defect_parts, Href 100 km)
+        b0 = attributes(f["s0"])
+        for (c, t) in pairs(dp0), (l, val) in pairs(t); b0["defect_$(c)_$(l)"] = val; end
+    end
     BLAS.set_num_threads(min(32, Threads.nthreads()))
     ts = time()
     u, z, Φ0, Φ, steps, _, info = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, lnP, z0, dx, dy; weights = wts,

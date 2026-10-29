@@ -8,7 +8,9 @@ boundary, started from the exact truth) and prod (column boundary, production de
   z1       rms z(τ_LOS = 1) error after removing the mean, and the mean offset (km)
   ΔlnP     rms ln P error by log τ band [-4,-2) [-2,0) [0,1.5)
   low−high truth depression contrast and the solution's (km)
-  steps to the final height error (first step within 10 % or 0.05 km of it), the stop reason, Φ/Φ₀, solve seconds
+  hit: the first step whose rms height error is within 10 % (or 0.05 km) of the final rms error: a retrospective
+       scalar-error diagnostic (equal rms errors need not mean equal fields), not a convergence test
+  steps, the stop reason, Φ/Φ₀, solve seconds
 """
 import glob
 import re

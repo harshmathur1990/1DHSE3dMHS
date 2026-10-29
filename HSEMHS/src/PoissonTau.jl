@@ -392,6 +392,38 @@ function phi_parts(pr::TP; nface = 3)
     return gsum(pr.par, h), gsum(pr.par, v), gsum(pr.par, vt)
 end
 
+"""
+Residual of the evaluated state in fixed physical units, for refinement studies (the weights of Φ are not resolution
+invariant: wf ∝ H²/Δz): the horizontal residuals R_x, R_y (per unit length) at the nodes and the vertical R_z/Δz (R_z is
+integrated over its face) at the faces, each made dimensionless with `Href` (default 100 km, held fixed across grids)
+and averaged with the volume weights (node thickness (z_m−1 − z_m+1)/2, face thickness Δz) over the first `nlayer`
+levels below the cut (`cut`), the bottom `nlayer` (`bottom`), the rest (`interior`) and all (`all`): rms values,
+global. Returns (horizontal = (all, cut, interior, bottom), vertical = (...)).
+"""
+function defect_parts(pr::TP; Href = 1e5, nlayer = 3)
+    n1 = pr.n1; kc = pr.kc
+    acc = zeros(2, 4, 2)                                   # (horizontal / vertical, layer, Σ w r² / Σ w)
+    layer(m, n) = m <= nlayer ? 2 : m > n - nlayer ? 4 : 3
+    @inbounds for i in 1:pr.nx, j in 1:pr.ny
+        for m in 1:n1
+            k = node(pr, m)
+            w = m == 1 ? (pr.z[k, j, i] - pr.z[k+1, j, i]) / 2 : m == n1 ? (pr.z[k-1, j, i] - pr.z[k, j, i]) / 2 :
+                (pr.z[k-1, j, i] - pr.z[k+1, j, i]) / 2
+            r2 = Href^2 * (pr.Rx[m, j, i]^2 + pr.Ry[m, j, i]^2) / 2
+            for l in (1, layer(m, n1)); acc[1, l, 1] += w * r2; acc[1, l, 2] += w; end
+        end
+        for f in 1:n1-1
+            k = node(pr, f); d = pr.z[k, j, i] - pr.z[k+1, j, i]
+            r2 = Href^2 * (pr.Rz[f, j, i] / d)^2
+            for l in (1, layer(f, n1 - 1)); acc[2, l, 1] += d * r2; acc[2, l, 2] += d; end
+        end
+    end
+    a = reshape(gsum(pr.par, vec(acc)), 2, 4, 2)
+    r(c) = Tuple(sqrt(a[c, l, 1] / a[c, l, 2]) for l in 1:4)
+    nt(t) = (all = t[1], cut = t[2], interior = t[3], bottom = t[4])
+    return (horizontal = nt(r(1)), vertical = nt(r(2)))
+end
+
 const ROUNDOFF_K = 64.0
 """`pcg!` outcomes that are not a tolerance reached or an iteration budget spent (see `pcg!`)."""
 const PCG_ABNORMAL = (:nonfinite_start, :breakdown_rz, :breakdown_pAp, :nonfinite_step, :nonfinite_update)

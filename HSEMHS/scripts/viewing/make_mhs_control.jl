@@ -31,7 +31,9 @@ the axis lt_min:dlt:lt_max (as make_slanted_tau.jl; log τ = 0 is on the axis wh
 
 usage: julia --project=. -t N scripts/viewing/make_mhs_control.jl MU AZIMUTH_DEG OUT_INPUT.nc OUT_TRUTH.h5 [KEY=VALUE ...]
 KEY: nx (256), ny (8), box_mm (12), period_mm (3), dlt (0.1), lt_min (−8), lt_max (1.4), D (0.3), D_top_km (none),
-D_width_km (100), field (1), by_gauss (0), dz_m (250), audit_nx (512). Outputs as make_slanted_tau.jl, with the keys
+D_width_km (100), field (1), by_gauss (0), dz_m (250), audit_nx (512), waves_x, waves_y (0: the y-invariant arcade along x with period_mm; integers
+n_x, n_y: the arcade rotated to k = 2π (n_x/L_x, n_y/L_y), L_x = box_mm, L_y = ny · dx, B_s split into B_x, B_y; ray profiles on
+ns0 (2048) footprints per period, interpolated linearly to each footprint). Outputs as make_slanted_tau.jl, with the keys
 (control_*) and the audit (audit_*) as attributes.
 =#
 using HSEMHS
@@ -108,7 +110,7 @@ function main(mu_s, az_s, out_in, out_truth, kv...)
     H.ensure_mpi()
     o = Dict("nx" => 256.0, "ny" => 8.0, "box_mm" => 12.0, "period_mm" => 3.0, "dlt" => 0.1, "lt_min" => -8.0, "lt_max" => 1.4,
              "D" => 0.3, "field" => 1.0, "by_gauss" => 0.0, "dz_m" => 250.0, "D_top_km" => Inf, "D_width_km" => 100.0,
-             "audit_nx" => 512.0)
+             "audit_nx" => 512.0, "waves_x" => 0.0, "waves_y" => 0.0, "ns0" => 2048.0)
     for a in kv
         k, v = split(a, "="); haskey(o, k) || error("unknown key $k"); o[k] = parse(Float64, v)
     end
@@ -118,8 +120,15 @@ function main(mu_s, az_s, out_in, out_truth, kv...)
     t = H.slant(v); g = 274.0
     tab = H.load_table("cache/eos_table_fullz.h5")
     NX = Int(o["nx"]); NY = Int(o["ny"]); Lb = o["box_mm"] * 1e6; dx = Lb / NX
-    k = 2π / (o["period_mm"] * 1e6)
-    isapprox(Lb * k / 2π, round(Lb * k / 2π); atol = 1e-9) || error("box must hold whole periods")
+    rot = o["waves_x"] != 0 || o["waves_y"] != 0       # rotated arcade: varies along ê_s = k/|k|, k = 2π (n_x/L_x, n_y/L_y)
+    if rot
+        kv = 2π .* (o["waves_x"] / Lb, o["waves_y"] / (NY * dx)); k = hypot(kv...); es = kv ./ k
+        all(isinteger, (o["waves_x"], o["waves_y"])) || error("waves_x, waves_y must be integers")
+    else
+        k = 2π / (o["period_mm"] * 1e6); es = (1.0, 0.0)
+        isapprox(Lb * k / 2π, round(Lb * k / 2π); atol = 1e-9) || error("box must hold whole periods")
+    end
+    per = 2π / k
     nlev = round(Int, (o["lt_max"] - o["lt_min"]) / o["dlt"]) + 1
     lt = collect(range(o["lt_min"], o["lt_max"]; length = nlev)); nt = length(lt)
     D0 = o["field"] != 0 ? o["D"] : 0.0
@@ -189,15 +198,15 @@ function main(mu_s, az_s, out_in, out_truth, kv...)
         return lP0[n] + log1p(-Dn[n] * cc), log(ρx), -A0 * cos(k * x) * fp[n], -A0 * k * sin(k * x) * f[n]
     end
     i0 = argmin(abs.(zf))
-    @printf("μ %.3f φ %g t (%.3f, %.3f); box %.1f Mm, period %.1f Mm, %d × %d, dx %.1f km; τ axis %g:%g:%g (%d levels); fine dz %.0f m, %d levels %.0f … %.0f km\n",
-            μ, φ, t..., Lb / 1e6, o["period_mm"], NX, NY, dx / 1e3, lt[1], o["dlt"], lt[end], nt, dz, nz, zf[1] / 1e3, zf[end] / 1e3)
+    @printf("μ %.3f φ %g t (%.3f, %.3f); box %.1f Mm, period %.2f Mm, %d × %d, dx %.1f km; τ axis %g:%g:%g (%d levels); fine dz %.0f m, %d levels %.0f … %.0f km\n",
+            μ, φ, t..., Lb / 1e6, per / 1e6, NX, NY, dx / 1e3, lt[1], o["dlt"], lt[end], nt, dz, nz, zf[1] / 1e3, zf[end] / 1e3)
     @printf("D %.2f; at z = 0: P₀ %.4g Pa, T₀ %.0f K; max |B| at z = 0: %.0f G, at the top %.0f G; f(0) %.3g\n",
             Dn[i0], P0[i0], exp(lT0[i0]), D0 > 0 ? A0 * max(abs(fp[i0]), k * f[i0]) * 1e4 : 0.0,
             D0 > 0 ? A0 * max(abs(fp[1]), k * f[1]) * 1e4 : 0.0, f[i0])
 
     # 4. construction audit over one period and every interior fine level: EOS inversion (by failure kind), positivity,
     # table margins, and the Cartesian force balance and ∇·B by centred differences (independent of the derivation)
-    nxf = Int(o["audit_nx"]); per = o["period_mm"] * 1e6; hx = per / nxf; xs = (0:nxf-1) .* hx
+    nxf = Int(o["audit_nx"]); hx = per / nxf; xs = (0:nxf-1) .* hx
     codes = zeros(Int, length(INV_CODES), nz); rxm = zeros(nz); rzm = zeros(nz); dvm = zeros(nz); dvs = zeros(nz)
     pmin = fill(Inf, nz); pmax = fill(-Inf, nz); tmin = fill(Inf, nz); tmax = fill(-Inf, nz); firstbad = fill((NaN, NaN, NaN, NaN), nz)
     Threads.@threads for n in 2:nz-1
@@ -242,21 +251,25 @@ function main(mu_s, az_s, out_in, out_truth, kv...)
                  "audit_lnP_margin_lo" => mP[1], "audit_lnP_margin_hi" => mP[2], "audit_T_min" => rT[1], "audit_T_max" => rT[2],
                  "audit_nx" => nxf, "audit_dz_m" => dz)
 
-    # 5. rays through footprints ξ_i (y-invariant)
-    xi = collect((0:NX-1) .* dx)
-    T_in = fill(NaN, nt, NY, NX); bx = similar(T_in); byv = similar(T_in); bz = similar(T_in)
-    zt = similar(T_in); uP = similar(T_in); ur = similar(T_in); z1 = fill(NaN, NY, NX)
+    # 5. rays: the atmosphere depends on (s, z), s = ê_s·(x, y); the ray through footprint (ξ, η) has s = s₀ + σ z with
+    # s₀ = ê_s·(ξ, η), σ = ê_s·t. Profiles on the τ axis per s₀: y-invariant, one per footprint ξ (exact); rotated, on
+    # `ns0` points over a period, interpolated linearly in s₀ to each footprint
+    xi = collect((0:NX-1) .* dx); y = collect((0:NY-1) .* dx)
+    σ = es[1] * t[1] + es[2] * t[2]
+    S0 = rot ? collect((0:Int(o["ns0"])-1) .* (per / o["ns0"])) : xi; nS = length(S0)
+    pT = fill(NaN, nt, nS); pBs = similar(pT); pBz = similar(pT); pz = similar(pT); pP = similar(pT); pr_ = similar(pT)
+    pz1 = fill(NaN, nS)
     nmiss = Threads.Atomic{Int}(0); ntop = Threads.Atomic{Int}(0); nbad = Threads.Atomic{Int}(0)
     lTmin = Threads.Atomic{Float64}(Inf); lTmax = Threads.Atomic{Float64}(-Inf)
-    Threads.@threads for i in 1:NX
-        lT = zeros(nz); lPr = zeros(nz); lr = zeros(nz); Bx = zeros(nz); Bz = zeros(nz); χ = zeros(nz); tc = zeros(nz)
+    Threads.@threads for q in 1:nS
+        lT = zeros(nz); lPr = zeros(nz); lr = zeros(nz); Bs = zeros(nz); Bz = zeros(nz); χ = zeros(nz); tc = zeros(nz)
         for n in 1:nz
-            x = xi[i] + t[1] * zf[n]
-            lPr[n], lr[n], Bx[n], Bz[n] = fields(n, x)
+            x = S0[q] + σ * zf[n]
+            lPr[n], lr[n], Bs[n], Bz[n] = fields(n, x)
             lT[n] = D0 > 0 ? invT(tab, lr[n], lPr[n], lT0[n])[1] : lT0[n]
             c = isfinite(lT[n]) ? H.state(tab, lT[n], lPr[n])[3] : NaN
             isfinite(c) || (Threads.atomic_add!(nbad, 1); c = -700.0;
-                            nbad[] < 5 && @printf("outside: z %.0f km x %.0f km ln P %.3f ln ρ %.3f ln T %.3f (T₀ %.0f K)\n",
+                            nbad[] < 5 && @printf("outside: z %.0f km s %.0f km ln P %.3f ln ρ %.3f ln T %.3f (T₀ %.0f K)\n",
                                                   zf[n] / 1e3, x / 1e3, lPr[n], lr[n], lT[n], exp(lT0[n])))
             χ[n] = exp(c)
             Threads.atomic_min!(lTmin, lT[n]); Threads.atomic_max!(lTmax, lT[n])
@@ -265,17 +278,31 @@ function main(mu_s, az_s, out_in, out_truth, kv...)
         lτ = log10.(max.(tc, 1e-300))
         lt[end] > lτ[end] && Threads.atomic_add!(nmiss, 1)
         lt[1] < lτ[1] && Threads.atomic_add!(ntop, 1)
-        zz = H.z_tau1(tc, zf)
+        pz1[q] = H.z_tau1(tc, zf)
         for kk in 1:nt
-            Tk = exp(interp_at(lT, lτ, lt[kk])); bxk = interp_at(Bx, lτ, lt[kk]); bzk = interp_at(Bz, lτ, lt[kk])
-            zk = interp_at(zf, lτ, lt[kk]; top = :extrapolate)
-            pk = interp_at(lPr, lτ, lt[kk]; top = :extrapolate); rk = interp_at(lr, lτ, lt[kk]; top = :extrapolate)
-            for j in 1:NY
-                T_in[kk, j, i] = Tk; bx[kk, j, i] = bxk; byv[kk, j, i] = by; bz[kk, j, i] = bzk
-                zt[kk, j, i] = zk; uP[kk, j, i] = pk; ur[kk, j, i] = rk
-            end
+            pT[kk, q] = interp_at(lT, lτ, lt[kk]); pBs[kk, q] = interp_at(Bs, lτ, lt[kk]); pBz[kk, q] = interp_at(Bz, lτ, lt[kk])
+            pz[kk, q] = interp_at(zf, lτ, lt[kk]; top = :extrapolate)
+            pP[kk, q] = interp_at(lPr, lτ, lt[kk]; top = :extrapolate); pr_[kk, q] = interp_at(lr, lτ, lt[kk]; top = :extrapolate)
         end
-        z1[:, i] .= zz
+    end
+    T_in = fill(NaN, nt, NY, NX); bx = similar(T_in); byv = similar(T_in); bz = similar(T_in)
+    zt = similar(T_in); uP = similar(T_in); ur = similar(T_in); z1 = fill(NaN, NY, NX)
+    Threads.@threads for i in 1:NX
+        for j in 1:NY
+            if rot                                     # periodic linear interpolation in s₀
+                sq = mod(es[1] * xi[i] + es[2] * y[j], per) / (per / nS)
+                q1 = floor(Int, sq) + 1; w = sq - (q1 - 1); q2 = q1 == nS ? 1 : q1 + 1
+            else
+                q1 = q2 = i; w = 0.0
+            end
+            L(A, kk) = (1 - w) * A[kk, q1] + w * A[kk, q2]
+            for kk in 1:nt
+                T_in[kk, j, i] = exp(L(pT, kk)); b_s = L(pBs, kk)
+                bx[kk, j, i] = b_s * es[1]; byv[kk, j, i] = b_s * es[2] + by; bz[kk, j, i] = L(pBz, kk)
+                zt[kk, j, i] = L(pz, kk); uP[kk, j, i] = L(pP, kk); ur[kk, j, i] = L(pr_, kk)
+            end
+            z1[j, i] = (1 - w) * pz1[q1] + w * pz1[q2]
+        end
     end
     nbad[] == 0 || error("$(nbad[]) fine points outside the EOS table")
     @printf("T range on the rays %.0f … %.0f K; rays with the top above the axis minimum %d; not reaching the bottom %d\n",
@@ -283,7 +310,6 @@ function main(mu_s, az_s, out_in, out_truth, kv...)
     nmiss[] == 0 || error("rays do not reach the bottom of the τ axis")
     @printf("truth z(τ_LOS = 1): mean %.1f km, min %.1f, max %.1f (range %.1f km)\n",
             sum(z1) / length(z1) / 1e3, minimum(z1) / 1e3, maximum(z1) / 1e3, (maximum(z1) - minimum(z1)) / 1e3)
-    y = collect((0:NY-1) .* dx)
     meta(a) = (a["view_mu"] = μ; a["view_azimuth_deg"] = φ; a["view_tx"] = t[1]; a["view_ty"] = t[2];
                a["source"] = "manufactured Grad-Shafranov control (make_mhs_control.jl)"; a["gravity_m_s2"] = g;
                for (kk, vv) in o; a["control_" * kk] = vv; end; for (kk, vv) in audit; a[kk] = vv; end)
