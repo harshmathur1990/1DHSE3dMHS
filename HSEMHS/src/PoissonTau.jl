@@ -862,18 +862,27 @@ end
 const EPS_PROBE = 1e-4
 
 """
-Largest α ≤ ∞ with every solved ln P of u + α δ inside [Y₁ + margin, Y_end − margin] of the EOS table (global; cells
-already outside, or not moving, are ignored). `margin` ≥ EPS_PROBE keeps the derivative probes inside too.
+Largest α ≤ ∞ that keeps every solved ln P of u + α δ inside its bound in the direction it moves (global). Three ln P
+domains of the EOS table [Y₁, Y_end]: the physical table; the evaluator's, [Y₁ + EPS_PROBE, Y_end − EPS_PROBE] (the
+opacity-derivative probes of `evaluate!` must stay in the table, an artificial margin); and the safety interval, `margin`
+(≥ EPS_PROBE) inside the table edges. Per moving cell (δ ≠ 0), against the edge it moves toward:
+- before the safety bound: the fraction to that bound (this includes a cell outside the opposite edge moving inward,
+  which the near edge does not limit: entry is left to `evaluate!` and the line search);
+- in the strip between the safety and the evaluator bounds: the fraction to the evaluator bound;
+- at or beyond the evaluator bound: 0 (an outward step has no feasible fraction).
+A non-finite ln P or δ in a moving cell gives 0. Cells that do not move are ignored; Inf when nothing limits. The
+caller takes 0.99 of it, so a step never lands on a bound.
 """
 function feas_scale(pr::TP, u, δ; margin = 2 * EPS_PROBE)
-    lo = pr.tab.Y[1] + margin; hi = pr.tab.Y[end] - margin; a = Inf
+    margin >= EPS_PROBE || throw(ArgumentError("margin must be ≥ EPS_PROBE"))
+    Y1 = pr.tab.Y[1]; Y2 = pr.tab.Y[end]; a = Inf
     @inbounds for i in 1:pr.nx, j in 1:pr.ny, m in 2:pr.n1
         d = δ[m, j, i]; v = u[node(pr, m), j, i]
-        if d > 0 && v < hi
-            a = min(a, (hi - v) / d)
-        elseif d < 0 && v > lo
-            a = min(a, (lo - v) / d)
-        end
+        d == 0 && continue
+        (isfinite(d) && isfinite(v)) || (a = 0.0; continue)
+        s, e = d > 0 ? (Y2 - margin, Y2 - EPS_PROBE) : (Y1 + margin, Y1 + EPS_PROBE)   # safety, evaluator bound
+        dist = (d > 0 ? v < s : v > s) ? s - v : (d > 0 ? v < e : v > e) ? e - v : 0.0
+        a = min(a, dist / d)
     end
     return gmin(pr.par, a)
 end
@@ -982,7 +991,7 @@ relative decrease (Φ_prev − Φ)/Φ_prev of accepted steps is below rtol on n_
 step is not enough: Φ is nearly flat along the heights of a few strong-field columns). Height changes are logged, not
 used for stopping.
 Returns (u, z, Φ0, Φ, steps, kc, info). `info` (a NamedTuple) carries the stopping `reason` (:converged, :no_descent,
-:max_steps, :eos_out_of_envelope for a start state outside the table, in which case u and z are the inputs), the
+:domain_limited (no decrease, and the last step had no feasible fraction: `feas_scale`), :max_steps, :eos_out_of_envelope for a start state outside the table, in which case u and z are the inputs), the
 Gauss–Newton decrement `gn_decrement` (the relative decrease of Φ a further undamped Gauss–Newton step would predict:
 a scale-free stationarity measure), the gradient norm `grad_norm` = ‖Jᵀ W R‖, the last linear solve (`cg_its`,
 `cg_rel`), the final damping `lm_mu`, `rms0`/`rms` = √(Φ/W) and `phi0_zero`. `S` reuses a cached SlabFFT for these
@@ -1121,9 +1130,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         ncg += cg_s; nsolve += tries_s; neval += ev_s
         if !accepted
             evaluate!(pr, u, c); nrest += 1
-            logf(@sprintf("step %2d: no decrease up to μ = %.3g; stopping", s, μ))
+            dom = αf == 0
+            logf(@sprintf("step %2d: no decrease up to μ = %.3g%s; stopping", s, μ,
+                          dom ? " (the last step had no feasible fraction: a solved ln P at the EOS-domain bound it moves toward)" : ""))
             foreach(f -> logf("    failed try " * f), fails)
-            reason = :no_descent
+            reason = dom ? :domain_limited : :no_descent
             break
         end
         dec = (Φ - Φt) / Φ

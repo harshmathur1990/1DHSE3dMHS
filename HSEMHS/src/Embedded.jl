@@ -251,7 +251,7 @@ Outcome of one embedded solve, identical on every rank.
 `valid` is true when the returned fields are physically usable: EOS clean, all finite, P, ρ, χ₅₀₀ > 0, heights strictly
 decreasing and τ strictly increasing down every column, and (Poisson z) the hydrostatic continuation above the cut
 succeeded. `reason` is the first failed check (:eos_out_of_envelope, :continuation_failed, :nonfinite, :nonpositive,
-:folded) or else the solver's stopping reason (:converged, :no_descent, :max_steps, :unresolved (τ grid, stop = :gn: the
+:folded) or else the solver's stopping reason (:converged, :no_descent, :domain_limited (τ grid: status `stalled`), :max_steps, :unresolved (τ grid, stop = :gn: the
 stop qualification did not decide the threshold; status `stalled`, details in stats["stop_check"]); column modes:
 :converged). The
 Poisson stopping rule is on relative decreases of Φ, which does not prove stationarity: `gn_decrement` (the relative

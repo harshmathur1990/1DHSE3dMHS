@@ -91,12 +91,55 @@
         x = similar(b); PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-12, maxit = 5)
         k, rel = PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-8, maxit = 400, x0 = true)
         @test k >= 1 && rel < 1e-8 && tr(x) < 1e-7
+        # outcomes and breakdown protection on toy operators: xs stays the last good (finite) iterate, the returned
+        # residual is the true one, and the flag names the exit
+        fl = Ref(:none); pid!(_, o, r) = (o .= r)
+        bt = ones(3, 4, 5); xt = zeros(3, 4, 5)
+        k, rel = PT.pcg!((_, o, v) -> (o .= 2 .* v), pid!, par, nothing, xt, bt; tol = 1e-10, flag = fl)
+        @test fl[] == :converged && k == 1 && xt ≈ bt ./ 2
+        dg = reshape(collect(1.0:60.0), 3, 4, 5); xt .= 0
+        k, rel = PT.pcg!((_, o, v) -> (o .= dg .* v), pid!, par, nothing, xt, bt; tol = 1e-12, maxit = 2, flag = fl)
+        @test fl[] == :maxit && k == 2 && rel > 1e-12
+        xt .= 1; PT.pcg!((_, o, v) -> (o .= v), pid!, par, nothing, xt, zero(bt); flag = fl)
+        @test fl[] == :zero_rhs && all(==(0), xt)
+        xt .= 0.5; k, rel = PT.pcg!((_, o, v) -> (o .= 2 .* v), pid!, par, nothing, xt, bt; x0 = true, flag = fl)
+        @test fl[] == :start_within_tol && k == 0 && rel == 0
+        cn = zeros(Int, 2)
+        k, rel = PT.pcg!((_, o, v) -> (o .= .-v), pid!, par, nothing, xt, bt; flag = fl, cnt = cn)    # indefinite
+        @test fl[] == :breakdown_pAp && k == 0 && all(==(0), xt) && rel ≈ 1 && cn == [2, 1]
+        k, rel = PT.pcg!((_, o, v) -> (o .= 1e-320 .* v), pid!, par, nothing, xt, bt; flag = fl)      # α overflows
+        @test fl[] == :nonfinite_step && all(==(0), xt) && rel ≈ 1
+        k, rel = PT.pcg!((_, o, v) -> (o .= 1e-300 .* v), pid!, par, nothing, xt, 1e10 .* bt; flag = fl)  # x + αp overflows
+        @test fl[] == :nonfinite_update && all(==(0), xt) && rel ≈ 1
+        k, rel = PT.pcg!((_, o, v) -> (o .= v), (_, o, r) -> (o .= -r), par, nothing, xt, bt; flag = fl)  # M⁻¹ not SPD
+        @test fl[] == :breakdown_rz && all(==(0), xt)
+        nA = Ref(0); sick!(_, o, v) = (nA[] += 1; o .= nA[] <= 2 ? dg .* v : NaN)                 # A fails at call 3
+        k, rel = PT.pcg!(sick!, pid!, par, nothing, xt, bt; tol = 1e-12, maxit = 50, flag = fl)
+        @test fl[] == :breakdown_pAp && k == 2 && all(isfinite, xt) && any(!=(0), xt) && rel == Inf
+        xt .= NaN; k, rel = PT.pcg!((_, o, v) -> (o .= v), pid!, par, nothing, xt, bt; x0 = true, flag = fl)
+        @test fl[] == :nonfinite_start && k == 0 && rel == Inf
         # EOS domain: the fraction to the table boundary along δ, and the cells evaluate! rejects, by kind
         dd = zero(b); dd[2:end, :, :] .= 1.0
         Yhi = tab.Y[end] - 2PT.EPS_PROBE; umax = maximum(lnP[pr.kc+1:end, :, :])
         @test PT.feas_scale(pr, lnP, dd) ≈ Yhi - umax
         @test PT.feas_scale(pr, lnP, -dd) ≈ minimum(lnP[pr.kc+1:end, :, :]) - (tab.Y[1] + 2PT.EPS_PROBE)
         @test PT.feas_scale(pr, lnP, zero(b)) == Inf
+        # one moving cell against the upper edge: before the safety bound, in the strip between one and two probe
+        # widths, at the safety bound, at and beyond the evaluator bound; inward from outside either edge; non-finite
+        ε = PT.EPS_PROBE; Y1 = tab.Y[1]; Y2 = tab.Y[end]; kl = size(lnP, 1)
+        onecell(d) = (q = zero(b); q[end, 1, 1] = d; q)
+        fs(v, d) = (uu = copy(lnP); uu[kl, 1, 1] = v; PT.feas_scale(pr, uu, onecell(d)))
+        @test fs(Y2 - 1.0, 1.0) ≈ 1.0 - 2ε
+        @test fs(Y2 - 1.5ε, 1.0) ≈ 0.5ε
+        @test fs(Y2 - 1.5ε, 2.0) ≈ 0.25ε
+        @test fs(Y2 - 2ε, 1.0) ≈ ε
+        @test fs(Y2 - ε, 1.0) == 0 && fs(Y2 + 0.1, 1.0) == 0 && fs(Y1 + ε, -1.0) == 0 && fs(Y1 - 0.1, -1.0) == 0
+        @test fs(Y2 - 1.5ε, -1.0) ≈ (Y2 - 1.5ε) - (Y1 + 2ε)                 # moving away from the strip's edge
+        @test fs(Y2 + 0.1, -1.0) ≈ (Y2 + 0.1) - (Y1 + 2ε)                   # inward from above: the far edge only
+        @test fs(Y1 - 0.1, 1.0) ≈ (Y2 - 2ε) - (Y1 - 0.1)                    # inward from below
+        @test fs(Y2 - 1.0, NaN) == 0 && fs(NaN, 1.0) == 0 && fs(Y2 - 1.0, Inf) == 0
+        @test fs(NaN, 0.0) == Inf                                           # a cell that does not move is ignored
+        @test_throws ArgumentError PT.feas_scale(pr, lnP, dd; margin = ε / 2)
         @test PT.eos_cells(pr, lnP).total == 0
         uh = copy(lnP); uh[end, 1, 1] = tab.Y[end] + 0.1; uh[end, 2, 1] = tab.Y[end] - PT.EPS_PROBE / 2
         e = PT.eos_cells(pr, uh)

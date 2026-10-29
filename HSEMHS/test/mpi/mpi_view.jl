@@ -36,6 +36,26 @@ gmaxv(x) = MPI.Allreduce(Float64(x), max, comm)
             H.free_parallel!(par)
         end
     end
+    @testset "EOS-domain fraction and worst cell on another rank" begin
+        tab = H.load_table(ETABLE); PT = H.PoissonTau
+        full = load_tau_fixture("11x12", Colon()); NX = size(full.lnT, 3)
+        ir = H.slab_range(NX, R, me); fx = load_tau_fixture("11x12", ir)
+        nt, ny, _ = size(fx.lnT)
+        par = H.slab_par(comm, NX, ny, nt)
+        lnP, z0, _ = PT.column_hse_tau(par, fx.lt, fx.lnT, fx.Bx, fx.By, fx.Bz, tab, 274.0)
+        pr, c = PT.tp_setup(par, tab, 274.0, fx.lt, fx.lnT, fx.Bx, fx.By, fx.Bz, z0, full.x[2] - full.x[1],
+                            full.y[2] - full.y[1]; logtau_cut = -4.0)
+        ε = PT.EPS_PROBE; Y2 = tab.Y[end]
+        u = copy(lnP); d = zeros(pr.n1, ny, length(ir))
+        if me == R - 1                                   # one cell in the strip, moving outward, on the last rank only
+            u[end, 2, end] = Y2 - 1.5ε; d[end, 2, end] = 1.0
+        end
+        @test PT.feas_scale(pr, u, d) ≈ 0.5ε
+        me == R - 1 && (u[end, 2, end] = Y2 + 0.1)
+        e = PT.eos_cells(pr, u)
+        @test e.hi == 1 && e.total == 1 && e.worst.x == NX && e.worst.y == 2 && e.worst.level == nt
+        H.free_parallel!(par)
+    end
     @testset "inclined view, $R ranks vs one rank ($mode)" for mode in H.EMBEDDED_MODES
         tab = H.load_table(ETABLE)
         v = H.ViewOptions(mu = 0.6, azimuth_deg = 30.0, geometry = :inclined)

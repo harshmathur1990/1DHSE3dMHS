@@ -216,36 +216,58 @@ function tbcast!(f, outs, ins...)
 end
 
 """Preconditioned CG on Aop!/Minv! with global inner products (generic over the problem type). Starts from xs = 0, or
-from the given xs with `x0 = true` (one extra operator product). Returns (iterations, ‖b − A xs‖/‖b‖ from the
-recursion). b = 0 gives xs = 0 (the exact solution, whatever the start). A start already within `tol` returns at once
-with its true residual. Breakdown (non-positive or non-finite pᵀAp or rᵀM⁻¹r) stops the iteration with xs at the last
-good iterate and the relative residual of that iterate (≥ tol, so the caller sees the miss). `cnt` (a 2-vector or
-nothing) is incremented by the operator and preconditioner applications made."""
-function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80, x0 = false, cnt = nothing)
+from the given xs with `x0 = true` (one extra operator product). Returns (iterations, ‖b − A xs‖/‖b‖): from the
+recursion on a normal exit (tol reached or maxit), the true residual of the returned xs on an abnormal one. b = 0 gives
+xs = 0 (the exact solution, whatever the start). A start already within `tol` returns at once with its true residual.
+
+Each update is formed out of place and kept only if the new x and r are finite, so xs is always the last good iterate.
+`flag` (a Ref{Symbol} or nothing) receives the outcome: :converged, :maxit, :zero_rhs, :start_within_tol, or the
+abnormal exits :nonfinite_start (the start residual is not finite; xs unchanged), :breakdown_rz (rᵀM⁻¹r non-positive or
+non-finite), :breakdown_pAp (pᵀAp non-positive or non-finite), :nonfinite_step (α = rᵀM⁻¹r/pᵀAp not finite) and
+:nonfinite_update (x + αp or r − αAp overflows). `cnt` (a 2-vector or nothing) is incremented by the operator and
+preconditioner applications made (the true-residual check of an abnormal exit included)."""
+function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80, x0 = false, cnt = nothing, flag = nothing)
+    setf(f) = (flag === nothing || (flag[] = f); nothing)
     nb = gnorm(par, b)
-    nb == 0 && (fill!(xs, 0.0); return 0, 0.0)
+    nb == 0 && (fill!(xs, 0.0); setf(:zero_rhs); return 0, 0.0)
     zv = similar(b); p = similar(b); Ap = similar(b)
     na = 0; nm = 0
     tally() = (cnt === nothing || (cnt[1] += na; cnt[2] += nm); nothing)
+    gfin(a) = isfinite(gmax(par, isempty(a) ? 0.0 : maximum(abs, a)))
+    function abnormal(f)                              # true residual of the returned (last good) xs
+        setf(f)
+        Aop!(pr, Ap, xs); na += 1
+        t = gnorm(par, b .- Ap) / nb
+        tally()
+        return isfinite(t) ? t : Inf
+    end
     if x0
         Aop!(pr, Ap, xs); r = b .- Ap; na += 1
     else
         fill!(xs, 0.0); r = copy(b)
     end
     rel = gnorm(par, r) / nb; it = 0
-    (rel < tol || !isfinite(rel)) && (tally(); return 0, rel)
+    isfinite(rel) || (setf(:nonfinite_start); tally(); return 0, Inf)
+    rel < tol && (setf(:start_within_tol); tally(); return 0, rel)
     Minv!(pr, zv, r); nm += 1; p .= zv; rz = gdot(par, r, zv)
-    (isfinite(rz) && rz > 0) || (tally(); return 0, rel)
+    (isfinite(rz) && rz > 0) || return 0, abnormal(:breakdown_rz)
+    setf(:maxit)
     for outer it in 1:maxit
         Aop!(pr, Ap, p); na += 1
         pAp = gdot(par, p, Ap)
-        (isfinite(pAp) && pAp > 0) || (it -= 1; break)
+        (isfinite(pAp) && pAp > 0) || return it - 1, abnormal(:breakdown_pAp)
         αc = rz / pAp
-        let a = αc; tbcast!((x, rr, pp, ap) -> (x + a * pp, rr - a * ap), (xs, r), p, Ap); end
-        rel = gnorm(par, r) / nb
-        rel < tol && break
+        (isfinite(αc) && αc > 0) || return it - 1, abnormal(:nonfinite_step)
+        let a = αc                                    # zv = x + αp, Ap = r − αAp (out of place)
+            tbcast!((zz, pp, x) -> (x + a * pp,), (zv,), p, xs)
+            tbcast!((ap, rr) -> (rr - a * ap,), (Ap,), r)
+        end
+        reln = gnorm(par, Ap) / nb
+        (isfinite(reln) && gfin(zv)) || return it - 1, abnormal(:nonfinite_update)
+        tbcast!((x, rr, zz, ap) -> (zz, ap), (xs, r), zv, Ap); rel = reln
+        rel < tol && (setf(:converged); break)
         Minv!(pr, zv, r); nm += 1; rz2 = gdot(par, r, zv)
-        (isfinite(rz2) && rz2 > 0) || break
+        (isfinite(rz2) && rz2 > 0) || return it, abnormal(:breakdown_rz)
         βc = rz2 / rz; rz = rz2
         let b = βc; tbcast!((pp, z) -> (z + b * pp,), (p,), zv); end
     end
