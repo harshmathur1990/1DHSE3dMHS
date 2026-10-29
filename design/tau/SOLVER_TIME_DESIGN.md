@@ -623,3 +623,40 @@ gives no saving on this input.
 **Additive branch two-level** (`ml_lab`, 128² crops, analytic assembly): addb:16 reaches 1e-5 1.7–3× faster than block
 but needs 17–23 s of setup per outer step, more than a whole loose (η ≤ 0.1) block solve; coarse solve serial. Kept
 experimental, outside the supported path.
+
+### 6.15 Round 7: final delivery work (29 Oct; logs `out/delivery/`)
+
+**Cap probe** (`scripts/delivery/cap_probe.jl`; μ0.3 full cube, the column-HSE start's objective; one GN direction with
+column blocks, loose η 0.1 / tight 1e-3, damping μ 0 / 1; actual against model decrease along it):
+
+| state | solve | binding cap (scale) | gain at the capped step | 2 × capped | full step |
+|---|---|---|---|---|---|
+| after 20 steps (`inner_blk_t`) | loose | ln P (0.31) | 0.27 | Φ +5.6 % | Φ +39 % |
+| | tight (1739 its) | ln P (0.35) | 0.31 | Φ +16 % | Φ +72 % |
+| after 10 steps (`inner_base`) | loose | ln P (0.41) | 0.88 | Φ × 8 | Φ × 132 |
+| | tight (276 its) | ln P (0.36) | 0.86 | Φ +52 % | Φ × 36 |
+
+μ = 1 gives the same within 1 %. The binding cap is always the ln P cap (worst cell |δ ln P| 4.8–6.4), never the 300 km
+height cap (§6.14 said the height cap; corrected). Along the Gauss–Newton direction the capped step is already as long as
+the model allows: relaxing the cap has no benefit, so the trust-region trial (Codex round 7) was not run. That the cap is
+set by single cells suggests localised nonlinearity; not pursued (would be a separately scoped task).
+
+**Qualification on column blocks.** `qualify_stop` and the final decrement diagnostic use the column blocks where the grid
+has them (Fourier fallback), whatever the outer preconditioner; `gn_decrement_approx` marks a decrement from an
+unconverged final solve or an unqualified stop check.
+
+**Controls through the CLI** (2 ranks × 16 threads; D2): rotated μ1 φ30 qualified at step 6 (both preconditioners,
+identical); rotated μ0.3 φ30 qualified at step 11 (Fourier 78 s; switch after step 9, 64 s); gs μ0.3 256² qualified at
+step 13 (identical). Exit 0.
+
+**Embedding with switch** (μ0.3, Bifrost): cold 10.3 min, 2 % ln T warm 13.8 min, same cold 10.1 min, all max_iter
+(Fourier: 26 / 38 / 24 min).
+
+**Tests.** The five embedded failures were classified (all five also fail on main's source): mhs-poisson-z 24×18 is a
+Julia 1.12 → 1.13 rounding change; mhs-poisson-ltau 24×18 a solver change since the pre-refactor reference; ltau 11×12
+rounding; allocations are per-thread scratch (the budgets were measured at about 4 threads). References regenerated after
+CLI-vs-embedding parity (≤ 1e-12, all 8); Poisson equivalence now against the standalone driver run on the same machine
+and threads (the iterative results depend on both); budgets a + b·threads. The mhs-poisson-z and column-hse-z CLIs crashed
+on logging string stats (fixed). The drivers return their status (exit 2 at the step limit, 3 invalid, not written).
+block 114, warm 47, view 133, embedded 91 (hyades18 and hyades20), units/config 18; MPI suites on 2/3/4 ranks pass,
+including `switch` on R ranks (same switch step on every rank).
