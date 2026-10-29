@@ -169,6 +169,20 @@ include("embedded_helpers.jl")
         @test all(isfinite, dec) && dec[2] < dec[1]
     end
 
+    @testset "CLI exit status follows the solver status" begin
+        cfg0 = read(joinpath(EREF, "configs", "mhs-poisson-ltau_11x12.toml"), String)
+        function runc(f)
+            out = tempname() * ".h5"; cfg = tempname() * ".toml"
+            write(cfg, f(replace(cfg0, r"output = \".*\"" => "output = \"$out\"")))
+            code = cd(() -> H.run_config(cfg), joinpath(@__DIR__, ".."))
+            return code, isfile(out) ? h5open(f -> read(attributes(f)["status"]), out) : ""
+        end
+        @test runc(identity) == (0, "converged")                                     # converges in 5 steps
+        @test runc(c -> replace(c, "max_steps = 30" => "max_steps = 1")) == (2, "max_iter")
+        @test runc(c -> replace(c, "max_steps = 30" => "max_steps = 0")) == (0, "converged")  # 0: the default (25)
+        @test runc(c -> replace(c, "rtol = 1.0e-4" => "rtol = -1.0"))[1] == 4      # invalid option
+    end
+
     @testset "result buffers and snapshot" begin
         tau = load_tau_fixture("11x12", :)
         ws = H.prepare_embedded(comm, :column_hse_ltau; axis = tau.lt, x = tau.x, y = tau.y, eos = tab, g = 274.0,

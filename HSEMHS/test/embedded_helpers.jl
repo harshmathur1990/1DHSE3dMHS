@@ -26,15 +26,16 @@ function load_tau_fixture(tag, ir)
 end
 
 """
-Standalone result file for (mode, tag): the stored one (test/fixtures/embedded_ref, made by scripts/run.jl with
-configs/<mode>_<tag>.toml), or, for a Poisson mode whose stored file was made with another thread count (the iterative
-solves depend on it through BLAS), the standalone driver run now in-process with the same config at this thread count.
+Standalone result file for (mode, tag): for the column modes (direct integration) the stored one
+(test/fixtures/embedded_ref, made by scripts/run.jl with configs/<mode>_<tag>.toml); for the Poisson modes the standalone
+driver run now, in-process, with the same config on this machine and thread count. The iterative solves depend on the
+BLAS thread count and the CPU (measured: 0.86 relative at 4 vs 16 threads, 1.97 between hyades18 and hyades20 for the
+ltau 24x18 case), so stored Poisson results are a record of one machine (see their `threads` attribute), not a
+portable reference; the test is embedding-vs-standalone parity at identical settings.
 """
 function ref_file(mode::Symbol, tag)
-    n = "$(ref_name(mode))_$tag"; p = joinpath(EREF, "$n.h5")
-    H.poisson_mode(mode) || return p
-    th = h5open(f -> haskey(attributes(f), "threads") ? read(attributes(f)["threads"]) : Threads.nthreads(), p)   # no record: use it
-    th == Threads.nthreads() && return p
+    n = "$(ref_name(mode))_$tag"
+    H.poisson_mode(mode) || return joinpath(EREF, "$n.h5")
     out = tempname() * ".h5"; cfg = tempname() * ".toml"
     write(cfg, replace(read(joinpath(EREF, "configs", "$n.toml"), String), r"output = \".*\"" => "output = \"$out\""))
     b0 = BLAS.get_num_threads()
@@ -43,7 +44,6 @@ function ref_file(mode::Symbol, tag)
     finally
         BLAS.set_num_threads(b0)
     end
-    @info "standalone reference made now (stored one: $th threads, this run: $(Threads.nthreads()))" n
     return out
 end
 

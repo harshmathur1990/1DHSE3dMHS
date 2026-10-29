@@ -98,26 +98,36 @@ function check_output(par, cfg)
     return out
 end
 
+"""An invalid result (EOS failure, non-finite, non-positive or folded fields): logged and not written; the driver
+returns its status (exit 3). Every rank takes the same branch (the status is global)."""
+function invalid_result(logm, st)
+    st.valid && return false
+    logm("invalid result ($(st.reason)): " * join(st.messages, "; ") * "; no output written")
+    return true
+end
+
 """run.mode = "column-hse-ltau": hydrostatic columns in τ (P(τ), z(τ), ρ(τ)), aligned on P + B²/2μ₀."""
 function run_column_hse_ltau(cfg::Config)
+    status = invalid_input                              # until the solve has returned
     s = tau_setup(cfg, "column-hse-ltau", :column_hse_ltau)
     try
         out = check_output(s.par, cfg)
         G = cfg.tau_grid
         res = solve_embedded!(s.ws, log.(s.T), s.Bx, s.By, s.Bz)
-        st = res.status
-        st.reason == :eos_out_of_envelope && error(st.messages[1])
+        st = res.status; status = st.status
+        invalid_result(s.logm, st) && return status
         s.logm(@sprintf("columns: aligned on P + B²/2μ₀ = %.4e Pa (%d columns extrapolated)",
                         st.stats["align_total_pressure_Pa"], st.stats["align_extrapolated_columns"]))
         write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "column-hse-ltau", "align" => G.align))
     finally
         free_embedded!(s.ws)
     end
-    return converged
+    return status
 end
 
 """run.mode = "mhs-poisson-ltau": column HSE in τ, then the direct Poisson solve on the τ grid."""
 function run_mhs_poisson_ltau(cfg::Config)
+    status = invalid_input                              # until the solve has returned
     s = tau_setup(cfg, "mhs-poisson-ltau", :mhs_poisson_ltau)
     try
         out = check_output(s.par, cfg)
@@ -128,8 +138,8 @@ function run_mhs_poisson_ltau(cfg::Config)
         finally
             BLAS.set_num_threads(1)
         end
-        st = res.status
-        st.reason == :eos_out_of_envelope && error(st.messages[1])
+        st = res.status; status = st.status
+        invalid_result(s.logm, st) && return status
         s.logm(@sprintf("solve done in %d steps, Φ/Φ₀ %.3e; gauge shift %.1f km", st.steps, st.phi / st.phi0,
                         st.stats["gauge_shift_m"] / 1e3))
         write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "mhs-poisson-ltau",
@@ -147,11 +157,12 @@ function run_mhs_poisson_ltau(cfg::Config)
     finally
         free_embedded!(s.ws)
     end
-    return converged
+    return status
 end
 
 """run.mode = "mhs-poisson-z": column HSE on the height grid (as column-hse-z), then the Poisson step below z_cut."""
 function run_mhs_poisson_z(cfg::Config)
+    status = invalid_input                              # until the solve has returned
     t0 = time()
     I = cfg.input; P = cfg.poisson
     spec = open_input(I.file; crop_z_m = I.crop_z_m, tname = I.temperature, xname = I.x, yname = I.y, zname = I.z)
@@ -178,7 +189,8 @@ function run_mhs_poisson_z(cfg::Config)
         T = zyx_of(Tf, b)
         Bx, By, Bz = (zyx_of(read_field(spec, par, nm, :field), b) for nm in (I.bx, I.by, I.bz))
         res = solve_embedded!(ws, log.(T), Bx, By, Bz)
-        st = res.status
+        st = res.status; status = st.status
+        invalid_result(logm, st) && return status
         logm("column HSE: " * join(["$k = $v" for (k, v) in sort(collect(st.stats); by = first)], ", "))
         z = spec.z
         zt1 = res.z_tau1
@@ -203,5 +215,5 @@ function run_mhs_poisson_z(cfg::Config)
     finally
         free_embedded!(ws)
     end
-    return converged
+    return status
 end
