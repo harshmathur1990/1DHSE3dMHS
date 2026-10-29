@@ -376,18 +376,20 @@ function evaluate!(pr::TP, u, c)
     return phi(pr), 0
 end
 
-"""Horizontal (Σ wc (Rx² + Ry²)) and vertical (Σ wf Rz²) parts of Φ at the evaluated state, global."""
-function phi_parts(pr::TP)
-    h = 0.0; v = 0.0
+"""Horizontal (Σ wc (Rx² + Ry²)) and vertical (Σ wf Rz²) parts of Φ at the evaluated state, and the part of the vertical
+one on the first `nface` faces below the cut (where a start's pressure jump at the cut shows), global."""
+function phi_parts(pr::TP; nface = 3)
+    h = 0.0; v = 0.0; vt = 0.0
     @inbounds for i in 1:pr.nx, j in 1:pr.ny
         for m in 1:pr.n1
             h += pr.wc[m] * (pr.Rx[m, j, i]^2 + pr.Ry[m, j, i]^2)
         end
         for f in 1:pr.n1-1
-            v += pr.wf[f] * pr.Rz[f, j, i]^2
+            r = pr.wf[f] * pr.Rz[f, j, i]^2
+            v += r; f <= nface && (vt += r)
         end
     end
-    return gsum(pr.par, h), gsum(pr.par, v)
+    return gsum(pr.par, h), gsum(pr.par, v), gsum(pr.par, vt)
 end
 
 function phi(pr::TP)
@@ -1153,11 +1155,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e; step %d its in %d solves, %d evaluations), α %.3g (cap scale %.3g, feasible %.3g), μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
                       s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, cg_s, tries_s, ev_s, α, sc, αf, μ, dzmax / 1e3, zq()..., time() - t0))
         tsteps += time() - t0
-        φh, φv = on_step === nothing ? (NaN, NaN) : phi_parts(pr)
+        φh, φv, φt = on_step === nothing ? (NaN, NaN, NaN) : phi_parts(pr)
         on_step === nothing || on_step(s, u, pr.z, (phi = Φ, pred = pred, cg_its = its, cg_rel = rel, alpha = α,
                                                     seconds = time() - t0, model = model, rho = ρg, cg_tol = tol_k, lm_mu = μ,
                                                     cg_step = cg_s, solves = tries_s, evals = ev_s, cap_scale = sc,
-                                                    feas_scale = αf, phi_h = φh, phi_v = φv))
+                                                    feas_scale = αf, phi_h = φh, phi_v = φv, phi_v3 = φt))
         forcing == :ew && isfinite(pred) && (tol_k = clamp(pred, eta_min, eta_max))
         npred = pred < gn_tol ? npred + 1 : 0
         if stop == :gn

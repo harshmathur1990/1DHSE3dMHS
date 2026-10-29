@@ -9,11 +9,13 @@ lm (alpha | gain | fixed), forcing (fixed | ew), cg_cap, eta_min, eta_max, preco
 lm_mu0, qual_tol, qual_maxit, feas (as the solve_tau keywords), start (truth:TRUTH.h5: the truth ln P below the cut,
 shifted per column to the fixed column-HSE cut pressure, or unshifted with truth_raw=1, and the upper structure moved to
 the truth cut height; else the directory of an earlier run: start from its final
-state, Float64 when saved; the run's ranks, slab, grid, cut, view, balance and input must match), common_weights (1: the weights of the column-HSE start, for any start; defaults: the earlier rule,
+state, Float64 when saved; the run's ranks, slab, grid, cut, view, balance, input and boundary must match), boundary
+(column: the production fixed levels from column HSE; truth:TRUTH.h5: experimental, the truth's ln P and heights on the
+levels down to the cut, the column-HSE start below the cut shifted per column to the truth cut pressure), common_weights (1: the weights of the column-HSE start, for any start; defaults: the earlier rule,
 stop = phi, max_steps 100), perturb_lnp, perturb_c_km (a smooth |k| = 1 perturbation of the start: ln P ×
 exp(−log τ²/2), cut height in km). logtau_cut is on the line-of-sight axis.
 OUTDIR/snap_r<rank>.h5: s<step>/{lnP, z} (and final/ at the returned state) (Float32, solved levels k_c … nt, this rank's x slab, Julia (τ, y, x)), with
-step attributes phi, pred, cg_its, cg_rel, alpha, seconds (and the work per step: cg_step, solves, evals, cap_scale); s0
+step attributes phi, phi_h, phi_v, phi_v3 (the vertical part on the first 3 faces below the cut), pred, cg_its, cg_rel, alpha, seconds (and the work per step: cg_step, solves, evals, cap_scale); s0
 holds the evaluated start state (its heights from the start ln P and cut heights); final64/{lnP, z} the returned state in
 Float64 (the restart checkpoint); weights/{wc, wf, ereg} the solve's objective; root attributes i0 (first global x), kc,
 NX, NY, nt, logtau_cut, balance, input (path, size, Σ log τ), view, work_* (info.work) and qual_* (the last stop check).
@@ -34,10 +36,11 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
                              "qual_maxit" => 400, "truth_raw" => 0, "perturb_lnp" => 0.0, "perturb_c_km" => 0.0,
                              "feas" => 1)
     sy = Dict(:stop => :phi, :balance => :vertical, :lm => :alpha, :forcing => :fixed, :precond => :fourier, :damping => :reg)
-    start = ""; o["common_weights"] = 0.0
+    start = ""; o["common_weights"] = 0.0; boundary = "column"
     for a in kv
         k, v = split(a, "=")
         k == "start" && (start = String(v); continue)
+        k == "boundary" && (boundary = String(v); continue)
         haskey(sy, Symbol(k)) && (sy[Symbol(k)] = Symbol(v); continue)
         haskey(o, k) || error("unknown key $k"); o[k] = parse(Float64, v)
     end
@@ -56,6 +59,21 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     mkpath(outdir)
     kc = argmin(abs.(lt .- o["logtau_cut"]))
     dx = x[2] - x[1]; dy = y[2] - y[1]
+    if startswith(boundary, "truth:")               # experimental: the truth's fixed levels (not a production boundary)
+        tf = h5open(boundary[7:end], "r")
+        isapprox(read(tf["logtau500"]), lt; rtol = 1e-6) || error("boundary: the truth's τ axis differs from the input's")
+        gi = H.owned_x(par)
+        tu = permutedims(read(tf["truth/lnP"]), (3, 2, 1))[:, :, gi]; tz = permutedims(read(tf["truth/z_m"]), (3, 2, 1))[:, :, gi]
+        close(tf)
+        all(isfinite, tu[1:kc, :, :]) && all(isfinite, tz[1:kc, :, :]) || error("boundary: non-finite truth above the cut")
+        du = tu[kc, :, :] .- lnP[kc, :, :]
+        logf(@sprintf("boundary: the truth's ln P and heights on levels 1 … %d (cut ln P_truth − ln P_col rms %.4f, max %.4f); column-HSE start below the cut shifted by that per column",
+                      kc, sqrt(H.gsum(par, sum(abs2, du)) / (NX * NY)), H.gmax(par, maximum(abs, du))))
+        lnP[kc+1:end, :, :] .+= reshape(du, 1, size(du)...)
+        lnP[1:kc, :, :] .= tu[1:kc, :, :]; z0[1:kc, :, :] .= tz[1:kc, :, :]
+    elseif boundary != "column"
+        error("boundary: column or truth:FILE")
+    end
     wts = nothing
     if o["common_weights"] != 0                     # the objective of the column-HSE start (as a cold solve uses)
         _, _, _, _, _, _, i0 = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, copy(lnP), copy(z0), dx, dy;
@@ -66,7 +84,8 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     meta = Dict{String,Any}("i0" => par.block.i0, "kc" => kc, "NX" => NX, "NY" => NY, "nt" => nt, "ranks" => par.nranks,
                             "logtau_cut" => o["logtau_cut"], "balance" => String(sy[:balance]), "mu" => v.mu,
                             "azimuth_deg" => v.azimuth_deg, "geometry" => String(v.geometry),
-                            "input" => abspath(path), "input_bytes" => filesize(path), "input_lt_sum" => sum(lt))
+                            "input" => abspath(path), "input_bytes" => filesize(path), "input_lt_sum" => sum(lt),
+                            "boundary" => boundary)
     if startswith(start, "truth:")                  # the truth-derived state (design/CODEX_REVIEW_solver_time_round3)
         tf = h5open(start[7:end], "r")
         isapprox(read(tf["logtau500"]), lt; rtol = 1e-6) || error("start: the truth's τ axis differs from the input's")
@@ -131,7 +150,7 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
     else
         pr0.wc = copy(wts.wc); pr0.wf = copy(wts.wf); pr0.ereg = copy(wts.ereg)
     end
-    φh0, φv0 = bad0 == 0 ? H.PoissonTau.phi_parts(pr0) : (NaN, NaN); pr0 = nothing
+    φh0, φv0, φt0 = bad0 == 0 ? H.PoissonTau.phi_parts(pr0) : (NaN, NaN, NaN); pr0 = nothing
     f = h5open(joinpath(outdir, "snap_r$(par.rank).h5"), "w")
     a = attributes(f); a["i0"] = par.block.i0; a["kc"] = kc; a["mu"] = v.mu; a["azimuth_deg"] = v.azimuth_deg
     a["geometry"] = String(v.geometry); a["ranks"] = par.nranks; a["threads"] = Threads.nthreads()
@@ -146,7 +165,7 @@ function main(path, outdir, mu_s, az_s, geom, kv...)
         end
     end
     save(0, lnP, zs0, (phi = φh0 + φv0, pred = NaN, cg_its = 0, cg_rel = NaN, alpha = NaN, seconds = 0.0, phi_h = φh0,
-                       phi_v = φv0))
+                       phi_v = φv0, phi_v3 = φt0))
     BLAS.set_num_threads(min(32, Threads.nthreads()))
     ts = time()
     u, z, Φ0, Φ, steps, _, info = H.PoissonTau.solve_tau(par, tab, g, lt, lT, Bx, By, Bz, lnP, z0, dx, dy; weights = wts,
