@@ -416,3 +416,19 @@ undefined, and the solve ends `no_descent`. The embedding reports that as status
 This supports, but does not prove, that the Bifrost μ0.3 drift comes from the input and boundary (§6.11) rather than
 from the objective. The control is 2-D (y-invariant, azimuth 0). Mixed derivatives and nonzero t_y, for example with a
 rotated A(k_x x + k_y y, z), are not yet tested.
+
+**Bifrost with the truth boundary** (experimental; the truth's fixed levels; 20 steps):
+
+| run | z(τ=1) error: step 0 → best (step) → 20 | strong−quiet (truth) |
+|---|---|---|
+| μ1, exact truth | 22.6 → 11.4 (3) → 22.4 km | −73.0 (−76.6) |
+| μ1, column start | 184 → 22.4 km | −73.1 |
+| μ0.3 v, exact truth | 54.3 → 24.2 (5) → 31.8 km, rising | −47.3 (−36.4) |
+
+- μ1 ends at 22.4–22.6 km from every start and with either boundary, so the cut boundary does not explain it.
+- At the exact truth, 87 % (μ1) and 65 % (μ0.3) of the vertical residual is on the first 3 faces below the cut.
+- The μ0.3 drift persists with the boundary matched, unlike on the consistent control (§6.12).
+- The column start shifted to the truth cut pressure is not a usable construction at μ0.3: shifts up to 3.2 in ln P
+  give absurd start heights.
+- Conditionally: the snapshot is not a discrete equilibrium of the model. Its own force residual is the next
+  diagnostic.
