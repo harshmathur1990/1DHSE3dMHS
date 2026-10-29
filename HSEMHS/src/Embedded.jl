@@ -83,7 +83,7 @@ Base.@kwdef struct PoissonTauOptions
     cg_cap::Int = 200
     eta_min::Float64 = 0.005
     eta_max::Float64 = 0.1
-    precond::Symbol = :fourier        # :fourier | :block | :hybrid
+    precond::Symbol = :fourier        # :fourier | :block | :hybrid | :switch (fourier, then block once CG hits its limit)
     klow::Int = 8
     damping::Symbol = :reg            # :reg | :marquardt (block or hybrid only)
 end
@@ -208,10 +208,10 @@ function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0)
     push_if!(e, o.forcing in (:fixed, :ew), "poisson forcing must be :fixed or :ew, got :$(o.forcing)")
     push_if!(e, o.cg_cap >= 1, "poisson cg_cap must be ≥ 1")
     push_if!(e, 0 < o.eta_min <= o.eta_max < 1, "poisson eta_min and eta_max must satisfy 0 < eta_min ≤ eta_max < 1")
-    push_if!(e, o.precond in (:fourier, :block, :hybrid), "poisson precond must be :fourier, :block or :hybrid, got :$(o.precond)")
+    push_if!(e, o.precond in (:fourier, :block, :hybrid, :switch), "poisson precond must be :fourier, :block, :hybrid or :switch, got :$(o.precond)")
     push_if!(e, o.klow >= 0, "poisson klow must be ≥ 0")
     push_if!(e, o.damping in (:reg, :marquardt), "poisson damping must be :reg or :marquardt, got :$(o.damping)")
-    push_if!(e, o.damping != :marquardt || o.precond != :fourier, "poisson damping = :marquardt needs precond :block or :hybrid")
+    push_if!(e, o.damping != :marquardt || o.precond in (:block, :hybrid), "poisson damping = :marquardt needs precond :block or :hybrid")
     push_if!(e, lt[1] <= c <= lt[end], "$at is outside the axis [$(lt[1]), $(lt[end])]")
     kc, n = cut_levels(o, lt, mu)
     push_if!(e, kc >= 2, "$at selects the top level; the cut must leave at least one fixed level above it")

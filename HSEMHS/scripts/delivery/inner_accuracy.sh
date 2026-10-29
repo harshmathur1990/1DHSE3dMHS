@@ -4,6 +4,8 @@
 #   base     the baseline (D2: Fourier, Eisenstat–Walker η ∈ [0.005, 0.1], cap 200)
 #   blk      column blocks at the baseline forcing (η ∈ [0.005, 0.1], cap 200): the preconditioner alone
 #   tight    column blocks at η = 1e-3, cap 3000 (diagnostic budget): inner accuracy reliably attained
+#   base_t, blk_t, tight_t   the same from the state after base's steps (the tail: start=out/delivery/inner_base,
+#            common_weights=1, i.e. the column-HSE start's objective, the one base minimises)
 # run one after another on this node (comparable timings) by scripts/viewing/measure_steps.jl, which records per step
 # the actual and model decrease, the cap and line-search scales, CG iterations and residuals, and seconds.
 # usage: inner_accuracy.sh RANKS THREADS [STEPS] [VARIANT ...]   → out/delivery/inner_<variant>/
@@ -16,13 +18,14 @@ IN=out/view/input_mu0.3_az0.nc
 CUT=$(python3 -c "import math; print(-4 - math.log10(0.3))")       # vertical cut −4 on the line-of-sight axis
 COMMON="max_steps=$ST stop=gn gn_tol=1e-3 logtau_cut=$CUT balance=vertical lm=gain forcing=ew"
 for variant in $IA_VARIANTS; do
-  case $variant in
+  T=""; [[ $variant == *_t ]] && T="start=out/delivery/inner_base common_weights=1"
+  case ${variant%_t} in
     base)  X="precond=fourier cg_cap=200" ;;
     blk)   X="precond=block cg_cap=200" ;;
     tight) X="precond=block eta_min=1e-3 eta_max=1e-3 cg_cap=3000" ;;
   esac
   mkdir -p out/delivery/inner_$variant
   mpiexecjl --project=. -n $NR julia --project=. -t $NT scripts/viewing/measure_steps.jl $IN out/delivery/inner_$variant \
-    0.3 0 inclined $COMMON $X > out/delivery/inner_$variant/steps.txt 2>&1
+    0.3 0 inclined $COMMON $X $T > out/delivery/inner_$variant/steps.txt 2>&1
   echo "exit $?" >> out/delivery/inner_$variant/steps.txt
 done

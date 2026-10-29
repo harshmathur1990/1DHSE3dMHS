@@ -1093,7 +1093,10 @@ the accepted step (model 2α g·δ − α²‖Jδ‖²_W, g = −JᵀWR): ρ > 0
 step decreases Φ; with `damping = :marquardt` and `cap_frac = 0`: fixed Marquardt damping, no cap retries). `forcing = :ew` sets the CG tolerance from the outer
 progress, η = clamp(pred of the previous step, eta_min, eta_max), with at most `cg_cap` iterations; `forcing = :fixed`
 uses cg_tol and cg_maxit. `precond` (D3b): :fourier (layer-median Fourier modes), :block (exact column blocks, block
-Jacobi; `colblocks!`) or :hybrid (both, the Fourier part on the modes |k| ≤ `klow` (mode index) only; D3c).
+Jacobi; `colblocks!`), :hybrid (both, the Fourier part on the modes |k| ≤ `klow` (mode index) only; D3c) or :switch
+(:fourier until the first step whose CG ends at its iteration limit without reaching its tolerance, :block from the
+next solve on, for the rest of the solve; the Fourier solves' truncation keeps the early, large steps within the caps,
+the column blocks resolve the late ones; design §6.14, `work.switch_step`).
 `damping = :marquardt` (block preconditioners only) damps with μ diag(JᵀWJ) instead of μ times the regularisation
 shape, from `mlm_min` up, and treats a step the caps would scale below `cap_frac` as outside the trust region (μ is
 raised and the step solved again): the column blocks expose near-null directions (ln P just below the cut) that the
@@ -1122,13 +1125,16 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                    damping = :reg, cap_frac = 0.5, mlm_min = 0.01, weights = nothing, qualify = true, qual_tol = 1e-2,
                    qual_maxit = 400, feas = true)
     nt, ny, nx = size(lT); NX = par.NX
+    sw = precond == :switch; nsw = 0                 # nsw: the step after which :switch changed to column blocks
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
-                     balance = balance, precond = precond, klow = klow)
+                     balance = balance, precond = sw ? :block : precond, klow = klow)
+    sw = sw && pr.prec == :block                     # tp_setup falls back to :fourier where blocks are not possible
+    sw && (pr.prec = :fourier)
     kc, n1 = pr.kc, pr.n1
     WORK0 = (cg = 0, solves = 0, aprod = 0, minv = 0, evals = 1, restores = 0, qual_cg = 0, qual_aprod = 0, qual_minv = 0,
-             final_cg = 0, final_aprod = 0, final_minv = 0, feas_limited = 0, cg_abnormal = 0, step_s = 0.0, qual_s = 0.0, final_s = 0.0, total_s = 0.0)
+             final_cg = 0, final_aprod = 0, final_minv = 0, feas_limited = 0, cg_abnormal = 0, switch_step = 0, step_s = 0.0, qual_s = 0.0, final_s = 0.0, total_s = 0.0)
     tstart = time()
-    damping == :marquardt && pr.prec == :fourier && error("solve_tau: damping = :marquardt needs precond = :block or :hybrid")
+    damping == :marquardt && (pr.prec == :fourier || sw) && error("solve_tau: damping = :marquardt needs precond = :block or :hybrid")
     mq = damping == :marquardt
     Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
@@ -1249,6 +1255,10 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e; step %d its in %d solves, %d evaluations), α %.3g (cap scale %.3g, feasible %.3g), μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
                       s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, cg_s, tries_s, ev_s, α, sc, αf, μ, dzmax / 1e3, zq()..., time() - t0))
         tsteps += time() - t0
+        if sw && nsw == 0 && pr.prec == :fourier && pfl[] == :maxit       # the Fourier solve stopped at its limit
+            nsw = s; pr.prec = :block
+            logf(@sprintf("step %2d: CG reached its limit (%d its, rel %.1e): column blocks from step %d on", s, its, rel, s + 1))
+        end
         φh, φv, φt = on_step === nothing ? (NaN, NaN, NaN) : phi_parts(pr)
         on_step === nothing || on_step(s, u, pr.z, (phi = Φ, pred = pred, cg_its = its, cg_rel = rel, alpha = α,
                                                     seconds = time() - t0, model = model, rho = ρg, cg_tol = tol_k, lm_mu = μ,
@@ -1302,7 +1312,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo,
             work = (cg = ncg, solves = nsolve, aprod = cstep[1], minv = cstep[2], evals = neval, restores = nrest,
                     qual_cg = nqual, qual_aprod = cqual[1], qual_minv = cqual[2], final_cg = fin_its, final_aprod = cfin[1],
-                    final_minv = cfin[2], feas_limited = nfeas, cg_abnormal = nabn, step_s = tsteps, qual_s = tqual, final_s = time() - tf, total_s = time() - tstart),
+                    final_minv = cfin[2], feas_limited = nfeas, cg_abnormal = nabn, switch_step = nsw, step_s = tsteps, qual_s = tqual, final_s = time() - tf, total_s = time() - tstart),
             phi_floor = phi_floor(pr, u), roundoff = rnd)
     w = info.work
     logf(@sprintf("work: steps %d CG its in %d solves (%d A, %d M⁻¹ applications), %d evaluations + %d restorations, %.1f s; qualification %d CG (%d A, %d M⁻¹), %.1f s; final diagnostic %d CG (%d A), %.1f s%s; total %.1f s",

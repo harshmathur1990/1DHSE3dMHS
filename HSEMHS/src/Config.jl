@@ -116,7 +116,7 @@ const CONFIG_SCHEMA = [
         "cg_cap" => 200,
         "eta_min" => 0.005,
         "eta_max" => 0.1,
-        "precond" => "fourier",        # fourier | block (column blocks) | hybrid (blocks + low-|k| Fourier, klow)
+        "precond" => "fourier",        # fourier | block (column blocks) | hybrid (blocks + low-|k| Fourier, klow) | switch (fourier, then block once CG hits its limit)
         "klow" => 8,
         "damping" => "reg",            # reg (horizontal regularisation) | marquardt (needs block or hybrid)
     ],

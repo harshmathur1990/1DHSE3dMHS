@@ -219,5 +219,14 @@
                           max_steps = 5, cg_maxit = 0)
         @test r4[7].reason == :no_descent && r4[7].roundoff == :none && r4[4] > r4[7].phi_floor
         @test PT.ROUNDOFF_K == 64
+        # precond = :switch: Fourier until a CG solve ends at its limit, column blocks after; without a limit reached it
+        # is the Fourier solve exactly
+        sw(pc; kw...) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy;
+                                     logtau_cut = -4.0, max_steps = 6, stop = :gn, precond = pc, kw...)
+        a = sw(:switch; cg_maxit = 400); b = sw(:fourier; cg_maxit = 400)
+        @test a[7].work.switch_step == 0 && a[1] == b[1] && a[4] == b[4]
+        c = sw(:switch; cg_maxit = 2)
+        @test c[7].work.switch_step >= 1 && c[5] > c[7].work.switch_step && c[4] < c[3] && all(isfinite, c[1])
+        @test sw(:fourier; cg_maxit = 2)[7].work.switch_step == 0
     end
 end
