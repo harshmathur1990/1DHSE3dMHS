@@ -78,6 +78,14 @@ Base.@kwdef struct PoissonTauOptions
     du_cap::Float64 = 2.0
     lm_mu0::Float64 = 0.0
     rms_atol::Float64 = 0.0
+    lm::Symbol = :alpha               # :alpha | :gain | :fixed
+    forcing::Symbol = :fixed          # :fixed (cg_tol, cg_maxit) | :ew (Eisenstat–Walker, eta_min…eta_max, cap cg_cap)
+    cg_cap::Int = 200
+    eta_min::Float64 = 0.005
+    eta_max::Float64 = 0.1
+    precond::Symbol = :fourier        # :fourier | :block | :hybrid
+    klow::Int = 8
+    damping::Symbol = :reg            # :reg | :marquardt (block or hybrid only)
 end
 
 """
@@ -196,6 +204,14 @@ function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0)
     push_if!(e, 0 < o.gn_tol < 1, "poisson gn_tol must be in (0, 1)")
     push_if!(e, o.gn_consec >= 1, "poisson gn_consec must be ≥ 1")
     push_if!(e, o.lm_mu0 >= 0, "poisson lm_mu0 must be ≥ 0")
+    push_if!(e, o.lm in (:alpha, :gain, :fixed), "poisson lm must be :alpha, :gain or :fixed, got :$(o.lm)")
+    push_if!(e, o.forcing in (:fixed, :ew), "poisson forcing must be :fixed or :ew, got :$(o.forcing)")
+    push_if!(e, o.cg_cap >= 1, "poisson cg_cap must be ≥ 1")
+    push_if!(e, 0 < o.eta_min <= o.eta_max < 1, "poisson eta_min and eta_max must satisfy 0 < eta_min ≤ eta_max < 1")
+    push_if!(e, o.precond in (:fourier, :block, :hybrid), "poisson precond must be :fourier, :block or :hybrid, got :$(o.precond)")
+    push_if!(e, o.klow >= 0, "poisson klow must be ≥ 0")
+    push_if!(e, o.damping in (:reg, :marquardt), "poisson damping must be :reg or :marquardt, got :$(o.damping)")
+    push_if!(e, o.damping != :marquardt || o.precond != :fourier, "poisson damping = :marquardt needs precond :block or :hybrid")
     push_if!(e, lt[1] <= c <= lt[end], "$at is outside the axis [$(lt[1]), $(lt[end])]")
     kc, n = cut_levels(o, lt, mu)
     push_if!(e, kc >= 2, "$at selects the top level; the cut must leave at least one fixed level above it")
@@ -258,7 +274,9 @@ Poisson stopping rule is on relative decreases of Φ, which does not prove stati
 decrease of Φ one further undamped Gauss–Newton step would predict) and `grad_norm` = ‖JᵀWR‖ measure it, `cg_its` and
 `cg_rel` describe that last linear solve, and `lm_mu` is the final Levenberg–Marquardt damping (τ grid). `phi0`/`phi`
 are the absolute objective at the start/end, `rms0`/`rms` = √(Φ/ΣW); `phi0_zero` marks Φ₀ = 0 (ratios undefined).
-`counts` holds the global number of nodes or columns per failed check, `stats` the column-stage statistics.
+`counts` holds the global number of nodes or columns per failed check, `stats` the column-stage statistics and (τ grid)
+the solver's work (stats["work"]: operator and preconditioner products, CG iterations, abnormal CG exits, seconds), the
+round-off acceptance (stats["roundoff"]: none | start | no_descent; stats["phi_floor"]) and the stop qualification.
 """
 Base.@kwdef mutable struct EquilibriumStatus
     status::SolverStatus = converged
@@ -660,7 +678,9 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
                                                         stop = o.stop, gn_tol = o.gn_tol, gn_consec = o.gn_consec,
                                                         cg_tol = o.cg_tol, dc_cap = o.dc_cap_m, du_cap = o.du_cap,
                                                         lm_mu0 = o.lm_mu0, logf = ws.logf, S = ws.fft,
-                                                        rms_atol = o.rms_atol, mu = ws.view.mu, slant = slant(ws.view))
+                                                        rms_atol = o.rms_atol, mu = ws.view.mu, slant = slant(ws.view),
+                                                        lm = o.lm, forcing = o.forcing, cg_cap = o.cg_cap, eta_min = o.eta_min,
+                                                        eta_max = o.eta_max, precond = o.precond, klow = o.klow, damping = o.damping)
     if info.reason == :eos_out_of_envelope
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
         return fail!(st, :eos_out_of_envelope, 1, "the τ-grid Poisson start state lies outside the EOS table")
@@ -671,6 +691,9 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
     st.phi0_zero = info.phi0_zero; st.gn_decrement = info.gn_decrement; st.grad_norm = info.grad_norm
     st.cg_its = info.cg_its; st.cg_rel = info.cg_rel; st.lm_mu = info.lm_mu
     st.stats["cut_level"] = kc
+    st.stats["work"] = Dict{String,Any}(String(k) => v for (k, v) in pairs(info.work))   # products, CG iterations, seconds
+    st.stats["roundoff"] = String(info.roundoff); st.stats["phi_floor"] = info.phi_floor
+    info.work.cg_abnormal > 0 && push!(st.messages, "$(info.work.cg_abnormal) abnormal CG exits (breakdown or non-finite)")
     if info.stop_check !== nothing                                     # the last stop qualification (PoissonTau.qualify_stop)
         q = info.stop_check
         st.stats["stop_check"] = Dict{String,Any}("outcome" => String(q.outcome), "step" => q.step, "lower" => q.lower,

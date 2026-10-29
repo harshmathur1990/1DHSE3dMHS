@@ -110,6 +110,15 @@ const CONFIG_SCHEMA = [
         "anchor_w" => 1.0,             # z: weight of the mean-ln P anchor on the bottom plane
         "dc_cap_m" => 3.0e5,           # ltau: largest change of a column's height per step (whole-step scaling)
         "lm_mu0" => 0.0,               # ltau: initial Levenberg–Marquardt damping
+        # ltau solver controls (design/tau/SOLVER_TIME_DESIGN.md); hashed only when not at their default
+        "lm" => "alpha",               # damping update: alpha (from the line-search scale) | gain (gain ratio) | fixed
+        "forcing" => "fixed",          # CG accuracy: fixed (cg_tol, cg_maxit) | ew (Eisenstat–Walker in [eta_min, eta_max], cap cg_cap)
+        "cg_cap" => 200,
+        "eta_min" => 0.005,
+        "eta_max" => 0.1,
+        "precond" => "fourier",        # fourier | block (column blocks) | hybrid (blocks + low-|k| Fourier, klow)
+        "klow" => 8,
+        "damping" => "reg",            # reg (horizontal regularisation) | marquardt (needs block or hybrid)
     ],
     "tau_grid" => [                  # column-hse-ltau and mhs-poisson-ltau
         "align" => "ptot",             # ptot: P + B²/2μ₀ equal at one height; none: z = 0 at log10 τ = 0 per column
@@ -243,6 +252,9 @@ end
 
 load_config(path::AbstractString) = parse_config(read(path, String); path = path)
 
+"""Keys added after configs were hashed: part of the hash only when set to a non-default value."""
+const HASH_IF_SET = Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping"])
+
 """SHA-256 of the canonical parsed config, excluding keys irrelevant to restart identity."""
 function config_hash(cfg::Config)
     excl = Set(["run.output", "run.overwrite", "mhs.restart_from"])
@@ -251,7 +263,7 @@ function config_hash(cfg::Config)
         nt = cfg.sections[sec]
         for (k, default) in entries
             "$sec.$k" in excl && continue
-            sec == "view" && getfield(nt, Symbol(k)) == default && continue   # hashes of configs without [view] unchanged
+            (sec == "view" || "$sec.$k" in HASH_IF_SET) && getfield(nt, Symbol(k)) == default && continue   # hashes of earlier configs unchanged
             print(io, sec, ".", k, "=", repr(getfield(nt, Symbol(k))), "\n")
         end
     end

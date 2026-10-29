@@ -38,7 +38,9 @@ function tau_setup(cfg, tag, mode::Symbol)
     poisson = mode == :mhs_poisson_ltau ?
               PoissonTauOptions(logtau_cut = P.logtau_cut, cut_frame = Symbol(P.cut_frame), max_steps = P.max_steps == 0 ? 25 : P.max_steps, rtol = P.rtol,
                                 n_consec = P.n_consec, stop = Symbol(P.stop), gn_tol = P.gn_tol, gn_consec = P.gn_consec,
-                                cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0) : nothing
+                                cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0,
+                                lm = Symbol(P.lm), forcing = Symbol(P.forcing), cg_cap = P.cg_cap, eta_min = P.eta_min,
+                                eta_max = P.eta_max, precond = Symbol(P.precond), klow = P.klow, damping = Symbol(P.damping)) : nothing
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] %s: %s", time() - t0, tag, s)); flush(stdout))
     vw = config_view(cfg)
     cfg.tau.mu == 1.0 || invalid("tau.mu applies to the height modes only; τ modes take view.mu")
@@ -134,7 +136,13 @@ function run_mhs_poisson_ltau(cfg::Config)
                        "logtau_cut" => s.lt[st.stats["cut_level"]], "logtau_cut_frame" => String(s.ws.poisson.cut_frame),
                        "phi_start" => st.phi0, "phi_end" => st.phi,
                        "steps" => st.steps, "align" => G.align,
-                       "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement))
+                       "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement, "status" => string(st.status),
+                       "roundoff" => st.stats["roundoff"], "phi_floor" => st.stats["phi_floor"],
+                       "qual_outcome" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["outcome"] : "none",
+                       "qual_lower" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["lower"] : NaN,
+                       "qual_upper" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["upper"] : NaN,
+                       ("work_" * k => Float64(v) for (k, v) in st.stats["work"])...,
+                       "solve_seconds" => st.seconds, "ranks" => s.par.nranks, "threads" => Threads.nthreads()))
     finally
         free_embedded!(s.ws)
     end

@@ -76,6 +76,13 @@ include("embedded_helpers.jl")
         @test isempty(H.option_errors(H.PoissonTauOptions(logtau_cut = lt[2]), lt))
         @test !isempty(H.option_errors(H.PoissonTauOptions(logtau_cut = lt[end-1]), lt))    # two solved levels
         @test !isempty(H.option_errors(H.PoissonTauOptions(logtau_cut = 3.0), lt))          # outside the axis
+        # solver controls: valid choices pass, others are rejected; Marquardt damping needs column blocks
+        @test isempty(H.option_errors(H.PoissonTauOptions(logtau_cut = lt[2], lm = :gain, forcing = :ew, precond = :hybrid,
+                                                          damping = :marquardt), lt))
+        for bad in ((lm = :nope,), (forcing = :nope,), (precond = :nope,), (damping = :nope,), (cg_cap = 0,),
+                    (eta_min = 0.2, eta_max = 0.1), (eta_max = 1.0,), (klow = -1,), (damping = :marquardt,))
+            @test !isempty(H.option_errors(H.PoissonTauOptions(; logtau_cut = lt[2], bad...), lt))
+        end
         @test !isempty(H.option_errors(H.ColumnZOptions(), z))                              # P_ref missing
         @test !isempty(H.option_errors(H.ColumnZOptions(P_ref = 1e5, anchor = :height, z_ref = 9e6), z))
         @test !isempty(H.option_errors(H.ColumnTauOptions(align = "median"), lt))
