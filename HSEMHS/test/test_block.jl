@@ -188,4 +188,28 @@
             @test b[4] <= 2 * f[4]
         end
     end
+
+    # round-off stationarity (Codex round 5, A): an exact discrete equilibrium (horizontally uniform, field-free) ends
+    # :converged at the round-off floor, not :no_descent; restarting from it returns at once; a small perturbation
+    # converges again; a non-stationary state without a usable direction (cg_maxit = 0) still ends :no_descent
+    @testset "round-off stationarity" begin
+        lTu = repeat(fx.lnT[:, 1:1, 1:1], 1, size(fx.lnT, 2), size(fx.lnT, 3)); B0 = zero(fx.Bx)
+        lnPu, zu, _ = PT.column_hse_tau(par, lt, lTu, B0, B0, B0, tab, g)
+        sv0(u0, zz; kw...) = PT.solve_tau(par, tab, g, lt, lTu, B0, B0, B0, u0, zz, dx, dy; logtau_cut = -4.0, stop = :gn,
+                                          max_steps = 25, kw...)
+        r1 = sv0(copy(lnPu), copy(zu))
+        @test r1[7].reason == :converged
+        zr = copy(r1[2])
+        r2 = sv0(copy(r1[1]), copy(zr))                                 # restart from the returned state
+        @test r2[7].reason == :converged && r2[5] <= 1
+        up = copy(r1[1]); kc = r1[6]
+        for k in kc+1:size(up, 1); up[k, :, :] .+= 1e-3 .* cos.(2π .* (0:size(up, 3)-1)' ./ size(up, 3)); end
+        r3 = sv0(up, copy(zr))
+        @test r3[7].reason == :converged && r3[5] >= 1 && r3[7].roundoff != :start
+        lnP, z0, _ = PT.column_hse_tau(par, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, tab, g)
+        r4 = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
+                          max_steps = 5, cg_maxit = 0)
+        @test r4[7].reason == :no_descent && r4[7].roundoff == :none && r4[4] > r4[7].phi_floor
+        @test PT.ROUNDOFF_K == 64
+    end
 end

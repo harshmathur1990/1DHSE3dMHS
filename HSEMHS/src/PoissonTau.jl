@@ -392,6 +392,47 @@ function phi_parts(pr::TP; nface = 3)
     return gsum(pr.par, h), gsum(pr.par, v), gsum(pr.par, vt)
 end
 
+const ROUNDOFF_K = 64.0
+
+"""
+Round-off floor of Φ at the evaluated state of `pr` (state u, heights pr.z): each residual with its terms replaced by
+their magnitudes, times K·eps (K = ROUNDOFF_K; differences of neighbours estimated by the local value):
+
+    R_x: |u|/dx + |W| |z|/dx + |L_x e|,   R_y: the same with dy,
+    R_z: |u_k| + |u_k+1| + Δln τ/2 (|W a|_k + |W a|_k+1) (+ |Δz| (|t_x| s_x + |t_y| s_y)/2 in the vertical balance),
+
+summed with the weights of Φ. Φ ≤ this floor means the residuals are at the precision of the arithmetic that forms them
+(the state is a discrete equilibrium to round-off); the comparison uses Φ's own weights, so it does not depend on the
+grid. Global.
+"""
+function phi_floor(pr::TP, u)
+    ε = ROUNDOFF_K * eps(Float64); tx = abs(pr.tx); ty = abs(pr.ty); vt = vertical(pr)
+    s = zeros(pr.nx)
+    Threads.@threads for i in 1:pr.nx
+        acc = 0.0
+        @inbounds for j in 1:pr.ny
+            for m in 1:pr.n1
+                k = node(pr, m); e = exp(-u[k, j, i]); au = abs(u[k, j, i]); az = abs(pr.z[k, j, i]); aW = abs(pr.W[m, j, i])
+                sx = au / pr.dx + aW * az / pr.dx + abs(pr.Lx[k, j, i] * e)
+                sy = au / pr.dy + aW * az / pr.dy + abs(pr.Ly[k, j, i] * e)
+                acc += pr.wc[m] * ε^2 * (sx^2 + sy^2)
+            end
+            for f in 1:pr.n1-1
+                k = node(pr, f)
+                sz = abs(u[k, j, i]) + abs(u[k+1, j, i]) +
+                     pr.dl[k] / 2 * (abs(pr.W[f, j, i] * pr.a[f, j, i]) + abs(pr.W[f+1, j, i] * pr.a[f+1, j, i]))
+                if vt
+                    au = abs(u[k, j, i]); az = abs(pr.z[k, j, i]); aW = abs(pr.W[f, j, i])
+                    sz += abs(pr.vd[f, j, i]) * (tx * (au / pr.dx + aW * az / pr.dx) + ty * (au / pr.dy + aW * az / pr.dy))
+                end
+                acc += pr.wf[f] * (ε * sz)^2
+            end
+        end
+        s[i] = acc
+    end
+    return gsum(pr.par, sum(s))
+end
+
 function phi(pr::TP)
     s = zeros(pr.nx)
     Threads.@threads for i in 1:pr.nx
@@ -1024,6 +1065,10 @@ regularised decrement at the current state (PCG from `qual_tol`, refined, at mos
 the upper bound is below gn_tol; the run continues if the lower bound is above; reason :unresolved if the interval
 still straddles gn_tol or is invalid (`info.stop_check`: the outcome, bounds, step and work of the last check; at the
 returned state it also supplies the stationarity diagnostics instead of a second, weaker solve).
+Round-off (`phi_floor`): a start state whose Φ is at or below the round-off floor of its own residual terms returns at
+once with :converged (info.roundoff = :start); a step that finds no decrease from such a state ends :converged
+(info.roundoff = :no_descent) instead of :no_descent. A step that finds no decrease from a state above the floor ends
+:no_descent (or :domain_limited) as before; the gn_tol decrement test and the step budget are unchanged.
 `weights` = (wc, wf, ereg) replaces the weights and regularisation computed from the start state (the objective of
 another solve of the same cube, so that different starts minimise the same Φ; checked by `check_weights`);
 `info.weights` returns those used, with the cut level and grid. `feas` (default true): each trial starts at no more
@@ -1052,7 +1097,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
         info = (reason = :eos_out_of_envelope, gn_decrement = NaN, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
                 lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false, weights = nothing, stop_check = nothing,
-                work = WORK0)
+                work = WORK0, phi_floor = NaN, roundoff = :none)
         return u, copy(z0), NaN, NaN, 0, kc, info
     end
     Hb, dzf, Wtot = tp_weights!(pr, g, dx)
@@ -1068,13 +1113,17 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     logf(@sprintf("start: cut at log10 τ = %.2f (level %d, %d ln P levels + 1 height per column), Φ %.6e, RMS %.4e | %s | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km",
                   lt[kc], kc, n1 - 1, Φ, sqrt(Φ / Wtot), bands(pr, lt, Hb, dzf), zq()...))
     reason = :max_steps
-    if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0
+    Φfl = phi_floor(pr, u)
+    if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0 || Φ0 <= Φfl
         info = (reason = :converged, gn_decrement = 0.0, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
                 rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0, weights = wts, stop_check = nothing,
-                work = merge(WORK0, (evals = 2, total_s = time() - tstart)))
-        logf("start state already within rms_atol: no steps")
+                work = merge(WORK0, (evals = 2, total_s = time() - tstart)), phi_floor = Φfl,
+                roundoff = Φ0 <= Φfl ? :start : :none)
+        logf(Φ0 <= Φfl ? @sprintf("start state at round-off (Φ %.3e ≤ floor %.3e): no steps", Φ0, Φfl) :
+                         "start state already within rms_atol: no steps")
         return u, copy(pr.z), Φ0, Φ0, 0, kc, info
     end
+    rnd = :none
     # Levenberg–Marquardt: damping μ D (D the regularisation's diagonal shape), raised ×4 when a step fails, lowered ×3
     # after a full step; steps over the caps are scaled as a whole (an element-wise clamp can make an ascent direction)
     δ = Z(); rhs = Z(); ut = copy(u); ct = copy(c)
@@ -1132,6 +1181,12 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         ncg += cg_s; nsolve += tries_s; neval += ev_s
         if !accepted
             evaluate!(pr, u, c); nrest += 1
+            Φfl = phi_floor(pr, u)
+            if Φ <= Φfl                                   # no decrease because the state is a discrete equilibrium to round-off
+                logf(@sprintf("step %2d: no decrease, and Φ %.3e is at the round-off floor %.3e: converged (round-off)", s, Φ, Φfl))
+                reason = :converged; rnd = :no_descent
+                break
+            end
             dom = αf == 0
             logf(@sprintf("step %2d: no decrease up to μ = %.3g%s; stopping", s, μ,
                           dom ? " (the last step had no feasible fraction: a solved ln P at the EOS-domain bound it moves toward)" : ""))
@@ -1207,7 +1262,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo,
             work = (cg = ncg, solves = nsolve, aprod = cstep[1], minv = cstep[2], evals = neval, restores = nrest,
                     qual_cg = nqual, qual_aprod = cqual[1], qual_minv = cqual[2], final_cg = fin_its, final_aprod = cfin[1],
-                    final_minv = cfin[2], feas_limited = nfeas, step_s = tsteps, qual_s = tqual, final_s = time() - tf, total_s = time() - tstart))
+                    final_minv = cfin[2], feas_limited = nfeas, step_s = tsteps, qual_s = tqual, final_s = time() - tf, total_s = time() - tstart),
+            phi_floor = phi_floor(pr, u), roundoff = rnd)
     w = info.work
     logf(@sprintf("work: steps %d CG its in %d solves (%d A, %d M⁻¹ applications), %d evaluations + %d restorations, %.1f s; qualification %d CG (%d A, %d M⁻¹), %.1f s; final diagnostic %d CG (%d A), %.1f s%s; total %.1f s",
                   w.cg, w.solves, w.aprod, w.minv, w.evals, w.restores, w.step_s, w.qual_cg, w.qual_aprod, w.qual_minv, w.qual_s,
