@@ -5,7 +5,8 @@ Two-level preconditioner prototype for mhs-poisson-ltau on frozen Gauss–Newton
 make: julia ... ml_lab.jl make INPUT.nc OUT.h5 MU AZIMUTH_DEG LOGTAU_CUT BALANCE STEPS [crop=NC]
       the state after STEPS steps from column HSE (Fourier, gain LM, EW forcing: the reference trajectory), saved with
       its objective: u, z (all levels, Julia (τ, y, x)), wc, wf, ereg, and the input, crop window (global x, y indices),
-      view, cut, balance, steps, Φ/Φ₀ as attributes. crop = NC: an NC × NC periodic window around the strongest |B(τ=1)|.
+      view, cut, balance, steps, Φ/Φ₀ as attributes. crop = NC: an NC × NC periodic window around the strongest |B(τ=1)|;
+      tile = n: n × n periodic copies of that window (the same local state on an n× larger domain: domain growth).
 lab:  julia ... ml_lab.jl lab FROZEN.h5 [KEY=VALUE ...]
       the frozen system A δ = b (A = JᵀWJ + diag(ereg) + mlm·diag(JᵀWJ), b = −JᵀWR at the saved state and weights) with
       every preconditioner of `precs` (comma list):
@@ -25,7 +26,11 @@ lab:  julia ... ml_lab.jl lab FROZEN.h5 [KEY=VALUE ...]
 KEY: precs (default fourier,block,hybrid,add:2,mult:2,mult:4,mult:2:8,mult:4:8), mlm (Marquardt damping, 0), omega (1.0),
      explicit (1: dense M⁻¹ and A by probes on systems ≤ 6000 unknowns: symmetry and positivity of M⁻¹ and of M⁻¹A),
      gauge (1: the cut-height checkerboard and constant modes: ‖A q‖/‖q‖ and the error reduction ‖(I − M⁻¹A) q‖_A per
-     preconditioner), ref_tol (1e-10), max_coarse (60000: two-level variants with more coarse unknowns are skipped).
+     preconditioner), ref_tol (1e-10), rhs (b: the Gauss–Newton right-hand side; smooth: random modes |k| ≤ 4 of the whole
+     domain on every level; rand: white noise; both seeded and scaled to ‖b‖ — for domain-growth tests on tiled systems,
+     whose b would keep every Krylov iterate periodic with the tile; δ err and pred then refer to that rhs), assembly (probe:
+     A_c by coloured probes of the operator; analytic: from the per-column Jacobian blocks, galerkin_analytic), galcheck
+     (1: also the other assembly, and their difference), max_coarse (60000: two-level variants with more coarse unknowns are skipped).
 =#
 using HSEMHS
 using HDF5
@@ -55,7 +60,7 @@ end
 
 function make(path, out, mu_s, az_s, cut_s, bal, steps_s, kv...)
     H.ensure_mpi()
-    o = Dict("crop" => 0); for a in kv; k, v = split(a, "="); o[k] = parse(Int, v); end
+    o = Dict("crop" => 0, "tile" => 1); for a in kv; k, v = split(a, "="); o[k] = parse(Int, v); end
     v = H.ViewOptions(mu = parse(Float64, mu_s), azimuth_deg = parse(Float64, az_s), geometry = :inclined)
     cut = parse(Float64, cut_s); nst = parse(Int, steps_s)
     J = I = nothing
@@ -63,6 +68,7 @@ function make(path, out, mu_s, az_s, cut_s, bal, steps_s, kv...)
         par = H.slab_par(PT.tau_input_size(path)...)
         lt, _, _, _, Bx, By, Bz = PT.read_tau_input(par, path); H.free_parallel!(par)
         J, I = window(lt, Bx, By, Bz, o["crop"])
+        J = repeat(J, o["tile"]); I = repeat(I, o["tile"])   # tile × tile periodic copies of the crop (pure domain growth)
     end
     lt, dx, dy, lT, Bx, By, Bz, J, I = load_input(path, J, I)
     _, ny, nx = size(lT); nt = length(lt)
@@ -78,7 +84,7 @@ function make(path, out, mu_s, az_s, cut_s, bal, steps_s, kv...)
         f["u"] = u; f["z"] = z; f["wc"] = W.wc; f["wf"] = W.wf; f["ereg"] = W.ereg; f["J"] = collect(J); f["I"] = collect(I)
         a = attributes(f)
         a["input"] = abspath(path); a["mu"] = v.mu; a["azimuth_deg"] = v.azimuth_deg; a["logtau_cut"] = cut
-        a["balance"] = bal; a["steps"] = s; a["phi_rel"] = Φ / Φ0; a["crop"] = o["crop"]; a["kc"] = kc
+        a["balance"] = bal; a["steps"] = s; a["phi_rel"] = Φ / Φ0; a["crop"] = o["crop"]; a["tile"] = o["tile"]; a["kc"] = kc
     end
     @printf("wrote %s: %d × %d × %d, %d steps, Φ/Φ₀ %.3e\n", out, ny, nx, nt, s, Φ / Φ0)
 end
@@ -95,6 +101,8 @@ mutable struct TwoLevel
     nA::Int                                       # A applications made inside the preconditioner
     tsetup::Float64; nc::Int; nnzA::Int; nnzF::Int; sym::Float64
     Ac::Any                                       # the (symmetrised) coarse operator, for the explicit check
+    tassemble::Float64                            # seconds to assemble A_c
+    cmp::Tuple{Float64,Float64}                   # check: ‖A_c − other assembly‖₁/‖·‖₁ and its seconds
 end
 
 agg(T::TwoLevel, j, i) = (cld(j, T.a), cld(i, T.a))
@@ -173,12 +181,131 @@ function galerkin(pr, T::TwoLevel)
     return sparse(Is, Js, Vs, nc, nc)
 end
 
-function twolevel(pr, a, k, mult, ω; nq = 1)
+
+# ---------------------------------------------------------------------------------------------------------------------
+# analytic Galerkin assembly (one rank): A_c = Σ_R (J_R P)ᵀ W_R (J_R P) + Pᵀ diag(ereg + mlm·dlm) P, J_RP the Jacobian of
+# the residual rows of column R with respect to the unknowns of column P (P = R or one of its 4 neighbours), built as in
+# PoissonTau.colblocks! (rows stored as columns: J[l, r] = ∂R_r/∂v_l)
+# ---------------------------------------------------------------------------------------------------------------------
+"""δz map Zm (Zm[:, m] = row m of the δz map, transposed) and ζ map Zt of column (j, i), as in colblocks!."""
+function colmaps!(Zm, Zt, pr, j, i, hf)
+    n1 = pr.n1; fill!(Zm, 0.0); Zm[1, 1] = 1.0
+    @inbounds for f in 1:n1-1
+        for l in 1:f; Zm[l, f+1] = Zm[l, f]; end
+        f >= 2 && (Zm[f, f+1] += hf[f] * pr.aχ[f, j, i])
+        Zm[f+1, f+1] += hf[f] * pr.aχ[f+1, j, i]
+    end
+    @inbounds for m in 1:n1
+        a, b = m == n1 ? (n1 - 1, n1) : (m == 1 ? 1 : m - 1, m + 1)
+        d = pr.zden[m, j, i]
+        for l in 1:n1; Zt[l, m] = (Zm[l, a] - Zm[l, b]) / d; end
+    end
+end
+
+"""J_RP into (Jx, Jy, Jz) (n1 × n1, n1 × n1, n1 × n1−1); R = (jR, iR), P = (jP, iP) with P's maps Zm, Zt."""
+function jac_RP!(Jx, Jy, Jz, T_, pr, jR, iR, jP, iP, Zm, Zt, hf)
+    n1, ny, nx = pr.n1, pr.ny, pr.nx; vt = PT.vertical(pr); tx = pr.tx; ty = pr.ty
+    @inbounds if jR == jP && iR == iP
+        j, i = jR, iR
+        for m in 1:n1, l in 1:n1
+            Jx[l, m] = pr.px[m, j, i] * Zt[l, m]; Jy[l, m] = pr.py[m, j, i] * Zt[l, m]; T_[l, m] = pr.zζ[m, j, i] * Zt[l, m]
+        end
+        for m in 2:n1; Jx[m, m] += pr.lx[m, j, i]; Jy[m, m] += pr.ly[m, j, i]; end
+        for f in 1:n1-1
+            for l in 1:n1; Jz[l, f] = hf[f] * (T_[l, f] + T_[l, f+1]); end
+            f >= 2 && (Jz[f, f] += -1 - hf[f] * pr.dw[f, j, i])
+            Jz[f+1, f] += 1 - hf[f] * pr.dw[f+1, j, i]
+            if vt
+                q = pr.vq[f, j, i]; vd = 0.5 * pr.vd[f, j, i]
+                for l in 1:n1
+                    Jz[l, f] -= (Zm[l, f] - Zm[l, f+1]) * q + vd * (tx * (Jx[l, f] + Jx[l, f+1]) + ty * (Jy[l, f] + Jy[l, f+1]))
+                end
+            end
+        end
+    else
+        j, i = jR, iR                                          # the coefficients are R's
+        if jR == jP
+            s = (iR == mod1(iP + 1, nx) ? -1 : 1) / (2pr.dx)
+            c1 = view(pr.pXx, :, j, i); c2 = view(pr.pXy, :, j, i); cT = view(pr.zX, :, j, i); Ja, Jb = Jx, Jy
+        else
+            s = (jR == mod1(jP + 1, ny) ? -1 : 1) / (2pr.dy)
+            c1 = view(pr.pYy, :, j, i); c2 = view(pr.pYx, :, j, i); cT = view(pr.zY, :, j, i); Ja, Jb = Jy, Jx
+        end
+        for m in 1:n1
+            ca = s * (c1[m] - pr.W[m, j, i]); cb = s * c2[m]; ct = s * cT[m]
+            for l in 1:n1; Ja[l, m] = ca * Zm[l, m]; Jb[l, m] = cb * Zm[l, m]; T_[l, m] = ct * Zm[l, m]; end
+            m >= 2 && (Ja[m, m] -= s)
+        end
+        for f in 1:n1-1
+            vd = vt ? 0.5 * pr.vd[f, j, i] : 0.0
+            for l in 1:n1
+                Jz[l, f] = hf[f] * (T_[l, f] + T_[l, f+1]) - vd * (tx * (Jx[l, f] + Jx[l, f+1]) + ty * (Jy[l, f] + Jy[l, f+1]))
+            end
+        end
+    end
+    return nothing
+end
+
+function galerkin_analytic(pr, T::TwoLevel)
+    n1, ny, nx = pr.n1, pr.ny, pr.nx; nq = T.nq; ng = ngroups(T); nagg = T.nay * T.nax
+    hf = [pr.dl[PT.node(pr, f)] / 2 for f in 1:n1-1]
+    blocks = [Dict{Int,Array{Float64,4}}() for _ in 1:nagg]   # row aggregate → column aggregate → (n1, n1, nq, nq)
+    locks = [ReentrantLock() for _ in 1:nagg]
+    wc = pr.wc; wf = pr.wf
+    Threads.@threads for iR in 1:nx
+        Zm = [zeros(n1, n1) for _ in 1:5]; Zt = [zeros(n1, n1) for _ in 1:5]; T_ = zeros(n1, n1)
+        Jx = [zeros(n1, n1) for _ in 1:5]; Jy = [zeros(n1, n1) for _ in 1:5]; Jz = [zeros(n1, n1 - 1) for _ in 1:5]
+        Wx = [zeros(n1, n1) for _ in 1:5]; Wy = [zeros(n1, n1) for _ in 1:5]; Wz = [zeros(n1, n1 - 1) for _ in 1:5]
+        B = zeros(n1, n1)
+        for jR in 1:ny
+            st = ((jR, iR), (jR, mod1(iR - 1, nx)), (jR, mod1(iR + 1, nx)), (mod1(jR - 1, ny), iR), (mod1(jR + 1, ny), iR))
+            for (k, (jP, iP)) in enumerate(st)
+                colmaps!(Zm[k], Zt[k], pr, jP, iP, hf)
+                jac_RP!(Jx[k], Jy[k], Jz[k], T_, pr, jR, iR, jP, iP, Zm[k], Zt[k], hf)
+                Wx[k] .= Jx[k] .* wc'; Wy[k] .= Jy[k] .* wc'; Wz[k] .= Jz[k] .* wf'
+            end
+            for (k, (jP, iP)) in enumerate(st), (k2, (jP2, iP2)) in enumerate(st)
+                mul!(B, Wx[k], Jx[k2]'); mul!(B, Wy[k], Jy[k2]', 1.0, 1.0); mul!(B, Wz[k], Jz[k2]', 1.0, 1.0)
+                by, bx = agg(T, jP, iP); by2, bx2 = agg(T, jP2, iP2)
+                g = aidx(T, by, bx); g2 = aidx(T, by2, bx2)
+                lock(locks[g]) do
+                    C = get!(() -> zeros(n1, n1, nq, nq), blocks[g], g2)
+                    for q in 1:nq, q2 in 1:nq
+                        sg = sgn(q, jP, iP) * sgn(q2, jP2, iP2)
+                        @views C[:, :, q, q2] .+= sg .* B
+                    end
+                end
+            end
+        end
+    end
+    for i in 1:nx, j in 1:ny                                   # Pᵀ diag(ereg + mlm dlm) P
+        by, bx = agg(T, j, i); g = aidx(T, by, bx)
+        C = get!(() -> zeros(n1, n1, nq, nq), blocks[g], g)
+        for q in 1:nq, q2 in 1:nq
+            sg = sgn(q, j, i) * sgn(q2, j, i)
+            for m in 1:n1; C[m, m, q, q2] += sg * (pr.ereg[m] + pr.mlm * pr.dlm[m, j, i]); end
+        end
+    end
+    Is = Int[]; Js = Int[]; Vs = Float64[]
+    for g in 1:nagg, (g2, C) in blocks[g], q in 1:nq, q2 in 1:nq, l2 in 1:n1, l in 1:n1
+        v = C[l, l2, q, q2]; v == 0 && continue
+        push!(Is, l + n1 * (q + nq * (g - 1) - 1)); push!(Js, l2 + n1 * (q2 + nq * (g2 - 1) - 1)); push!(Vs, v)
+    end
+    return sparse(Is, Js, Vs, n1 * ng, n1 * ng)
+end
+
+function twolevel(pr, a, k, mult, ω; nq = 1, assembly = :probe, check = false)
     t0 = time()
-    T = TwoLevel(a, cld(pr.ny, a), cld(pr.nx, a), k, nq, Matrix{Float64}[], nothing, mult, ω, 0, 0.0, 0, 0, 0, NaN, nothing)
+    T = TwoLevel(a, cld(pr.ny, a), cld(pr.nx, a), k, nq, Matrix{Float64}[], nothing, mult, ω, 0, 0.0, 0, 0, 0, NaN, nothing,
+                 0.0, (NaN, NaN))
     (pr.ny % a == 0 && pr.nx % a == 0) || error("grid $(pr.ny) × $(pr.nx) not divisible by aggregate size $a")
     nq == 4 && isodd(a) && error("branch coarse spaces need an even aggregate size")
-    Ac = galerkin(pr, T)
+    Ac = assembly == :analytic ? galerkin_analytic(pr, T) : galerkin(pr, T)
+    T.tassemble = time() - t0
+    if check                                                   # the other assembly, for the comparison
+        t1 = time(); Ac2 = assembly == :analytic ? galerkin(pr, T) : galerkin_analytic(pr, T)
+        T.cmp = (norm(Ac - Ac2, 1) / norm(Ac2, 1), time() - t1)
+    end
     T.sym = norm(Ac - Ac', 1) / norm(Ac, 1)
     Ac = (Ac + Ac') / 2
     n1 = pr.n1
@@ -229,7 +356,8 @@ end
 function lab(path, kv...)
     H.ensure_mpi()
     o = Dict{String,Any}("precs" => "fourier,block,hybrid,add:2,mult:2,mult:4,mult:2:8,mult:4:8", "mlm" => 0.0,
-                         "omega" => 1.0, "explicit" => 1, "gauge" => 1, "ref_tol" => 1e-10,
+                         "omega" => 1.0, "explicit" => 1, "gauge" => 1, "ref_tol" => 1e-10, "rhs" => "b",
+                         "assembly" => "probe", "galcheck" => 0,
                          "max_coarse" => 60000)
     for a in kv
         k, v = split(a, "="); haskey(o, k) || error("unknown key $k")
@@ -245,20 +373,40 @@ function lab(path, kv...)
     v = H.ViewOptions(mu = mu, azimuth_deg = az, geometry = :inclined)
     t0 = time(); logf(s) = (@printf("[%7.1fs] %s\n", time() - t0, s); flush(stdout))
     BLAS.set_num_threads(1)
-    function frozen(pc)
-        pr, c = PT.tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z, dx, dy; logtau_cut = cut, mu = mu, slant = H.slant(v),
+    function frozen(pc)                                  # all locals: `pr` of lab must not be rebound
+        local p, c, Φf, rh, bad
+        p, c = PT.tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z, dx, dy; logtau_cut = cut, mu = mu, slant = H.slant(v),
                             balance = bal, precond = pc)
-        pr.wc = copy(wc); pr.wf = copy(wf); pr.ereg = copy(ereg); pr.mlm = o["mlm"]
-        Φ, bad = PT.evaluate!(pr, u, c); bad == 0 || error("frozen state outside the EOS table")
-        o["mlm"] > 0 && PT.colblocks!(pr)                 # dlm for the Marquardt term of Aop!
-        rhs = zeros(pr.n1, ny, nx)
-        PT.JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
-        return pr, Φ, rhs
+        p.wc = copy(wc); p.wf = copy(wf); p.ereg = copy(ereg); p.mlm = o["mlm"]
+        Φf, bad = PT.evaluate!(p, u, c); bad == 0 || error("frozen state outside the EOS table")
+        o["mlm"] > 0 && PT.colblocks!(p)                  # dlm for the Marquardt term of Aop!
+        rh = zeros(p.n1, ny, nx)
+        PT.JTop!(p, rh, p.Rx .* p.wc, p.Ry .* p.wc, p.Rz .* vcat(p.wf, 0.0)); rh .*= -1
+        return p, Φf, rh
     end
     pr, Φ, b = frozen(:block)
     n1 = pr.n1; N = n1 * ny * nx
-    logf(@sprintf("frozen %s: %s, μ %.3f φ %g, cut %.2f (n₁ %d), %s balance, %d × %d columns, %d unknowns; Marquardt %.3g; ‖b‖ %.3e",
-                  path, inp, mu, az, cut, n1, bal, ny, nx, N, o["mlm"], norm(b)))
+    if o["rhs"] != "b"                                    # a right-hand side that is not the Gauss–Newton one
+        Random.seed!(11); nb0 = norm(b)
+        if o["rhs"] == "rand"
+            b = randn(size(b))
+        elseif o["rhs"] == "smooth"                       # random modes |k| ≤ 4 of the whole domain, every level
+            b = zeros(size(b))
+            for ky in -4:4, kx in -4:4
+                ((kx == 0 && ky == 0) || kx^2 + ky^2 > 16) && continue
+                a = randn(n1); φ = 2π * rand()
+                for i in 1:nx, j in 1:ny
+                    c = cos(2π * (kx * (i - 1) / nx + ky * (j - 1) / ny) + φ)
+                    for m in 1:n1; b[m, j, i] += a[m] * c; end
+                end
+            end
+        else
+            error("rhs: b, rand or smooth")
+        end
+        b .*= nb0 / norm(b)
+    end
+    logf(@sprintf("frozen %s: %s, μ %.3f φ %g, cut %.2f (n₁ %d), %s balance, %d × %d columns, %d unknowns; Marquardt %.3g; rhs %s, ‖b‖ %.3e",
+                  path, inp, mu, az, cut, n1, bal, ny, nx, N, o["mlm"], o["rhs"], norm(b)))
     Z() = zeros(n1, ny, nx)
     snorm(δ) = sqrt(sum(abs2, @view δ[2:end, :, :]) + sum(abs2, @view δ[1, :, :]) / HREF^2)
     truerel(δ) = (t = Z(); PT.Aop!(pr, t, δ); norm(b .- t) / norm(b))
@@ -285,8 +433,9 @@ function lab(path, kv...)
             nq = endswith(parts[1], "b") ? 4 : 1
             ncoarse = nq * (kk == 0 ? n1 : kk) * cld(ny, a) * cld(nx, a)
             ncoarse > o["max_coarse"] && (logf(@sprintf("%-10s skipped: %d coarse unknowns > max_coarse", pname, ncoarse)); continue)
-            T = try twolevel(pr, a, kk, startswith(parts[1], "mult"), o["omega"] / λB; nq = nq) catch e
-                logf("$pname: setup failed: $(sprint(showerror, e))"); continue end
+            T = try twolevel(pr, a, kk, startswith(parts[1], "mult"), o["omega"] / λB; nq = nq,
+                             assembly = Symbol(o["assembly"]), check = o["galcheck"] == 1) catch e
+                logf("$pname: setup failed: $(sprint(showerror, e))\n" * join(string.(stacktrace(catch_backtrace())[1:min(8, end)]), "\n")); continue end
             setup = T.tsetup; prx = pr; M! = (p, out, r) -> ml_apply!(p, T, out, r)
         end
         row = String[]
@@ -301,8 +450,9 @@ function lab(path, kv...)
                                 tol, k, fl[], truerel(δ), nA, cn[2], ts, snorm(δ .- δr) / snorm(δr),
                                 (dot(δ, b) / Φ - pref) / pref, ovh))
         end
-        extra = T === nothing ? "" : @sprintf(" [coarse %d unknowns, nnz A_c %d, factor %d (%.0f MB), A_c asym %.1e]",
-                                              T.nc, T.nnzA, T.nnzF, 8e-6 * T.nnzF, T.sym)
+        extra = T === nothing ? "" : @sprintf(" [%s assembly %.2f s, coarse %d unknowns, nnz A_c %d, factor %d (%.0f MB), A_c asym %.1e%s]",
+                                              o["assembly"], T.tassemble, T.nc, T.nnzA, T.nnzF, 8e-6 * T.nnzF, T.sym,
+                                              isnan(T.cmp[1]) ? "" : @sprintf("; vs the other assembly %.1e (%.2f s)", T.cmp...))
         logf(@sprintf("%-10s setup %6.2f s%s", pname, setup, extra))
         foreach(r -> logf("    " * r), row)
         if o["explicit"] == 1 && N <= 6000                  # dense M⁻¹ and M⁻¹A by probes

@@ -432,3 +432,124 @@ rotated A(k_x x + k_y y, z), are not yet tested.
   give absurd start heights.
 - Conditionally: the snapshot is not a discrete equilibrium of the model. Its own force residual is the next
   diagnostic.
+
+### 6.13 Round 5: exact-start classification, PCG and diagnostics fixes, two-level prototype (29 Oct)
+
+**Exact start** (`phi_floor`). The round-off floor of Φ is each residual with its terms replaced by their magnitudes,
+times 64 eps, summed with Φ's own weights.
+- A start at or below the floor returns `converged` (`info.roundoff = :start`).
+- A step that finds no decrease from such a state ends `converged` (`:no_descent`) instead of `no_descent`.
+- The gn_tol test and the budget are unchanged.
+- Field-free controls now end `converged` at Φ ≈ 1e-19, against floors ≈ 5e-14; the floor is conservative by about 10⁵
+  in Φ.
+- A state without a usable direction above the floor (cg_maxit = 0) still ends `no_descent`.
+- Regressions: block tests 97/97.
+
+**PCG.**
+- The trial-x finiteness check now shares the residual-norm reduction, back to three collectives per iteration.
+- Abnormal exits are logged and counted in `solve_tau` (`work.cg_abnormal`).
+- `qualify_stop` stops refining after one (`stop_check.pcg`).
+- PCG overhead beyond A and M⁻¹ is within single-rank timing noise (|overhead| ≲ 10 ms on 7–60 ms iterations). The
+  multi-rank collective cost is not measured.
+
+**Defect in fixed units** (`defect_parts`): R_h and R_z/Δz, volume-weighted, H_ref = 100 km, by layer. Exact truth,
+truth boundary; columns are interior | bottom 3 layers.
+
+| grid | μ1 horizontal | μ1 vertical | μ0.3 horizontal | μ0.3 vertical |
+|---|---|---|---|---|
+| (256, 0.2) | 2.2e-3 \| 5.1e-3 | 2.6e-2 \| 8.2e-3 | 5.9e-3 \| 2.3e-2 | 3.9e-2 \| 0.12 |
+| (256, 0.1) | 8.5e-4 \| 1.2e-3 | 9.3e-3 \| 1.8e-3 | 2.5e-3 \| 8.0e-3 | 2.0e-2 \| 7.9e-2 |
+| (256, 0.05) | 4.2e-4 \| 4.0e-4 | 4.3e-3 \| 1.4e-3 | 1.5e-3 \| 1.8e-3 | 6.9e-3 \| 1.1e-2 |
+| (512, 0.1) | 8.6e-4 \| 1.8e-3 | 9.3e-3 \| 2.1e-3 | 2.6e-3 \| 1.3e-2 | 2.4e-2 \| 0.13 |
+
+- In fixed units the defect is still about first order in Δlog τ, so the round-4 rate was not a norm artefact.
+- At μ1 the interior dominates, not the end layers.
+- At μ0.3 the bottom vertical layer dominates and grows with nx (the one-sided bottom derivative is suspected).
+- The solutions still converge at second order (§6.12).
+
+**Rotated control** (waves (2, 1), 6 Mm box, 128², φ 30°: t = (2.75, 1.59) at μ0.3):
+- Truth-boundary error: 0.7 km (μ1) and 0.1 km (μ0.3), as for the y-invariant control.
+- Production defaults: 5 steps at μ1.
+- Perturbations of 27–32 km (ln P 0.05, cut height 5 km) return to within 4 m / 2 m and ln P 9e-5 of the unperturbed
+  solution.
+
+**Two-level prototype** (`ml_lab.jl`; frozen systems archived in `out/frozen/`).
+
+*Method.*
+- Smoother: damped column-block Jacobi, ω = 1/λmax(B⁻¹A), symmetric pre- and post-smoothing.
+- Coarse space: horizontal a × a aggregates of whole columns; Galerkin A_c from the actual A; sparse Cholesky.
+- Checks:
+  - the probed and analytic A_c agree to 1e-16 (μ1 ray balance, μ0.3 vertical balance, and the rotated control with
+    nonzero t_y in both balances);
+  - A_c equals PᵀAP from the dense A (8 × 8 crops);
+  - M⁻¹ is symmetric and SPD.
+
+*Nyquist branches are essential.* Centred differences make modes near k = π as slow as k ≈ 0. Piecewise-constant
+aggregates miss the (−1)ⁱ, (−1)ʲ, (−1)ⁱ⁺ʲ branches; adding them as modulated copies (`multb`) does this on the 8 × 8
+μ0.3 crop:
+
+| | iterations to 1e-3 / 1e-5 | κ(M⁻¹A) |
+|---|---|---|
+| mult:4 | 18 / 149 | 1.4e4 |
+| multb:4 | 10 / 27 | 59 |
+
+All four gauge modes are reduced to 0.015.
+
+*Resolution independence* (control, fixed domain, nx 128 → 256 → 512, iterations to 1e-3):
+
+| | block | multb:4 | multb:8 |
+|---|---|---|---|
+| μ1 | 9 → 15 → 31 | 5 → 6 → 6 | 7 → 10 → 11 |
+| μ0.3 | 371 → 84 → 103 | 34 → 25 → 21 | 42 → 35 → 29 |
+
+*Domain independence* (Bifrost 32² crop tiled 1×, 2×, 4×: the same local state on 32², 64², 128²; the GN right-hand
+side is tile-periodic and keeps every Krylov iterate periodic, so the rhs is random, seeded). Iterations to 1e-3:
+
+| rhs | block | multb:8 | multb:16 |
+|---|---|---|---|
+| μ0.3 smooth (\|k\| ≤ 4) | 993 → 1636 → 2718 | 184 → 206 → 211 | 225 → 248 → 259 |
+| μ0.3 white | 982 → 1822 → 3007 | 184 → 195 → 196 | 225 → 231 → 236 |
+| μ1 smooth | 342 → 635 → 1004 | 60 → 63 → 65 | 113 → 162 → 174 |
+
+Block grows about 1.65× per domain doubling. Branch two-level is nearly flat for a ≤ 8, and drifts upward at μ1 for
+a = 16.
+
+*Differently sized Bifrost crops are not comparable states.* Each has its own content and 10-step history. For example,
+at μ0.3, step 10, the GN rhs gives block 77 → 126 its from 32² to 64², and multb:8 23 → 55. These cannot separate size
+from content.
+
+*Cost* (one rank, 32 threads, shared nodes so timings are ±30 %):
+- Analytic assembly takes 0.5–2.8 s at 32²–64².
+- The sparse Cholesky of A_c dominates setup at small aggregates (multb:8 at 64²: 12 800 coarse unknowns, 319 MB, about
+  5 s).
+
+| system | block (1e-3 / 1e-5) | multb:16 (setup + 1e-3 / 1e-5) |
+|---|---|---|
+| tiled 64², smooth rhs | 20.9 / 22.9 s | 1.8 + 9.1 / 11.5 s |
+| 64² μ0.3 step 10, GN rhs | 3.3 / 13.6 s | 3.0 + 3.5 / 10.2 s |
+
+At 128², GN rhs (step 10; iterations, then setup + solve seconds to 1e-3 / 1e-5):
+
+| | block | multb:16 | multb:8 |
+|---|---|---|---|
+| μ1 | 123 / 845 its, 7.2 / 49 s | 30 / 64 its, 8.9 + 5.6 / 11.9 s | 27 / 45 its, 41 + 7.6 / 12.8 s |
+| μ0.2 vertical | 281 / 1126 its, 12.6 / 46 s | 87 / 207 its, 6.4 + 10.0 / 23.5 s | 89 / 192 its, 30 + 16 / 35 s |
+| μ0.3 vertical | 163 / 1605 its, 8.2 / 83 s | 49 / 384 its, 8.1 + 9.6 / 83 s | 36 / 223 its, 33 + 8.3 / 66 s |
+
+- Two-level wins in total time at 1e-5 for μ1 (about 2.4×) and μ0.2 (about 1.5×), from 128² on.
+- At μ0.3 the iterations fall 3–4×, but each iteration costs 3 A applications plus the coarse solve, so there is no
+  time gain.
+- At μ0.3 the late Bifrost system still needs 223–384 two-level iterations to 1e-5. Its slow band is not fully in the
+  branch coarse space.
+- multb:8 setup is dominated by the 1.5–1.9 GB coarse factorisation.
+
+**Full-cube context** (504² × 95, one node, 3 ranks × 32 threads, Fourier, D2 settings): 25 steps take about 20 min at
+μ1, 15 min at μ0.3 vertical and 43 min at μ0.2, and none qualifies the gn_tol stop on the Bifrost input. At μ0.3 the
+full-cube steps hit the 400 CG cap (relative residual 0.3–0.7), so the steps are inexact.
+
+**Not yet done.**
+- The coarse problem of the full cube is too large for a direct factorisation: 4·n₁·(504/a)², i.e. 800 k unknowns at
+  a = 8 and 200 k at a = 16. It needs a third level or a compact coarse basis that keeps the branches and the
+  cut-height modes. The present compact basis, k smallest eigenvectors per group, loses the gauge modes: κ 7.9e3.
+- The coarse solve is not distributed (one rank).
+- No end-to-end trajectory has used the two-level preconditioner.
