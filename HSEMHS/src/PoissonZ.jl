@@ -216,25 +216,40 @@ function tbcast!(f, outs, ins...)
 end
 
 """Preconditioned CG on Aop!/Minv! with global inner products (generic over the problem type). Starts from xs = 0, or
-from the given xs with `x0 = true` (one extra operator product)."""
-function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80, x0 = false)
+from the given xs with `x0 = true` (one extra operator product). Returns (iterations, ‖b − A xs‖/‖b‖ from the
+recursion). b = 0 gives xs = 0 (the exact solution, whatever the start). A start already within `tol` returns at once
+with its true residual. Breakdown (non-positive or non-finite pᵀAp or rᵀM⁻¹r) stops the iteration with xs at the last
+good iterate and the relative residual of that iterate (≥ tol, so the caller sees the miss). `cnt` (a 2-vector or
+nothing) is incremented by the operator and preconditioner applications made."""
+function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80, x0 = false, cnt = nothing)
+    nb = gnorm(par, b)
+    nb == 0 && (fill!(xs, 0.0); return 0, 0.0)
     zv = similar(b); p = similar(b); Ap = similar(b)
+    na = 0; nm = 0
+    tally() = (cnt === nothing || (cnt[1] += na; cnt[2] += nm); nothing)
     if x0
-        Aop!(pr, Ap, xs); r = b .- Ap
+        Aop!(pr, Ap, xs); r = b .- Ap; na += 1
     else
         fill!(xs, 0.0); r = copy(b)
     end
-    Minv!(pr, zv, r); p .= zv; rz = gdot(par, r, zv); nb = gnorm(par, b); it = 0; rel = 1.0
-    nb == 0 && return 0, 0.0
+    rel = gnorm(par, r) / nb; it = 0
+    (rel < tol || !isfinite(rel)) && (tally(); return 0, rel)
+    Minv!(pr, zv, r); nm += 1; p .= zv; rz = gdot(par, r, zv)
+    (isfinite(rz) && rz > 0) || (tally(); return 0, rel)
     for outer it in 1:maxit
-        Aop!(pr, Ap, p)
-        αc = rz / gdot(par, p, Ap)
+        Aop!(pr, Ap, p); na += 1
+        pAp = gdot(par, p, Ap)
+        (isfinite(pAp) && pAp > 0) || (it -= 1; break)
+        αc = rz / pAp
         let a = αc; tbcast!((x, rr, pp, ap) -> (x + a * pp, rr - a * ap), (xs, r), p, Ap); end
         rel = gnorm(par, r) / nb
         rel < tol && break
-        Minv!(pr, zv, r); rz2 = gdot(par, r, zv); βc = rz2 / rz; rz = rz2
+        Minv!(pr, zv, r); nm += 1; rz2 = gdot(par, r, zv)
+        (isfinite(rz2) && rz2 > 0) || break
+        βc = rz2 / rz; rz = rz2
         let b = βc; tbcast!((pp, z) -> (z + b * pp,), (p,), zv); end
     end
+    tally()
     return it, rel
 end
 

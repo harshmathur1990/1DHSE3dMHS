@@ -72,6 +72,37 @@
         @test qs[end].upper - qs[end].lower < 1e-3 * (qs[1].upper - qs[1].lower)
         @test pdamped < 1e-3 && qs[end].pred > 100 * pdamped && qs[end].outcome == :not_stationary
         @test pr.ereg == e0 && pr.mlm == 0 && qs[end].step == 0 && qs[end].phi == Φq
+        @test all(q -> q.aprod >= q.its + 1 && q.minv >= 1, qs[2:end])           # restarts and interval residuals counted
+        # restarted PCG (x0): an exact or within-tol start returns at once; b = 0 gives xs = 0 whatever the start; the
+        # zero start converges with one A and one M⁻¹ per iteration; a restart from a partial solve reaches the tol
+        PT.setprec!(pr)
+        xe = reshape(cholesky(Symmetric((A .+ A') ./ 2)) \ vec(b), size(b)); t = similar(b)
+        tr(x) = (PT.Aop!(pr, t, x); norm(vec(b .- t)) / norm(vec(b)))
+        x = copy(xe); cn = zeros(Int, 2)
+        k, rel = PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-6, x0 = true, cnt = cn)
+        @test k == 0 && rel < 1e-6 && x == xe && cn == [1, 0]
+        x = xe .* (1 + 1e-9); k, rel = PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-6, x0 = true)
+        @test k == 0 && rel ≈ tr(x)
+        x = copy(xe); k, rel = PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, zero(b); tol = 1e-6, x0 = true)
+        @test k == 0 && rel == 0 && all(==(0), x)
+        x = similar(b); cn = zeros(Int, 2)
+        k, rel = PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-8, maxit = 400, cnt = cn)
+        @test rel < 1e-8 && cn == [k, k] && tr(x) < 1e-7
+        x = similar(b); PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-12, maxit = 5)
+        k, rel = PT.pcg!(PT.Aop!, PT.Minv!, par, pr, x, b; tol = 1e-8, maxit = 400, x0 = true)
+        @test k >= 1 && rel < 1e-8 && tr(x) < 1e-7
+        # EOS domain: the fraction to the table boundary along δ, and the cells evaluate! rejects, by kind
+        dd = zero(b); dd[2:end, :, :] .= 1.0
+        Yhi = tab.Y[end] - 2PT.EPS_PROBE; umax = maximum(lnP[pr.kc+1:end, :, :])
+        @test PT.feas_scale(pr, lnP, dd) ≈ Yhi - umax
+        @test PT.feas_scale(pr, lnP, -dd) ≈ minimum(lnP[pr.kc+1:end, :, :]) - (tab.Y[1] + 2PT.EPS_PROBE)
+        @test PT.feas_scale(pr, lnP, zero(b)) == Inf
+        @test PT.eos_cells(pr, lnP).total == 0
+        uh = copy(lnP); uh[end, 1, 1] = tab.Y[end] + 0.1; uh[end, 2, 1] = tab.Y[end] - PT.EPS_PROBE / 2
+        e = PT.eos_cells(pr, uh)
+        @test e.hi == 1 && e.probe_hi == 1 && e.total == 2 && e.worst.level == size(lnP, 1) && e.worst.lnP == uh[end, 1, 1]
+        @test PT.evaluate!(pr, uh, cc)[2] == 2
+        PT.evaluate!(pr, lnP, cc)
         q1 = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-12, maxit = 1, gn_tol = dex)
         @test q1.its == 1 && q1.outcome == :undecided
         qq = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-2, maxit = 400, gn_tol = 2dex)
@@ -90,6 +121,8 @@
         @test q5.step >= 1 && q5.its >= 1
         q5.outcome == :undecided && @test u5[7].reason == :unresolved && u5[5] == q5.step
         q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].gn_decrement == q5.pred      # reused, not re-solved
+        q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].work.final_cg == 0 && u5[7].work.final_aprod == 0
+        @test u5[7].work.qual_aprod >= u5[7].work.qual_cg && u5[7].work.aprod >= u5[7].work.cg && u5[7].work.total_s > 0
         # the objective of another solve: same start and weights → the same solve; another start uses the weights given
         sv(u0, zz; w = nothing) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, u0, zz, dx, dy; logtau_cut = -4.0,
                                      max_steps = 5, mu = v.mu, slant = H.slant(v), stop = :gn, lm = :gain, forcing = :ew,
