@@ -26,28 +26,36 @@ function load_tau_fixture(tag, ir)
 end
 
 """
-Standalone result file for (mode, tag): for the column modes (direct integration) the stored one
-(test/fixtures/embedded_ref, made by scripts/run.jl with configs/<mode>_<tag>.toml); for the Poisson modes the standalone
-driver run now, in-process, with the same config on this machine and thread count. The iterative solves depend on the
-BLAS thread count and the CPU (measured: 0.86 relative at 4 vs 16 threads, 1.97 between hyades18 and hyades20 for the
-ltau 24x18 case), so stored Poisson results are a record of one machine (see their `threads` attribute), not a
-portable reference; the test is embedding-vs-standalone parity at identical settings.
+Interface-parity reference for (mode, tag): `(ref, attrs)` with the standalone result as (vertical, y, x) arrays
+(`load_ref`) and its file attributes. Column modes (direct integration): the stored file in test/fixtures/embedded_ref
+(made by scripts/run.jl with configs/<mode>_<tag>.toml). Poisson modes: the standalone driver run now, in-process, with
+the same config on this machine and thread count (in a temporary directory, removed afterwards); its exit code must be 0
+or 2 and the output must exist. The iterative solves depend on the BLAS thread count and the CPU: on the sensitive,
+Φ-rule-stopped ltau 24x18 crop, z differs by 58 m max (4.2 m rms) at 4 vs 16 threads and 90 m (6.3 m) between hyades18
+and hyades20, so stored Poisson files are a record of one machine (`threads` attribute), not a portable
+golden reference. This tests embedding-vs-standalone parity only; solver correctness is tested independently (Jacobians,
+direct systems, known equilibria: test_block, test_view, design §6.12).
 """
-function ref_file(mode::Symbol, tag)
+function parity_ref(mode::Symbol, tag)
     n = "$(ref_name(mode))_$tag"
-    H.poisson_mode(mode) || return joinpath(EREF, "$n.h5")
-    out = tempname() * ".h5"; cfg = tempname() * ".toml"
-    write(cfg, replace(read(joinpath(EREF, "configs", "$n.toml"), String), r"output = \".*\"" => "output = \"$out\""))
-    b0 = BLAS.get_num_threads()
-    try
-        cd(() -> H.run_config(cfg), joinpath(@__DIR__, ".."))
-    finally
-        BLAS.set_num_threads(b0)
+    rd(p) = (load_ref(ref_name(mode), tag, :; path = p),
+             h5open(f -> Dict(k => read(attributes(f)[k]) for k in keys(attributes(f))), p))
+    H.poisson_mode(mode) || return rd(joinpath(EREF, "$n.h5"))
+    mktempdir() do d
+        out = joinpath(d, "$n.h5"); cfg = joinpath(d, "$n.toml")
+        write(cfg, replace(read(joinpath(EREF, "configs", "$n.toml"), String), r"output = \".*\"" => "output = \"$out\""))
+        b0 = BLAS.get_num_threads()
+        code = try
+            cd(() -> H.run_config(cfg), joinpath(@__DIR__, ".."))
+        finally
+            BLAS.set_num_threads(b0)
+        end
+        (code in (0, 2) && isfile(out)) || error("standalone $n: exit $code, output $(isfile(out) ? "" : "not ")written")
+        return rd(out)
     end
-    return out
 end
 
-"""Standalone result (`ref_file`) on global x range `ir`, as (vertical, y, x) arrays."""
+"""Standalone result (`parity_ref`) on global x range `ir`, as (vertical, y, x) arrays."""
 function load_ref(mode, tag, ir; path = joinpath(EREF, "$(mode)_$tag.h5"))
     p = path
     h5open(p, "r") do f

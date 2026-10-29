@@ -270,7 +270,7 @@ precond = "switch"
 **Embedding** (`prepare_embedded(comm, :mhs_poisson_ltau; …, poisson = PoissonTauOptions(…), view = ViewOptions(…))`,
 then `solve_embedded!(ws, lnT, Bx, By, Bz; start = :column_hse | :previous)`): the status carries the stop reason,
 `stats["work"]` (operator and preconditioner products, CG iterations, abnormal CG exits, `switch_step`, seconds),
-`stats["stop_check"]` (qualification outcome and interval), `stats["roundoff"]`, `stats["gn_decrement_approx"]`. A warm
+`stats["stop_check"]` (qualification outcome and interval), `stats["roundoff"]`, `stats["gn_decrement_source"]`. A warm
 start (`:previous`) restarts the preconditioner policy (with `switch` it can change to blocks at its first capped solve),
 and takes the objective's weights from its own start, so warm and cold solves of the same cube minimise slightly
 different objectives. On the Bifrost cube the warm start gave no saving (table below).
@@ -289,13 +289,38 @@ diagnostics but do not stop any mode in its documented configuration.
 
 Each linear solve has its own PCG tolerance and iteration cap; reaching the cap does not stop the outer iteration.
 
-**Exit status.** `run_config` exits 0 for `converged`, 2 `stalled`/`max_iter`, 3 an invalid result (EOS failure,
-non-finite, non-positive or folded fields: logged, **no output written**), 4 invalid input. The `column-hse-ltau`,
-`mhs-poisson-ltau` and `mhs-poisson-z` drivers return their solver's status; the τ-grid output records it (attributes
-`status`, `stop_reason`, `gn_decrement` with `gn_decrement_approx` = 1 when it comes from a solve that did not converge,
-`qual_outcome`, `qual_lower`, `qual_upper`, `roundoff`, `phi_floor`, `work_*`, `solve_seconds`, `ranks`, `threads`).
-`scripts/run.jl` still returns 0 after the full driver (`full-mhs-z`) returns; it logs `solver returned: <status>
-(<reason>)`. A `max_iter` atmosphere is valid (every check passed) but **not converged**. Even a met Φ rule does not certify small force residuals, stationarity or data
+**Exit status.** `scripts/run.jl` / `run_config` exit 0 for `converged`, 2 for a valid but unconverged result
+(`max_iter`, `stalled`), 3 for an invalid result (EOS failure, non-finite, non-positive or folded fields: logged, **no
+output written**), 4 for invalid input. The `column-hse-ltau`, `mhs-poisson-ltau` and `mhs-poisson-z` drivers return
+their solver's status; the τ-grid output records it (attributes `status`, `stop_reason`, `qual_outcome`, `qual_lower`,
+`qual_upper`, `gn_decrement`, `gn_decrement_source`, `roundoff`, `phi_floor`, `work_*`, `solve_seconds`, `ranks`,
+`threads`). `scripts/run.jl` still returns 0 after the full driver (`full-mhs-z`) returns; it logs `solver returned:
+<status> (<reason>)`. A `max_iter` atmosphere is valid (every check passed) but **not converged**: process success,
+physical validity and numerical convergence are three different statements.
+
+*Migration (29 Oct 2026, `solver-time`):* these three drivers used to exit 0 whatever their termination. A caller that
+treats any non-zero exit as failure (`set -e`, `cmd && next`) now stops on a valid budget-limited run; one that keeps
+such output must accept 2 explicitly, and should still treat 3 and 4 as failures:
+
+```sh
+julia --project=. -t 32 scripts/run.jl run.toml; rc=$?
+case $rc in
+  0) echo "converged" ;;
+  2) echo "valid, not converged: see the status attributes of the output" ;;
+  *) echo "failed ($rc)"; exit $rc ;;
+esac
+```
+
+**Output and invalid runs.** With `run.overwrite = true` an invalid rerun does not delete or replace a file already at
+`run.output` (an earlier run's): it logs that the file was not replaced and writes `<output>.failed.txt` (status, reason,
+messages, config, time) beside it; a later valid run there removes that record. Prefer a distinct output path per run.
+
+**The decrement diagnostics.** The stop qualification's outcome and interval [`qual_lower`, `qual_upper`] are the
+authoritative statement about `gn_tol`. `gn_decrement` is always a computed estimate (bᵀx/Φ of an inexact solve), and
+`gn_decrement_source` says from where: `stop_check_<outcome>` at the returned state, `final_solve_converged` (the solve
+met its residual tolerance, which is not an error bound on the decrement), `final_solve_maxit` or an abnormal PCG exit (a
+rougher estimate), or `not_evaluated` (EOS failure, or a start accepted at round-off or within `rms_atol`, where
+`gn_decrement` and `grad_norm` are a conventional 0, not computed). Even a met Φ rule does not certify small force residuals, stationarity or data
 fidelity. After a run check: the stop line; the residual per band/layer in the log or output; for `full-mhs-z` the data
 term and the largest field deviations in `history.csv`; and z(τ=1) and the pressure change for plausibility.
 
@@ -333,7 +358,7 @@ codes, allocations), the τ-grid solver and viewing angle by `test_view.jl` (μ 
 inclined Jacobians, column HSE at angles), `test_block.jl` (preconditioners, PCG outcomes, stop qualification,
 round-off acceptance, `switch`) and `test_warm.jl`; multi-rank by `test/mpi/mpi_embedded.jl` and `test/mpi/mpi_view.jl`
 (run them as `mpiexecjl -n R julia --project=. -t 2 test/mpi/<file>.jl`, R = 2, 3, 4). Status on `solver-time`
-(29 Oct 2026): block 114, warm 47, view 133, embedded 91, units/config 18; MPI suites pass on 2, 3, 4 ranks.
+(29 Oct 2026): block 116, warm 47, view 133, embedded 103 (hyades18 and hyades20), units/config 18; MPI suites pass on 2, 3, 4 ranks.
 
 ## Measured performance
 
@@ -392,13 +417,19 @@ node.
 * `mhs-poisson-z` converges slowly (Gauss–Newton on a large residual that a fixed field cannot remove); low-β layers
   inflate the pressure, hence `z_cut`.
 * `mhs-poisson-ltau` on the full Bifrost cube does not qualify its stop within 25 steps at any μ (table above). The
-  late steps are limited by the whole-step ln P cap (`du_cap` 2, set by the worst cell); a probe at saved late states
-  found the capped step already as long as the Gauss–Newton model allows (twice it raises Φ), so relaxing the cap does
-  not help; the remaining slowness is the problem's nonlinearity, not the linear algebra. A few strong-field column
-  heights are weakly determined. The final `gn_decrement` of a budget-limited run is approximate (`gn_decrement_approx`).
-* Iterative results depend on the BLAS thread count and the CPU at the rounding level, which a nonconverged run can
-  amplify (up to tens of metres in z on the 24 × 18 test crop); the embedding test therefore compares against the
-  standalone driver on the same machine.
+  late steps are limited by the whole-step ln P cap (`du_cap` 2, set by the worst cell; not the 300 km height cap). At
+  two saved late μ 0.3 states, radial steps of 2× the capped length and the full Gauss–Newton step raised Φ (by 5 % to
+  ×132) while the capped step lowered it, so simply relaxing the cap along that direction did not help there. This does
+  not show that the capped step is optimal or that another step direction (e.g. a trust-region step) could not do better;
+  that was not tried for this release. A few strong-field column heights are weakly determined. The final `gn_decrement`
+  of a budget-limited run is an estimate (`gn_decrement_source`).
+* Iterative results depend on the BLAS thread count and the CPU at the rounding level, which a not-converged run can
+  amplify. On the 24 × 18 test crop, stopped by the weak Φ rule after 24 steps, 4 vs 16 threads on one machine differ by
+  58 m max (4.2 m rms) in z, 35 m (6.6 m) in z(τ=1) and 0.24 % in P; hyades20 vs hyades18 by 90 m (6.3 m), 66 m (10 m)
+  and 0.39 % (relative figures of 0.86–1.97 quoted elsewhere are near z = 0). These are not differences of a qualified,
+  converged atmosphere. The embedding test is therefore an
+  **interface-parity** test against the standalone driver run on the same machine and threads, not a portable golden
+  reference; solver correctness is covered by the Jacobian, direct-system and known-equilibrium tests.
 * The multilevel (two-level, branch-aware) preconditioner of `scripts/viewing/ml_lab.jl` is experimental and not on the
   supported path (its per-step setup costs more than a loose solve; serial coarse solve).
 * `full-mhs-z`: no production run has met its stopping rule; a run on the full cube takes more than a day on 4 nodes.

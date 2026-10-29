@@ -277,8 +277,12 @@ are the absolute objective at the start/end, `rms0`/`rms` = √(Φ/ΣW); `phi0_z
 `counts` holds the global number of nodes or columns per failed check, `stats` the column-stage statistics and (τ grid)
 the solver's work (stats["work"]: operator and preconditioner products, CG iterations, abnormal CG exits, seconds), the
 round-off acceptance (stats["roundoff"]: none | start | no_descent; stats["phi_floor"]), the stop qualification
-(stats["stop_check"], solved with column blocks where the grid has them) and stats["gn_decrement_approx"] (true when
-`gn_decrement` comes from a final solve that ended at its iteration limit, or from a stop check that did not qualify).
+(stats["stop_check"], solved with column blocks where the grid has them; its outcome and interval [lower, upper] are the
+authoritative statement about the gn_tol threshold) and stats["gn_decrement_source"], where the scalar `gn_decrement`
+(always a computed estimate, bᵀx/Φ of an inexact solve) comes from: "stop_check_<outcome>" (qualified, not_stationary,
+undecided, invalid) at the returned state, "final_solve_<PCG outcome>" (converged: its residual tolerance was met, which
+is not an error bound on the decrement; maxit or an abnormal exit: a rougher estimate), or "not_evaluated" (EOS failure,
+a start accepted at round-off or within rms_atol, where gn_decrement = grad_norm = 0 are conventional, not computed).
 """
 Base.@kwdef mutable struct EquilibriumStatus
     status::SolverStatus = converged
@@ -695,7 +699,7 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
     st.stats["cut_level"] = kc
     st.stats["work"] = Dict{String,Any}(String(k) => v for (k, v) in pairs(info.work))   # products, CG iterations, seconds
     st.stats["roundoff"] = String(info.roundoff); st.stats["phi_floor"] = info.phi_floor
-    st.stats["gn_decrement_approx"] = info.gn_decrement_approx   # true: from a solve that did not converge (or not qualified)
+    st.stats["gn_decrement_source"] = String(info.gn_decrement_source)   # where the gn_decrement estimate comes from
     info.work.cg_abnormal > 0 && push!(st.messages, "$(info.work.cg_abnormal) abnormal CG exits (breakdown or non-finite)")
     if info.stop_check !== nothing                                     # the last stop qualification (PoissonTau.qualify_stop)
         q = info.stop_check

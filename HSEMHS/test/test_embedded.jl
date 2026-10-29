@@ -7,7 +7,7 @@ include("embedded_helpers.jl")
     tab = H.load_table(ETABLE)
     blas0 = BLAS.get_num_threads()
 
-    @testset "equivalence with the stored standalone results ($mode, $tag)" for mode in H.EMBEDDED_MODES, tag in ("24x18", "11x12")
+    @testset "interface parity with the standalone driver ($mode, $tag)" for mode in H.EMBEDDED_MODES, tag in ("24x18", "11x12")
         fx = load_fixture(mode, tag, :)
         o = ref_options(mode, fx)
         ws = H.prepare_embedded(comm, mode; axis = o.axis, x = o.x, y = o.y, eos = tab, g = o.g, column = o.column,
@@ -23,7 +23,9 @@ include("embedded_helpers.jl")
         end
         @test res.status.valid
         # column-hse-z: the slab path against the 2-D-block column_hse output (different decomposition, same kernels)
-        @test ref_error(res, load_ref(ref_name(mode), tag, :; path = ref_file(mode, tag))) <= 1e-12
+        ref, at = parity_ref(mode, tag)
+        @test ref_error(res, ref) <= 1e-12
+        haskey(at, "stop_reason") && @test at["stop_reason"] == String(res.status.reason)
         if H.poisson_mode(mode)
             @test res.status.steps > 0 && isfinite(res.status.gn_decrement) && res.status.gn_decrement >= 0
             @test res.status.reason in (:converged, :max_steps, :no_descent)
@@ -181,6 +183,41 @@ include("embedded_helpers.jl")
         @test runc(c -> replace(c, "max_steps = 30" => "max_steps = 1")) == (2, "max_iter")
         @test runc(c -> replace(c, "max_steps = 30" => "max_steps = 0")) == (0, "converged")  # 0: the default (25)
         @test runc(c -> replace(c, "rtol = 1.0e-4" => "rtol = -1.0"))[1] == 4      # invalid option
+        # the executable's process exit code (scripts/run.jl in a subprocess), not only run_config's return value
+        root = joinpath(@__DIR__, "..")
+        function runp(f)
+            out = tempname() * ".h5"; cfg = tempname() * ".toml"
+            write(cfg, f(replace(cfg0, r"output = \".*\"" => "output = \"$out\"")))
+            cmd = Cmd(`$(Base.julia_cmd()) --project=$root -t 1 $(joinpath(root, "scripts", "run.jl")) $cfg`; dir = root)
+            code = run(pipeline(ignorestatus(cmd); stdout = devnull, stderr = devnull)).exitcode
+            st = isfile(out) ? h5open(f -> read(attributes(f)["status"]), out) : ""
+            rm(cfg); isfile(out) && rm(out)
+            return code, st
+        end
+        @test runp(identity) == (0, "converged")
+        @test runp(c -> replace(c, "max_steps = 30" => "max_steps = 1")) == (2, "max_iter")
+        @test runp(c -> replace(c, "rtol = 1.0e-4" => "rtol = -1.0")) == (4, "")
+    end
+
+    @testset "an invalid rerun does not replace, delete or disguise an earlier output" begin
+        d = mktempdir()
+        bad = joinpath(d, "ltau_bad.h5"); cp(joinpath(EFIX, "ltau_11x12.h5"), bad)
+        h5open(bad, "r+") do f                                  # one temperature far above the EOS table
+            T = read(f["temperature"]); T[end, 1, 1] = 1e9
+            delete_object(f, "temperature"); f["temperature"] = T
+        end
+        out = joinpath(d, "col.h5")
+        cfg0 = replace(read(joinpath(EREF, "configs", "column-hse-ltau_11x12.toml"), String),
+                       r"output = \".*\"" => "output = \"$out\"")
+        runc(c) = (cfg = joinpath(d, "c.toml"); write(cfg, c); cd(() -> H.run_config(cfg), joinpath(@__DIR__, "..")))
+        @test runc(cfg0) == 0 && isfile(out) && !isfile(out * ".failed.txt")
+        t0 = mtime(out); P0 = h5open(f -> read(f["tau_grid/Pgas"]), out)
+        @test runc(replace(cfg0, r"file = \".*ltau_11x12.h5\"" => "file = \"$bad\"")) == 3
+        @test mtime(out) == t0 && h5open(f -> read(f["tau_grid/Pgas"]), out) == P0       # kept, not replaced
+        rec = read(out * ".failed.txt", String)
+        @test occursin("eos_out_of_envelope", rec) && occursin("existing_file_from_an_earlier_run = true", rec)
+        @test runc(cfg0) == 0 && !isfile(out * ".failed.txt")                            # a valid rerun clears it
+        rm(d; recursive = true)
     end
 
     @testset "result buffers and snapshot" begin

@@ -178,10 +178,16 @@
         q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].gn_decrement == q5.pred      # reused, not re-solved
         q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].work.final_cg == 0 && u5[7].work.final_aprod == 0
         @test u5[7].work.qual_aprod >= u5[7].work.qual_cg && u5[7].work.aprod >= u5[7].work.cg && u5[7].work.total_s > 0
-        @test q5.precond == :block && u5[7].gn_decrement_approx == (q5.step != u5[5] || q5.outcome != :qualified)
+        @test q5.precond == :block
+        src5 = String(u5[7].gn_decrement_source)
+        if q5.step == u5[5] && q5.outcome != :invalid
+            @test src5 == "stop_check_$(q5.outcome)"                 # the stop check at the returned state is reused
+        else
+            @test startswith(src5, "final_solve_")
+        end
         u6 = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
                           max_steps = 2, mu = v.mu, slant = H.slant(v), cg_maxit = 1)    # final diagnostic capped at 1 it
-        @test u6[7].gn_decrement_approx && u6[7].work.final_cg == 1
+        @test u6[7].gn_decrement_source == :final_solve_maxit && u6[7].work.final_cg == 1
         # the objective of another solve: same start and weights → the same solve; another start uses the weights given
         sv(u0, zz; w = nothing) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, u0, zz, dx, dy; logtau_cut = -4.0,
                                      max_steps = 5, mu = v.mu, slant = H.slant(v), stop = :gn, lm = :gain, forcing = :ew,
@@ -218,6 +224,7 @@
         zr = copy(r1[2])
         r2 = sv0(copy(r1[1]), copy(zr))                                 # restart from the returned state
         @test r2[7].reason == :converged && r2[5] <= 1
+        r2[7].roundoff == :start && @test r2[7].gn_decrement_source == :not_evaluated   # accepted, not computed
         up = copy(r1[1]); kc = r1[6]
         for k in kc+1:size(up, 1); up[k, :, :] .+= 1e-3 .* cos.(2π .* (0:size(up, 3)-1)' ./ size(up, 3)); end
         r3 = sv0(up, copy(zr))

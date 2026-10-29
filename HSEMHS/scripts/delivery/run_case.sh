@@ -9,6 +9,8 @@
 #   KEY=VALUE extra [poisson] keys (TOML values, e.g. lm='"gain"' max_steps=5)
 # Writes out/delivery/NAME.toml, NAME.log, NAME.h5 and NAME.time.<host>.<pid> (peak RSS KB, elapsed s per rank).
 # The baseline poisson settings (D2) are written first; KEY=VALUE pairs given here are appended and override them.
+# The log ends with "exit N": 0 converged, 2 valid but not converged (max_iter/stalled; the output is kept and its
+# attributes say so), 3 invalid result (nothing written), 4 invalid input. This script records N and does not stop on it.
 NAME=$1; MODE=$2; INPUT=$3; MU=$4; AZ=$5; NR=$6; NT=$7; HF=${8:--}; shift 8 || shift $#
 source ~/loadgcc.sh >/dev/null 2>&1
 export PATH=/tmp/julia-1.13.1/bin:$HOME/.julia/bin:$PATH

@@ -637,9 +637,12 @@ column blocks, loose η 0.1 / tight 1e-3, damping μ 0 / 1; actual against model
 | | tight (276 its) | ln P (0.36) | 0.86 | Φ +52 % | Φ × 36 |
 
 μ = 1 gives the same within 1 %. The binding cap is always the ln P cap (worst cell |δ ln P| 4.8–6.4), never the 300 km
-height cap (§6.14 said the height cap; corrected). Along the Gauss–Newton direction the capped step is already as long as
-the model allows: relaxing the cap has no benefit, so the trust-region trial (Codex round 7) was not run. That the cap is
-set by single cells suggests localised nonlinearity; not pursued (would be a separately scoped task).
+height cap (§6.14 said the height cap; corrected). Measured: along the Gauss–Newton direction, the radial steps tried
+beyond the capped one (2×, full) raised Φ at both states while the capped step lowered it; simply relaxing the cap along
+that direction did not help there. This does not show that the capped step is optimal, that the model forbids a longer
+step, or that a different direction (a trust-region step) could not do better (Codex round 8). On that evidence the
+trust-region trial was declined for this release. That single cells set the cap suggests localised nonlinearity; not
+pursued (would be a separately scoped task).
 
 **Qualification on column blocks.** `qualify_stop` and the final decrement diagnostic use the column blocks where the grid
 has them (Fourier fallback), whatever the outer preconditioner; `gn_decrement_approx` marks a decrement from an
@@ -660,3 +663,17 @@ and threads (the iterative results depend on both); budgets a + b·threads. The 
 on logging string stats (fixed). The drivers return their status (exit 2 at the step limit, 3 invalid, not written).
 block 114, warm 47, view 133, embedded 91 (hyades18 and hyades20), units/config 18; MPI suites on 2/3/4 ranks pass,
 including `switch` on R ranks (same switch step on every rank).
+
+### 6.16 Round 8 closeout (29 Oct)
+
+- Exit codes kept (0 converged, 2 valid not converged, 3 invalid, 4 invalid input); README migration note and shell
+  example; the delivery scripts record the code without stopping on it. Subprocess test of `scripts/run.jl` for 0 / 2 / 4.
+- Invalid reruns: an existing output is neither replaced nor deleted; the log says so and `<output>.failed.txt` records
+  the failure; a later valid run removes the record. Tested (valid → invalid → valid at one path).
+- `gn_decrement_approx` replaced by `gn_decrement_source` (`stop_check_<outcome>`, `final_solve_<PCG outcome>`,
+  `not_evaluated`); the interval is the authoritative statement, the scalar always an estimate; start acceptance and EOS
+  failure mark it `not_evaluated` (conventional 0).
+- Embedding equivalence renamed interface parity (`parity_ref`): the standalone driver's exit code (0 or 2), output and
+  stop reason are checked, temporary files removed. Absolute differences on the Φ-stopped ltau 24×18 crop: 4 vs 16
+  threads 58 m max / 4.2 m rms in z, 35 / 6.6 m in z(τ=1), 0.24 % in P; hyades20 vs hyades18 90 / 6.3 m, 66 / 10 m,
+  0.39 %.

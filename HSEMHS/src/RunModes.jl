@@ -98,13 +98,32 @@ function check_output(par, cfg)
     return out
 end
 
-"""An invalid result (EOS failure, non-finite, non-positive or folded fields): logged and not written; the driver
-returns its status (exit 3). Every rank takes the same branch (the status is global)."""
-function invalid_result(logm, st)
+"""
+An invalid result (EOS failure, non-finite, non-positive or folded fields): logged and not written; the driver returns
+its status (exit 3). Every rank takes the same branch (the status is global). The output path is left as it was: a file
+already there (an earlier run's, with run.overwrite = true) is not deleted, but the log says it was not replaced, and
+rank 0 writes the failure record `<output>.failed.txt` (status, reason, messages, config, time) beside it. A later
+valid run at that path removes the record (`clear_failure_record`).
+"""
+function invalid_result(logm, st, par, out, cfg)
     st.valid && return false
-    logm("invalid result ($(st.reason)): " * join(st.messages, "; ") * "; no output written")
+    old = gcount(par, rank0(par) && isfile(out) ? 1 : 0) > 0
+    logm("invalid result ($(st.reason)): " * join(st.messages, "; ") * "; no output written" *
+         (old ? "; the existing $out is from an earlier run and was NOT replaced" : ""))
+    if rank0(par)
+        open(failure_record(out), "w") do io
+            println(io, "status = ", st.status, "\nreason = ", st.reason, "\nconfig = ", abspath(cfg.path),
+                    "\ntime = ", Dates.now(), "\noutput_not_written = ", abspath(out),
+                    "\nexisting_file_from_an_earlier_run = ", old)
+            foreach(m -> println(io, "message = ", m), st.messages)
+        end
+    end
     return true
 end
+
+failure_record(out) = out * ".failed.txt"
+"""Remove a failure record left at this output path by an earlier invalid run (rank 0, after a valid write)."""
+clear_failure_record(par, out) = (rank0(par) && isfile(failure_record(out)) && rm(failure_record(out)); nothing)
 
 """run.mode = "column-hse-ltau": hydrostatic columns in τ (P(τ), z(τ), ρ(τ)), aligned on P + B²/2μ₀."""
 function run_column_hse_ltau(cfg::Config)
@@ -115,10 +134,11 @@ function run_column_hse_ltau(cfg::Config)
         G = cfg.tau_grid
         res = solve_embedded!(s.ws, log.(s.T), s.Bx, s.By, s.Bz)
         st = res.status; status = st.status
-        invalid_result(s.logm, st) && return status
+        invalid_result(s.logm, st, s.par, out, cfg) && return status
         s.logm(@sprintf("columns: aligned on P + B²/2μ₀ = %.4e Pa (%d columns extrapolated)",
                         st.stats["align_total_pressure_Pa"], st.stats["align_extrapolated_columns"]))
         write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "column-hse-ltau", "align" => G.align))
+        clear_failure_record(s.par, out)
     finally
         free_embedded!(s.ws)
     end
@@ -139,7 +159,7 @@ function run_mhs_poisson_ltau(cfg::Config)
             BLAS.set_num_threads(1)
         end
         st = res.status; status = st.status
-        invalid_result(s.logm, st) && return status
+        invalid_result(s.logm, st, s.par, out, cfg) && return status
         s.logm(@sprintf("solve done in %d steps, Φ/Φ₀ %.3e; gauge shift %.1f km", st.steps, st.phi / st.phi0,
                         st.stats["gauge_shift_m"] / 1e3))
         write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "mhs-poisson-ltau",
@@ -147,13 +167,14 @@ function run_mhs_poisson_ltau(cfg::Config)
                        "phi_start" => st.phi0, "phi_end" => st.phi,
                        "steps" => st.steps, "align" => G.align,
                        "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement, "status" => string(st.status),
-                       "gn_decrement_approx" => Int(st.stats["gn_decrement_approx"]),
+                       "gn_decrement_source" => st.stats["gn_decrement_source"],
                        "roundoff" => st.stats["roundoff"], "phi_floor" => st.stats["phi_floor"],
                        "qual_outcome" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["outcome"] : "none",
                        "qual_lower" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["lower"] : NaN,
                        "qual_upper" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["upper"] : NaN,
                        ("work_" * k => Float64(v) for (k, v) in st.stats["work"])...,
                        "solve_seconds" => st.seconds, "ranks" => s.par.nranks, "threads" => Threads.nthreads()))
+        clear_failure_record(s.par, out)
     finally
         free_embedded!(s.ws)
     end
@@ -190,7 +211,7 @@ function run_mhs_poisson_z(cfg::Config)
         Bx, By, Bz = (zyx_of(read_field(spec, par, nm, :field), b) for nm in (I.bx, I.by, I.bz))
         res = solve_embedded!(ws, log.(T), Bx, By, Bz)
         st = res.status; status = st.status
-        invalid_result(logm, st) && return status
+        invalid_result(logm, st, par, out, cfg) && return status
         logm("column HSE: " * join(["$k = $v" for (k, v) in sort(collect(st.stats); by = first)], ", "))
         z = spec.z
         zt1 = res.z_tau1
@@ -211,6 +232,7 @@ function run_mhs_poisson_z(cfg::Config)
                              "units" => "SI: Pgas Pa, rho kg m-3, T K, B T, z m (top first); arrays Julia (x, y, z), h5py (z, y, x)")
         merge!(a, view_attrs(vw))
         coop_write(par, out, slabs, small, a)
+        clear_failure_record(par, out)
         logm("wrote $out")
     finally
         free_embedded!(ws)

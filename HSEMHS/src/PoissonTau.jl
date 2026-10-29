@@ -1155,7 +1155,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
-        info = (reason = :eos_out_of_envelope, gn_decrement = NaN, gn_decrement_approx = true, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
+        info = (reason = :eos_out_of_envelope, gn_decrement = NaN, gn_decrement_source = :not_evaluated, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
                 lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false, weights = nothing, stop_check = nothing,
                 work = WORK0, phi_floor = NaN, roundoff = :none)
         return u, copy(z0), NaN, NaN, 0, kc, info
@@ -1175,7 +1175,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     reason = :max_steps
     Φfl = phi_floor(pr, u)
     if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0 || Φ0 <= Φfl
-        info = (reason = :converged, gn_decrement = 0.0, gn_decrement_approx = false, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
+        info = (reason = :converged, gn_decrement = 0.0, gn_decrement_source = :not_evaluated, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
                 rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0, weights = wts, stop_check = nothing,
                 work = merge(WORK0, (evals = 2, total_s = time() - tstart)), phi_floor = Φfl,
                 roundoff = Φ0 <= Φfl ? :start : :none)
@@ -1311,9 +1311,9 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     logf("end: " * bands(pr, lt, Hb, dzf))
     # stationarity at the returned state (pr holds its evaluation): undamped Gauss–Newton step δ from (JᵀWJ + ereg) δ =
     # −JᵀWR and the predicted relative decrease δ·(−JᵀWR)/Φ. Diagnostics only: u and z are not changed.
-    gnd = NaN; gn = NaN; its = 0; rel = NaN; cfin = zeros(Int, 2); tf = time(); fin_its = 0; gapprox = true
+    gnd = NaN; gn = NaN; its = 0; rel = NaN; cfin = zeros(Int, 2); tf = time(); fin_its = 0; gsrc = :not_evaluated
     if qinfo !== nothing && qinfo.step == steps && qinfo.outcome != :invalid   # a qualification at the returned state
-        gnd = qinfo.pred; gn = qinfo.grad_norm; its = qinfo.its; rel = qinfo.true_rel; gapprox = qinfo.outcome != :qualified
+        gnd = qinfo.pred; gn = qinfo.grad_norm; its = qinfo.its; rel = qinfo.true_rel; gsrc = Symbol("stop_check_", qinfo.outcome)
         logf(@sprintf("stationarity: from the stop check at step %d, decrement in [%.3e, %.3e]", steps, qinfo.lower, qinfo.upper))
     elseif stationarity
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
@@ -1323,11 +1323,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit, cnt = cfin, flag = pfl); fin_its = its
         pr.prec = p0
         pfl[] in PCG_ABNORMAL && logf("stationarity: PCG ended $(pfl[])")
-        gnd = gdot(par, δ, rhs) / Φ; gapprox = pfl[] != :converged && pfl[] != :start_within_tol && pfl[] != :zero_rhs
+        gnd = gdot(par, δ, rhs) / Φ; gsrc = Symbol("final_solve_", pfl[])
         logf(@sprintf("stationarity: Gauss–Newton decrement %.3e%s, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd,
-                      gapprox ? " (approximate: CG ended $(pfl[]))" : "", gn, its, rel))
+                      pfl[] == :converged ? "" : " (estimate from a solve that ended $(pfl[]))", gn, its, rel))
     end
-    info = (reason = reason, gn_decrement = gnd, gn_decrement_approx = gapprox, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
+    info = (reason = reason, gn_decrement = gnd, gn_decrement_source = gsrc, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
             rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo,
             work = (cg = ncg, solves = nsolve, aprod = cstep[1], minv = cstep[2], evals = neval, restores = nrest,
                     qual_cg = nqual, qual_aprod = cqual[1], qual_minv = cqual[2], final_cg = fin_its, final_aprod = cfin[1],
