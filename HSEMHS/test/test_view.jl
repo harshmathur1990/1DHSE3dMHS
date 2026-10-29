@@ -66,6 +66,26 @@ include("view_helpers.jl")
         @test maximum(abs, dz .- mean(dz)) < (mode == :column_hse_ltau ? 1e-6 : 1.0)
     end
 
+    # column HSE as a delivered mode (Codex round 6, step 5). It balances each line of sight on its own (dP/dτ_LOS =
+    # μ g/χ, heights vertical): an inclined input is solved ray by ray exactly as plane-parallel, with no horizontal
+    # force balance. Every angle returns valid fields: finite, P, ρ, χ > 0, z decreasing and τ increasing down each ray,
+    # mean z(τ_LOS = 1) = 0; a temperature outside the EOS table comes back as a failed status, not an exception.
+    @testset "column HSE delivery (μ $μ, φ $φ)" for (μ, φ) in ((1.0, 0.0), (0.8, 90.0), (0.5, 45.0), (0.3, 0.0), (0.2, 200.0))
+        a = solve(mk(:column_hse_ltau, H.ViewOptions(mu = μ, azimuth_deg = φ, geometry = :inclined)))
+        b = solve(mk(:column_hse_ltau, H.ViewOptions(mu = μ)))
+        @test a.status.valid && a.status.status == H.converged && a.status.reason == :converged
+        for nm in (:lnP, :z, :rho, :chi500, :z_tau1); @test isequal(getfield(a, nm), getfield(b, nm)); end
+        @test all(isfinite, a.lnP) && all(isfinite, a.z) && all(>(0), a.rho) && all(>(0), a.chi500)
+        @test all(<(0), diff(a.z; dims = 1)) && all(>(0), diff(a.tau500; dims = 1))
+        @test abs(mean(a.z_tau1)) < 1e-6
+    end
+    @testset "column HSE failure outcome" begin
+        ws = mk(:column_hse_ltau, H.ViewOptions(mu = 0.5, geometry = :inclined))
+        lTbad = copy(fx.lnT); lTbad[end, 1, 1] = log(1e9)                     # far above the table
+        r = H.snapshot(H.solve_embedded!(ws, lTbad, fx.Bx, fx.By, fx.Bz)); H.free_embedded!(ws)
+        @test !r.status.valid && r.status.status == H.eos_failure && r.status.reason == :eos_out_of_envelope
+    end
+
     @testset "inclined τ on the height grid: rays through grid points (φ $φ)" for φ in (0.0, 45.0, 90.0, 180.0, 225.0)
         par = H.slab_par(comm, 12, 10, 9)
         et, ez = shear_exact_error(par, φ)
