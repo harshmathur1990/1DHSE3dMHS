@@ -11,6 +11,7 @@ table_file = "cache/eos_table_fullz.h5"
 [tau_grid]
 align = "ptot"
 [poisson]
+stop = "phi"
 logtau_cut = -4.0
 max_steps = 30
 rtol = 1.0e-4

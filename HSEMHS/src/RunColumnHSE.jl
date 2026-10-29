@@ -65,7 +65,7 @@ function run_column_hse(cfg::Config)
         res.z_tau1 .= permutedims(zt); res.tau_top_method .= permutedims(tm)
         logm(@sprintf("τ along inclined rays: μ %.4f, azimuth %.1f°, t = (%.4f, %.4f)", o.mu, vw.azimuth_deg, tsl...))
     end
-    logm("integrated: " * join(["$k = $v" for (k, v) in sort(collect(res.stats))], ", "))
+    logm("integrated: " * join(["$k = $v" for (k, v) in sort(collect(res.stats); by = first)], ", "))
     F = res.fields
     Rx, Ry, Rz = column_residual(par, ops, F["Pgas"], F["rho"], g)
     logm("residual done")

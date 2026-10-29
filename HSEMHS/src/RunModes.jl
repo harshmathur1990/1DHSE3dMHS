@@ -179,7 +179,7 @@ function run_mhs_poisson_z(cfg::Config)
         Bx, By, Bz = (zyx_of(read_field(spec, par, nm, :field), b) for nm in (I.bx, I.by, I.bz))
         res = solve_embedded!(ws, log.(T), Bx, By, Bz)
         st = res.status
-        logm("column HSE: " * join(["$k = $v" for (k, v) in sort(collect(st.stats))], ", "))
+        logm("column HSE: " * join(["$k = $v" for (k, v) in sort(collect(st.stats); by = first)], ", "))
         z = spec.z
         zt1 = res.z_tau1
         zq = gquantiles(par, zt1, [0.01, 0.5, 0.99]) ./ 1e3

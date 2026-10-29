@@ -23,7 +23,7 @@ include("embedded_helpers.jl")
         end
         @test res.status.valid
         # column-hse-z: the slab path against the 2-D-block column_hse output (different decomposition, same kernels)
-        @test ref_error(res, load_ref(ref_name(mode), tag, :)) <= 1e-12
+        @test ref_error(res, load_ref(ref_name(mode), tag, :; path = ref_file(mode, tag))) <= 1e-12
         if H.poisson_mode(mode)
             @test res.status.steps > 0 && isfinite(res.status.gn_decrement) && res.status.gn_decrement >= 0
             @test res.status.reason in (:converged, :max_steps, :no_descent)
@@ -183,9 +183,13 @@ include("embedded_helpers.jl")
     end
 
     @testset "allocations per warmed-up solve" begin
-        # budget in units of one local volume of Float64 (nk·ny·nx·8 bytes); see reports/embedding_api_gate.md
-        # (measured on the 24x18 fixtures × 1.5; the Poisson kernels allocate temporaries every CG iteration)
-        budgets = Dict(:column_hse_z => 3, :column_hse_ltau => 8, :mhs_poisson_z => 1700, :mhs_poisson_ltau => 30500)
+        # budget in units of one local volume of Float64 (nk·ny·nx·8 bytes); see reports/embedding_api_gate.md. The
+        # threaded kernels allocate per-thread scratch (column chunks, FFT line buffers), so the budget is a + b·threads,
+        # fitted on the 24x18 fixtures at 1, 4, 8 and 16 threads (Julia 1.13.1, 29 Oct 2026; at 4 threads the gate's
+        # 1.8 / 4.7 / 1114 / 20282) and × 1.5; the Poisson kernels allocate temporaries every CG iteration
+        ab = Dict(:column_hse_z => (1.1, 0.14), :column_hse_ltau => (4.5, 0.01), :mhs_poisson_z => (620.0, 90.0),
+                  :mhs_poisson_ltau => (17300.0, 520.0))
+        budgets = Dict(m => 1.5 * (a + b * Threads.nthreads()) for (m, (a, b)) in ab)
         for mode in H.EMBEDDED_MODES
             fx = load_fixture(mode, "24x18", :)
             o = ref_options(mode, fx)

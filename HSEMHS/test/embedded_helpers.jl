@@ -25,9 +25,31 @@ function load_tau_fixture(tag, ir)
     end
 end
 
-"""Stored standalone (pre-refactor) result on global x range `ir`, as (vertical, y, x) arrays."""
-function load_ref(mode, tag, ir)
-    p = joinpath(EREF, "$(mode)_$tag.h5")
+"""
+Standalone result file for (mode, tag): the stored one (test/fixtures/embedded_ref, made by scripts/run.jl with
+configs/<mode>_<tag>.toml), or, for a Poisson mode whose stored file was made with another thread count (the iterative
+solves depend on it through BLAS), the standalone driver run now in-process with the same config at this thread count.
+"""
+function ref_file(mode::Symbol, tag)
+    n = "$(ref_name(mode))_$tag"; p = joinpath(EREF, "$n.h5")
+    H.poisson_mode(mode) || return p
+    th = h5open(f -> haskey(attributes(f), "threads") ? read(attributes(f)["threads"]) : Threads.nthreads(), p)   # no record: use it
+    th == Threads.nthreads() && return p
+    out = tempname() * ".h5"; cfg = tempname() * ".toml"
+    write(cfg, replace(read(joinpath(EREF, "configs", "$n.toml"), String), r"output = \".*\"" => "output = \"$out\""))
+    b0 = BLAS.get_num_threads()
+    try
+        cd(() -> H.run_config(cfg), joinpath(@__DIR__, ".."))
+    finally
+        BLAS.set_num_threads(b0)
+    end
+    @info "standalone reference made now (stored one: $th threads, this run: $(Threads.nthreads()))" n
+    return out
+end
+
+"""Standalone result (`ref_file`) on global x range `ir`, as (vertical, y, x) arrays."""
+function load_ref(mode, tag, ir; path = joinpath(EREF, "$(mode)_$tag.h5"))
+    p = path
     h5open(p, "r") do f
         if mode == "column-hse-z"
             g(nm) = read(f["output/$nm"])[:, :, ir]
