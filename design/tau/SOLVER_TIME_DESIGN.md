@@ -210,8 +210,9 @@ which tan θ amplifies. Options:
 | μ0.3 ray fixed 0.01 / adaptive | 5.30 / 5.44e-3 | 41.7 / 39.4 km | | 599 / 585 s |
 | D2 μ1 / μ0.3 vertical / μ0.3 ray | 2.55e-2 / 5.5e-5 / 5.1e-3 | 22.5 / 21.0 / 24.1 km | −74 / – / – | 2472 s (μ1) |
 
-Damped block runs are fast per step but leave the large-scale heights where they are: Φ is flat along those modes and
-only the Fourier preconditioner moves them.
+Damped block runs are fast per step but, in these 40-step runs, left the large-scale heights where they were: Φ is flat
+along those modes, and the damped, iteration-capped block solves did not move them while the Fourier solves did. This is
+an observation of these runs, not an algebraic property: an exact block-Jacobi-preconditioned solve reaches every mode.
 
 ### 6.8 Common-objective reference runs (80 steps, Fourier, η ≤ 0.01, CG cap 400, `common_weights`, 29 Oct)
 
@@ -230,7 +231,9 @@ weights for both. Φ in units of the column-HSE start's Φ₀.
 - μ1: both starts reach the same heights; the block endpoint's 36.7 km was a stall in flat large-scale modes.
 - μ0.3: none converged (pred 1e-4 – 2e-3 at step 80, CG at the 400 cap with relative residual 0.3–0.7). Φ keeps
   falling slowly while the z(τ=1) spread widens (p1/p99 −22 / +54 km at step 10 → −47 / +80 km at step 79) and the
-  height error grows from 21–24 km (D2 at 40 steps) to 26–30 km. At μ0.3 lower Φ does not mean better heights.
+  height error grows from 21–24 km (D2 at 40 steps) to 26–30 km. On this input, lower Φ at μ0.3 did not mean better
+  heights against the Bifrost truth. The Bifrost truth is not a discrete equilibrium of the solver's model (§6.11), and
+  on a consistent known equilibrium the same solver does not drift (§6.12).
 - The μ0.3 vertical block-endpoint failure: every trial point of step 2 left the EOS table (32 of 32, μ up to 4e3;
   damping by multiples of ereg barely changes the step). With backtracking continued while out of the table (commit
   92d029e) the run proceeds at α ≈ 1e-3, ρ ≈ 1: a feasibility barrier, not a model failure.
@@ -258,7 +261,10 @@ weights for both. Φ in units of the column-HSE start's Φ₀.
 | exact smallest 64 eigenvectors | 15 / 24 | 33 / 51 |
 
   The energy extension lowers the coarse vectors' Rayleigh quotients (exact 5–10× lower) but changes the iterations
-  by a few. Even the exact eigenvectors give 3×; a fixed coarse space cannot hold a band that is 16 % of the unknowns.
+  by a few. The gains depend on the tolerance: at μ0.3 vertical the cut-height modes give 1.1× at 1e-3 but 2.2× at
+  1e-5, and the exact 64 eigenvectors 3.2× at 1e-3 and 7.5× at 1e-5. The "λ < 0.1 λmax" counts depend on that
+  threshold: they describe this operator in this metric (block M), not an invariant number of undetermined physical
+  modes.
 
 ### 6.10 Block CG against crop size (10 D2 steps on each crop; tol 1e-3; Marquardt damping 0 / 0.01 / 0.1)
 
@@ -274,3 +280,128 @@ weights for both. Φ in units of the column-HSE start's Φ₀.
 Each crop has its own state (the larger crops are further from converged: pred 0.07–0.34 against ≤ 0.05), so this is
 not a clean scaling test. Undamped, the μ0.3 iterations grow with the crop; with damping 0.1 they stay at 22–50 at
 every size and μ.
+
+Note on the regularisation: Φ = Σ wc (Rx² + Ry²) + wf Rz² does not contain ereg. ereg enters only the step operator
+A = JᵀWJ + D(ereg), where it adds curvature to the linear model of each step; it does not change Φ or its minimisers.
+
+### 6.11 The Bifrost truth against the solver's model (`truth_consistency.jl`; truth starts, 20 steps; 29 Oct)
+
+These measure the synthetic Bifrost inputs, not the solver. They hold the truth pressures and the truth cut heights
+fixed, while a solve may change both, so they are not lower bounds on the error a solve can reach.
+
+| at the truth (T, P), cut −4 (μ1) / −3.5 (μ0.3) | μ1 | μ0.3 |
+|---|---|---|
+| ln ρ_EOS(T, P_truth) − ln ρ_truth | 0.011 | 0.011 |
+| solver Δz per level − truth Δz, log τ > 0 (relative rms) | 17 % | 38 % |
+| z(τ_LOS = 1) by the solver map from the truth cut height − truth (rms; strong, quiet) | 23.6 km (12.9, 24.0) | 55 km (70, –) |
+| strong − quiet shift from that map | +0.6 km | −15.1 km |
+| cut ln P, column HSE − truth (rms) | 0.124 | 0.166 |
+
+Candidate sources, not yet separated: the snapshot density against the EOS; the generator's interpolation of χ from the
+geometric grid against the solver's χ(interpolated T, solved P); the trapezoid τ–z quadrature; the fixed column-HSE cut
+pressure and upper geometry; and forces the snapshot does not balance (it is not static). The 23.6 km map discrepancy
+and the 22.6 km μ1 solve error have similar size, but they are different error fields; that they are related is a
+hypothesis until their gauge-aligned maps are compared.
+
+Truth starts (common weights; Φ in units of the column-HSE start's Φ₀): from the truth shifted per column to the
+column-HSE cut pressure, μ1 ends at the column start's heights (22.4 km, Φ 0.024 against 0.026), which shows
+repeatability for these starts, not uniqueness. At μ0.3 vertical the unshifted truth (with the column-HSE cut, so a
+pressure jump at the first solved face) passes 13.6 km at step 5 and ends at 35.6 km with Φ 5.3e-5 (column start 4.0e-5
+at 80 steps). Neither start is the original equilibrium with its own boundary, and a non-stationary trajectory passing a
+low-error point does not identify a stopping time. The shifted starts move every level by the cut mismatch (rms
+0.12–0.17 in ln P) and begin 200+ km off.
+
+### 6.12 Known-equilibrium control (`make_mhs_control.jl`, 29 Oct; logs `out/control/` on the cluster)
+
+**Case.** An exact 2-D Grad–Shafranov atmosphere, x-periodic and y-invariant:
+- box 12 Mm, period 3 Mm, NY 8;
+- pressure deficit P = P₀(1 − 0.3 cos² kx), |B| up to 1.2 kG at z = 0;
+- Eddington–Hopf reference, fine dz 250 m;
+- mapped onto rays like `make_slanted_tau.jl`.
+
+The truth depression contrast between the lowest and highest 20 % of z(τ=1) is −65 km (μ1) and −53 km (μ0.3).
+
+**Construction checks.**
+- Centred-difference force balance: max |R_x|/ρg 7e-5 and |R_z|/ρg 5e-4 (rms 2e-5); the maximum is at z ≈ −70 km, where T₀(z) has a kink.
+- ∇·B: 3e-5 of the largest term.
+- The EOS inversion succeeds everywhere, with ln P at least 12 inside the table.
+- Generator refinement (dz 250 → 125 → 62.5 m) changes z(τ=1) by ≤ 5 m and ln P by ≤ 3e-5, both second order. That is negligible against the solver errors below.
+- The field-free case (D = 0) is recovered exactly at μ1 and μ0.3: Φ reaches round-off in 2 steps.
+
+**Refinement.** μ1 uses ray balance with cut −4; μ0.3 uses vertical balance with cut −3.6, which lies on every grid. The
+tracks are:
+- **bt**: the experimental truth boundary (the truth's fixed levels), started from the exact truth;
+- **col**: the production column-HSE boundary;
+- **prod**: column boundary with the production defaults (gn_tol 1e-3, 25 steps).
+
+z1 is the rms z(τ_LOS = 1) error with the mean removed.
+
+| grid (nx, Δlog τ) | μ1 bt: defect / z1 / ΔlnP [0,1.5) | μ0.3 bt: defect / z1 / ΔlnP [0,1.5) | col: mean z1 offset; ΔlnP [−4,−2) (μ1 / μ0.3) |
+|---|---|---|---|
+| 128, 0.2 | 2.0e-7 / 2.68 km / 0.019 | 4.8e-7 / 0.79 km / 0.022 | −51 / −119 km; 0.054 / 0.063 |
+| 256, 0.2 | 1.9e-7 / 2.91 / 0.014 | 5.3e-7 / 0.32 / 0.018 | −50 / −119; 0.054 / 0.063 |
+| 128, 0.1 | 7.6e-8 / 0.57 / 0.005 | 2.7e-7 / 1.11 / 0.015 | −51 / −121; 0.049 / 0.056 |
+| 256, 0.1 | 7.1e-8 / 0.72 / 0.003 | 3.2e-7 / 0.14 / 0.006 | −51 / −120; 0.049 / 0.056 |
+| 512, 0.1 | 7.1e-8 / 0.78 / 0.002 | 4.2e-7 / 0.11 / 0.007 | −51 / −120; 0.049 / 0.056 |
+| 256, 0.05 | 3.2e-8 / 0.15 / 0.0006 | 9.7e-8 / 0.19 / 0.002 | −51 / −120; 0.046 / 0.052 |
+| 512, 0.05 | 3.1e-8 / 0.13 / 0.0004 | 1.3e-7 / 0.03 / 0.001 | −51 / −120; 0.046 / 0.052 |
+
+The defect is the rms residual of the exact truth on the τ grid, √(Φ/ΣW), with the run's own weights. It is almost all
+in the vertical (along-column) residual.
+
+**What converges.**
+- **μ1:** the error is set by Δlog τ: about 4× per halving in height and ln P (second order). Horizontal refinement
+  changes nothing.
+- **μ0.3:** both directions matter, and single-direction refinements are not monotone; the horizontal and τ error
+  terms partly cancel. Along the joint path (128, 0.2) → (256, 0.1) → (512, 0.05), z1 goes 0.79 → 0.14 → 0.03 km and
+  ΔlnP 0.022 → 0.006 → 0.001, roughly 4–5× per step.
+- **The truth's defect converges more slowly than the solution:** about 1.2–1.4 orders per halving at μ1. At fixed
+  Δlog τ it does not fall with nx at μ0.3, in either balance; the ray balance gives 3.6–4.0e-7 at nx 128–512. The
+  one-sided column derivatives at the ends are the likely reason; this is not yet checked.
+
+**From the truth or from column HSE, the bt solve reaches the same state.** Starts compared: the exact truth, and column
+HSE shifted to the truth cut pressure, at μ1 and μ0.3 (nx 256, dl 0.1).
+
+**Boundary bias (col against bt).** The column-HSE cut boundary adds:
+- a near-uniform height offset of −51 km at μ1 and −120 km at μ0.3;
+- ΔlnP 0.05–0.06 near the cut.
+
+Neither changes under refinement, as expected for a boundary model that differs from this magnetostatic equilibrium.
+The interior errors (z1 with the mean removed, the depression contrast) match bt. With the column boundary, Φ also has
+a slow tail at μ0.3: Φ/Φ₀ 1.34e-3 → 1.28e-3 over 15 steps with unchanged heights, half of the vertical residual on the
+first 3 faces. With the truth boundary Φ converges in a few steps.
+
+**No drift.**
+- In every run the heights reach their final error by step 2–5 and stay there for up to 80 steps.
+- Both balances behave the same at μ0.3: on the 256/0.1 grid the ray balance gives 0.2 km and the vertical balance
+  0.1 km.
+- Perturbations of the start were not run on the control.
+
+**Time to converge with the production defaults** (gn_tol 1e-3, 25 steps, cg_maxit 80; one rank, 32 threads; small
+grids, so setup is a large part of the wall time):
+
+| grid | μ1 col | μ0.3 col | μ1 bt | μ0.3 bt |
+|---|---|---|---|---|
+| 128, 0.2 / 256, 0.2 | 5 steps, qualified, 20 / 24 s | 6 / 8 steps, qualified, 23 / 30 s | | |
+| 128, 0.1 / 512, 0.1 | 5, qualified, 25 / 21 s | 6 / 11, qualified, 28 / 38 s | | |
+| 256, 0.1 | 5, qualified, 15 s | **25, max_steps, 38 s** | 4, qualified, 16 s | 8, qualified, 25 s |
+| 256, 0.05 | 5, qualified, 27 s | **25, max_steps, 81 s** | 4, qualified, 17 s | 8, qualified, 34 s |
+| 512, 0.05 | 5, qualified, 18 s | 10, qualified, 63 s | | |
+
+- Every μ0.3 step uses the full 80 CG iterations (relative residual 0.01–0.04), against 5–9 at μ1.
+- With the truth boundary μ0.3 qualifies in 8 steps against 4 at μ1.
+- With the column boundary, the slow Φ tail of the boundary compromise keeps the inexact (capped) steps' decrement near
+  0.04 on two grids, so the stop never qualifies in 25 steps, although the heights are final by step 3.
+
+**Stop-rule edge case.** When the start is already exact (field-free), Φ reaches round-off, the relative decrease is
+undefined, and the solve ends `no_descent`. The embedding reports that as status `stalled` for a perfect solve.
+
+**Reading.** On a known equilibrium consistent with the solver's model:
+- the solver converges at μ0.3 to the truth at second order, without the height drift seen on the Bifrost input, in
+  about 2× the Gauss–Newton steps of μ1;
+- each μ0.3 step costs about 10× the linear iterations;
+- the remaining systematic error is the column-HSE cut boundary.
+
+This supports, but does not prove, that the Bifrost μ0.3 drift comes from the input and boundary (§6.11) rather than
+from the objective. The control is 2-D (y-invariant, azimuth 0). Mixed derivatives and nonzero t_y, for example with a
+rotated A(k_x x + k_y y, z), are not yet tested.
