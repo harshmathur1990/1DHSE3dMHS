@@ -18,6 +18,7 @@ The goal and constraints are unchanged:
 | 793c0be | `feas_scale` (finding 3) and `pcg!` (finding 4); see the details below. Tests: block 92/92, warm 47/47, view 87/87, MPI view on 2/3/4 ranks. |
 | b443be6 | `make_mhs_control.jl` (the known-equilibrium control), `measure_steps boundary=truth:FILE`, `phi_v3`, `control_refine.py`, `measure_analyse.py` control classes; details below. |
 | 3e594dd, dfc9d11 | design §6.7–6.12 corrections and results, `control_summary.py`, `error_maps.py`. |
+| 2f4a2ff | Bifrost truth-boundary runs (§3) in design §6.11, and this brief. |
 
 **793c0be, `feas_scale` (finding 3).** Each moving cell is bounded against the edge it moves toward:
 - before the safety bound (two probe widths): the fraction to that bound;
@@ -165,8 +166,9 @@ balances.
 - A derived physical metric is not motivated by this evidence.
 
 **(b) Linear cost at small μ: a crop multilevel prototype.**
-- On the control and on Bifrost, μ0.3 steps need about 10× the CG iterations of μ1 and hit the cap.
-- This is where the μ-dependence of time now sits.
+- On the control, μ0.3 steps need about 10× the CG iterations of μ1 (the 80 cap against 5–9).
+- On Bifrost both μ reach the 400 cap later in the solve, so the full-cube μ-dependence is less clear-cut there.
+- On a consistent problem, this is where the μ-dependence of time now sits.
 - Pass criterion: on the control grids and on Bifrost crops, CG iterations per Gauss–Newton step at μ0.3 within
   about 2× of μ1, at both 1e-3 and 1e-5, with unchanged endpoints.
 
