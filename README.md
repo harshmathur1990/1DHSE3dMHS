@@ -6,10 +6,13 @@ geometric-height grid (a simulation snapshot such as Bifrost) or on an optical-d
 inversion). The physics goes from independent hydrostatic columns to progressively more coupled magnetohydrostatic (MHS)
 approximations. The Julia package lives in `HSEMHS/`; this file is the entry point.
 
-**Status (24 Oct 2026).** All five modes below are implemented, run with MPI + threads and are documented. That is not
-the same as scientifically converged results: see [Stopping, status and what "finished" means](#stopping-status-and-what-finished-means)
-and [Known limitations](#known-limitations). Of the three iterative modes, only `mhs-poisson-ltau` has met its
-stopping rule on the full production cube (under a superseded rule); `mhs-poisson-z` reached its step limit while still
+**Status (29 Oct 2026, branch `solver-time`, release candidate for the viewing angle).** All five modes below are
+implemented, run with MPI + threads and are documented; the two τ-grid modes take a viewing angle (μ, azimuth; see
+[Viewing angle](#viewing-angle-τ-grid-modes)). That is not the same as scientifically converged results: see
+[Stopping, status and what "finished" means](#stopping-status-and-what-finished-means), the
+[release result table](#release-result-table-τ-grid-modes-29-oct-2026) and [Known limitations](#known-limitations).
+On the full Bifrost cube `mhs-poisson-ltau` returns valid atmospheres at every μ tested but **does not meet its stopping
+rule within the default 25 steps at any μ** (status `max_iter`); `mhs-poisson-z` reached its step limit while still
 decreasing, and `full-mhs-z` has not reached its stopping rule in any production run.
 
 ## Conventions
@@ -167,7 +170,7 @@ slab modes need NX/R ≥ 2.
 | `column-hse-ltau`, `mhs-poisson-z`, `mhs-poisson-ltau` | x slabs, px = R, py = 1 (forced) | ignored |
 | `full-mhs-z` | 2-D blocks chosen by `bif_problem` | ignored |
 
-**Other thread controls.** BLAS: one thread by default (set in `HSEMHS.__init__`); `mhs-poisson-ltau` raises it to
+**Other thread controls.** BLAS: one thread by default (set by `scripts/run.jl`; the embedding API leaves it to the caller); `mhs-poisson-ltau` raises it to
 `min(32, T)` for its solve and resets it to 1. FFTW: single-threaded plans, applied from Julia threads (FFTW's own
 threading crashes under Julia 1.13). No global environment variable governs all kernels.
 
@@ -204,8 +207,8 @@ sections or keys are rejected. Keys used per mode:
 |---|---|---|
 | `column-hse-z` | `[input]` (names, `crop_z_m`), `physics.g`, `[eos]`, `[column_hse]`, `[tau]`, `[parallel]`, `output.compression`, `run.overwrite` | |
 | `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed |
-| `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file}`, `tau_grid.align`, `run.overwrite` | other `[input]` keys ignored |
-| `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, max_steps, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0}` | |
+| `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file}`, `tau_grid.align`, `[view]`, `run.overwrite` | other `[input]` keys ignored |
+| `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, cut_frame, max_steps, stop, gn_tol, gn_consec, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0, lm, forcing, cg_cap, eta_min, eta_max, precond, klow, damping}` and `[view]` | solver settings: [Viewing angle](#viewing-angle-τ-grid-modes) |
 | `full-mhs-z` | `input.file`, `eos.table_file`, `run.output` (a **directory**), `full_mhs.*` | everything else is not forwarded: `physics.g`, `[column_hse]`, `[mhs]`, `[parallel]`, `[tau]`, `[output]`, `run.overwrite`, input dataset names; P_ref and g come from the file attributes |
 
 `full-mhs-z` runs the older M5 driver: `scripts/run.jl` validates the config, exports `MHS_INPUT`, `MHS_EOS_TABLE`,
@@ -213,6 +216,64 @@ sections or keys are rejected. Keys used per mode:
 `m5h_fullres.jl` and calls its `main`. That is why this mode cannot go through `run_config`. Run directly,
 `m5h_fullres.jl` has different defaults (5 % relative σ, trust region, height stop: the M5h configuration); the mode
 config defaults are the M5i choice (uniform 5 G, line search, Φ stop).
+
+## Viewing angle (τ-grid modes)
+
+`[view]` (or `ViewOptions` in the embedding API) sets the line of sight: `mu` = cos θ (0 < μ ≤ 1), `azimuth_deg` = φ
+from +x toward +y, `geometry` = `plane_parallel` (default) or `inclined`. Design: `design/tau/VIEWING_ANGLE_DESIGN.md`.
+
+**Input contract (μ < 1).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
+off-centre Stokes profiles returns), on a **regular, deprojected footprint grid** in the local solar frame (x, y in metres;
+dx, dy are footprint spacings: a sky pixel p becomes p perpendicular to the tilt and p/μ along it). B is B_x, B_y, B_z in
+the local frame (z vertical), already disambiguated. The footprint is where the ray meets the gauge surface mean
+z(τ_LOS = 1) = 0. Resampling sky pixels and transforming the field are the caller's job. μ = 1 is exactly the vertical view
+(bitwise, any geometry).
+
+**Geometries.** `plane_parallel`: every column vertical, τ_LOS = τ_vertical/μ (the RH 1.5-D convention).
+`inclined`: the nodes of a ray sit at x = ξ + t_x z, y = η + t_y z with t = tan θ (cos φ, sin φ).
+
+**`column-hse-ltau`** balances each line of sight on its own (d ln P/d ln τ_LOS = μ g τ ρ/(χ P), heights vertical). An
+inclined input gives exactly the plane-parallel result: no horizontal force balance is claimed. About 1 min for the
+504² × 95 cube on one node.
+
+**`mhs-poisson-ltau`** solves the force balance with the slanted geometry below the cut. `poisson.cut_frame = "vertical"`
+(default) puts the cut at the vertical depth log₁₀ τ = `logtau_cut` (log₁₀ τ_LOS = `logtau_cut` − log₁₀ μ); `"los"` on
+the line-of-sight axis.
+
+**Solver settings** (`[poisson]`, `PoissonTauOptions`). Configured defaults (what a config without these keys runs):
+
+| key | default | meaning |
+|---|---|---|
+| `max_steps` | 25 (0 in a config = this default) | outer Gauss–Newton steps |
+| `stop`, `gn_tol`, `gn_consec` | `gn`, 1e-3, 2 | stopping rule (see below) |
+| `lm` | `alpha` | damping update: `alpha` (from the step scale), `gain` (gain ratio), `fixed` |
+| `forcing` | `fixed` | CG accuracy: `fixed` (`cg_tol` 1e-3, `cg_maxit` 80) or `ew` (Eisenstat–Walker η ∈ [`eta_min`, `eta_max`] = [0.005, 0.1], at most `cg_cap` = 200 iterations) |
+| `precond` | `fourier` | `fourier` (layer-median Fourier modes), `block` (exact column blocks), `hybrid`, or `switch` (Fourier until a CG solve ends at its iteration limit, column blocks after) |
+| `dc_cap_m` (`du_cap`: embedding only) | 3e5 m, 2 | largest change per step of a column height / of ln P (whole-step scaling) |
+
+The **benchmark settings** of the result table below ("D2") are `lm = "gain"`, `forcing = "ew"`, `cg_cap = 200`, with
+`precond = "fourier"` (baseline) or `"switch"`; they are not the configured defaults. `switch` is opt-in: 1.9–4× faster
+for the same 25-step budget on the Bifrost cube, about +1.5 GB per rank. Example (`config/modes/mhs-poisson-ltau.toml`):
+
+```toml
+[view]
+mu = 0.3
+azimuth_deg = 0.0
+geometry = "inclined"
+[poisson]
+logtau_cut = -4.0
+lm = "gain"
+forcing = "ew"
+precond = "switch"
+```
+
+**Embedding** (`prepare_embedded(comm, :mhs_poisson_ltau; …, poisson = PoissonTauOptions(…), view = ViewOptions(…))`,
+then `solve_embedded!(ws, lnT, Bx, By, Bz; start = :column_hse | :previous)`): the status carries the stop reason,
+`stats["work"]` (operator and preconditioner products, CG iterations, abnormal CG exits, `switch_step`, seconds),
+`stats["stop_check"]` (qualification outcome and interval), `stats["roundoff"]`, `stats["gn_decrement_approx"]`. A warm
+start (`:previous`) restarts the preconditioner policy (with `switch` it can change to blocks at its first capped solve),
+and takes the objective's weights from its own start, so warm and cold solves of the same cube minimise slightly
+different objectives. On the Bifrost cube the warm start gave no saving (table below).
 
 ## Stopping, status and what "finished" means
 
@@ -223,16 +284,18 @@ diagnostics but do not stop any mode in its documented configuration.
 |---|---|---|
 | `column-hse-z`, `column-hse-ltau` | none (direct integration) | — |
 | `mhs-poisson-z` | (Φ_prev − Φ_new)/Φ_prev < `rtol` (1e-4) on `n_consec` (3) consecutive accepted steps | `max_steps` (100); stops early if no decrease is found along a step |
-| `mhs-poisson-ltau` | same definition and defaults | `max_steps` (100); stops if no damping level gives a decrease |
+| `mhs-poisson-ltau` | `stop = "gn"` (default): the predicted relative decrease of a Gauss–Newton step < `gn_tol` (1e-3) on `gn_consec` (2) steps, then **qualified** at the returned state: an interval [L, U] for the regularised decrement must lie below `gn_tol` (`stop_check`, solved with the column-block preconditioner); `stop = "phi"`: the rule above | `max_steps` (25); stops if no damping level gives a decrease (`no_descent`, or `domain_limited` at the EOS-table edge); an undecided qualification ends `unresolved` |
 | `full-mhs-z` | \|Φ_prev − Φ_new\|/Φ_new < `phi_rtol` (1e-6) on 3 consecutive accepted steps | wall time, `STOP` file, line-search failure (30 halvings); `stop = "dz"` (height) is a retained historical option |
 
 Each linear solve has its own PCG tolerance and iteration cap; reaching the cap does not stop the outer iteration.
 
-**Exit status is not numerical convergence.** `run_config` exits 0 for `converged`, 2 `stalled`/`max_iter`, 3 EOS
-failure, 4 invalid input; but the two Poisson drivers currently return `converged` whatever their termination, and
-`scripts/run.jl` returns 0 after the full driver returns. Read the log: Poisson runs print `converged: …` when the rule was
-met, `no decrease …` when they stopped otherwise, and nothing when `max_steps` ran out; the full driver logs
-`solver returned: <status> (<reason>)`. Even a met Φ rule does not certify small force residuals, stationarity or data
+**Exit status.** `run_config` exits 0 for `converged`, 2 `stalled`/`max_iter`, 3 an invalid result (EOS failure,
+non-finite, non-positive or folded fields: logged, **no output written**), 4 invalid input. The `column-hse-ltau`,
+`mhs-poisson-ltau` and `mhs-poisson-z` drivers return their solver's status; the τ-grid output records it (attributes
+`status`, `stop_reason`, `gn_decrement` with `gn_decrement_approx` = 1 when it comes from a solve that did not converge,
+`qual_outcome`, `qual_lower`, `qual_upper`, `roundoff`, `phi_floor`, `work_*`, `solve_seconds`, `ranks`, `threads`).
+`scripts/run.jl` still returns 0 after the full driver (`full-mhs-z`) returns; it logs `solver returned: <status>
+(<reason>)`. A `max_iter` atmosphere is valid (every check passed) but **not converged**. Even a met Φ rule does not certify small force residuals, stationarity or data
 fidelity. After a run check: the stop line; the residual per band/layer in the log or output; for `full-mhs-z` the data
 term and the largest field deviations in `history.csv`; and z(τ=1) and the pressure change for plausibility.
 
@@ -264,9 +327,13 @@ The Python oracle (`oracles/python/`, needs `numpy`, `h5py`) generates fixtures;
 interpreter. The suite covers units/config, operators, parallel infrastructure, the reader and writer, the EOS (Gates 1–2,
 including bitwise thread/rank invariance of column HSE), staggered MHS gradients and invariance, Gate C synthetic tests
 and the M5 solver tests, and runs `test/mpi/mpi_tests.jl` on 2, 4 and 6 ranks via `MPI.mpiexec`.
-`HSEMHS_SKIP_MPI=1` skips the multi-rank part (reduced coverage, not MPI validation). The slab infrastructure and the two
-Poisson modes have **no automated tests yet**; their checks were manual comparisons (1 vs 4 ranks, against the original
-scripts), recorded in the technical PDFs.
+`HSEMHS_SKIP_MPI=1` skips the multi-rank part (reduced coverage, not MPI validation). The four fixed-B modes are tested
+through the embedding API (`test_embedded.jl`: equivalence with the standalone drivers, validation, status, CLI exit
+codes, allocations), the τ-grid solver and viewing angle by `test_view.jl` (μ = 1 bitwise, plane-parallel shift,
+inclined Jacobians, column HSE at angles), `test_block.jl` (preconditioners, PCG outcomes, stop qualification,
+round-off acceptance, `switch`) and `test_warm.jl`; multi-rank by `test/mpi/mpi_embedded.jl` and `test/mpi/mpi_view.jl`
+(run them as `mpiexecjl -n R julia --project=. -t 2 test/mpi/<file>.jl`, R = 2, 3, 4). Status on `solver-time`
+(29 Oct 2026): block 114, warm 47, view 133, embedded 91, units/config 18; MPI suites pass on 2, 3, 4 ranks.
 
 ## Measured performance
 
@@ -284,21 +351,62 @@ Not fresh validation: timings of single runs, with their code state. Logs are on
 | 24 Oct / 0dad96a | `full-mhs-z` smoke | input-mhs-hse-fullz.nc (42 × 42 × 249) | 4 × 8, one node | 97 s | 3 accepted (smoke) |
 | 22–23 Oct / c96a922 | M5i (`full-mhs-z` settings) | input-mhs-hse-fullz.nc | 24 × 16 | stopped on request | 112 accepted, Φ 7.88e3 |
 
-The current stopping rule (Φ-only, 3 consecutive) has been run only on 96² crops so far.
+The table above predates the viewing angle and the qualified stop rule; current τ-grid numbers follow.
+
+### Release result table (τ-grid modes, 29 Oct 2026)
+
+Branch `solver-time`; full Bifrost cube 504² × 95 (`out/view/input_mu*_az*.nc`), vertical-depth cut −4, vertical
+balance, 25 steps, gn_tol 1e-3, D2 benchmark settings; production CLI; one hyades node, 3 ranks × 32 threads; time =
+process wall time; memory = peak per rank. Details: `design/tau/SOLVER_TIME_DESIGN.md` §6.14; scripts
+`HSEMHS/scripts/delivery/`; logs on hyades in `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/delivery/`.
+
+| case | precond | status (stop) | Φ/Φ₀ | time | memory |
+|---|---|---|---|---|---|
+| `column-hse-ltau` μ 1, 0.5 φ45, 0.3, 0.2 | – | converged | – | 53–54 s | 2.9 GB |
+| `mhs-poisson-ltau` μ 1 | fourier / switch | max_iter (max_steps) | 2.585e-2 / 2.579e-2 | 21.4 / 11.4 min | 6.0 / 7.8 GB |
+| μ 0.5, φ 45° | fourier / switch | max_iter | 2.217e-3 / 2.152e-3 | 20.2 / 8.0 min | 6.4 / 7.9 GB |
+| μ 0.3 | fourier / switch | max_iter | 6.34e-5 / 4.33e-5 | 19.8 / 8.9 min | 6.3 / 7.7 GB |
+| μ 0.2 | fourier / switch | max_iter | 2.85e-4 / 2.14e-4 | 26.1 / 6.5 min | 6.2 / 7.5 GB |
+| embedding μ 0.3: cold / 2 % ln T change warm / same cold | fourier | max_iter ×3 | – | 26 / 38 / 24 min | 6.3 GB |
+| the same | switch | max_iter ×3 | – | 10.3 / 13.8 / 10.1 min | 7.7 GB |
+
+| requirement | status |
+|---|---|
+| valid atmospheres at every μ and azimuth tested, CLI and embedding | **met** (no abnormal CG exit, no EOS-limited step) |
+| column HSE at an angle | **met** (own tests at μ 1, 0.8, 0.5, 0.3, 0.2; ~1 min on one node) |
+| qualified convergence (gn_tol) of `mhs-poisson-ltau` on the Bifrost cube | **not met**: every μ ends `max_iter` at 25 steps |
+| a few minutes on 8 nodes / 256 CPUs | **unmeasured** (8 nodes not available); 6.5–11.4 min with `switch` on one node; four nodes measured 1.4× (Fourier) – 1.9× (block) faster than one node at fixed work |
+| solve time independent of μ | only as fixed-budget times (switch 6.5–11.4 min, a 1.75× spread); the time to qualified convergence is unknown |
+| warm start saves time | **not shown** (slower than cold on this cube) |
+
+On the consistent known-equilibrium controls (`design/tau/SOLVER_TIME_DESIGN.md` §6.12) the same solver qualifies in 4
+(μ 1) and 8 (μ 0.3) steps within seconds; the Bifrost snapshot is not a discrete equilibrium of the solver's model.
+
+**Fixed-work scaling** (μ 0.3, 3 steps × exactly 100 CG iterations, seconds in the steps; hyades8/12/15 EPYC 7543 and
+hyades4 EPYC 7742): Fourier 1 node × 1 rank × 32 threads 164 s, 1 × 3 × 32 128 s, 2 × 1 × 32 164 s, 2 × 2 × 16 104 s,
+4 × 1 × 32 116 s; column blocks 164 / 123 / 87 s on 1 / 2 / 4 nodes × 1 × 32. Two ranks of 16 threads beat one of 32 per
+node.
 
 ## Known limitations
 
 * `mhs-poisson-z` converges slowly (Gauss–Newton on a large residual that a fixed field cannot remove); low-β layers
   inflate the pressure, hence `z_cut`.
-* `mhs-poisson-ltau`: the PCG reaches its iteration cap in every step on the full cube; a few strong-field column heights
-  are weakly determined (runs agree to ~1 m median, 12–24 m at the 99th percentile, up to 150 m on a 96² crop).
+* `mhs-poisson-ltau` on the full Bifrost cube does not qualify its stop within 25 steps at any μ (table above). The
+  late steps are limited by the whole-step ln P cap (`du_cap` 2, set by the worst cell); a probe at saved late states
+  found the capped step already as long as the Gauss–Newton model allows (twice it raises Φ), so relaxing the cap does
+  not help; the remaining slowness is the problem's nonlinearity, not the linear algebra. A few strong-field column
+  heights are weakly determined. The final `gn_decrement` of a budget-limited run is approximate (`gn_decrement_approx`).
+* Iterative results depend on the BLAS thread count and the CPU at the rounding level, which a nonconverged run can
+  amplify (up to tens of metres in z on the 24 × 18 test crop); the embedding test therefore compares against the
+  standalone driver on the same machine.
+* The multilevel (two-level, branch-aware) preconditioner of `scripts/viewing/ml_lab.jl` is experimental and not on the
+  supported path (its per-step setup costs more than a loose solve; serial coarse solve).
 * `full-mhs-z`: no production run has met its stopping rule; a run on the full cube takes more than a day on 4 nodes.
 
-**Code follow-ups (not changed by the documentation work):** propagate the Poisson solvers' termination (converged / no
-decrease / step limit) into the exit status, and the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping should also be lowered after a
-full *scaled* step (`α == sc`, currently only `α == 1`); make the file drivers act on the embedded validity flag (an
-invalid result other than an EOS failure in the τ column stage is still written with exit 0); convert units of T and B
-in the τ reader. (Axis checks — strictly increasing log τ, uniform x, y — and tests of the slab layer and the four
+**Code follow-ups:** propagate the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping
+should also be lowered after a full *scaled* step (`α == sc`, currently only `α == 1`); convert units of T and B in the
+τ reader. (Done on `solver-time`: the Poisson and τ column drivers return their status and do not write invalid
+results.) (Axis checks — strictly increasing log τ, uniform x, y — and tests of the slab layer and the four
 fixed-B modes now exist through the embedded API.)
 
 ## Documentation

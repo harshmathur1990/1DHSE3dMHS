@@ -43,5 +43,6 @@ through `~/.julia/bin/mhs_rank.sh` (libfabric TCP on the `ib*` interface, node-l
     mpiexecjl --project=. -launcher ssh -launcher-exec $HOME/.julia/bin/ssh_bash_launcher -f hosts -n 8 \
         mhs_rank.sh julia --project=. -t 32 scripts/run.jl config/modes/mhs-poisson-ltau.toml
 
-Stopping is on the relative change of Φ only, and exit status 0 does not mean the stopping rule was met: see
-"Stopping, status and what finished means" in the root `README.md`.
+`mhs-poisson-ltau` stops on the qualified Gauss–Newton decrement (`stop = "gn"`, default) within `max_steps` (25);
+the drivers exit 0 only when converged (2 at the step limit, 3 for an invalid result, which is not written). See
+"Stopping, status and what finished means" and the viewing-angle section in the root `README.md`.

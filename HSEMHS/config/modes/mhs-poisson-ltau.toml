@@ -18,7 +18,14 @@ table_file = "cache/eos_table_fullz.h5"
 align = "ptot"
 
 [poisson]
-logtau_cut = -4.0
-max_steps = 100
-rtol = 1.0e-4
-dc_cap_m = 3.0e5
+logtau_cut = -4.0                 # vertical depth of the cut (cut_frame = "vertical")
+# defaults: max_steps 25, stop "gn" (gn_tol 1e-3 on 2 steps, then the qualified stop check), lm "alpha",
+# forcing "fixed", precond "fourier". The D2 benchmark settings with the faster opt-in preconditioner:
+# lm = "gain"
+# forcing = "ew"
+# precond = "switch"
+
+# [view]                          # line of sight (default: vertical, mu = 1); see the root README
+# mu = 0.3
+# azimuth_deg = 0.0
+# geometry = "inclined"
