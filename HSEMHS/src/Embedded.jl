@@ -276,7 +276,9 @@ decrease of Φ one further undamped Gauss–Newton step would predict) and `grad
 are the absolute objective at the start/end, `rms0`/`rms` = √(Φ/ΣW); `phi0_zero` marks Φ₀ = 0 (ratios undefined).
 `counts` holds the global number of nodes or columns per failed check, `stats` the column-stage statistics and (τ grid)
 the solver's work (stats["work"]: operator and preconditioner products, CG iterations, abnormal CG exits, seconds), the
-round-off acceptance (stats["roundoff"]: none | start | no_descent; stats["phi_floor"]) and the stop qualification.
+round-off acceptance (stats["roundoff"]: none | start | no_descent; stats["phi_floor"]), the stop qualification
+(stats["stop_check"], solved with column blocks where the grid has them) and stats["gn_decrement_approx"] (true when
+`gn_decrement` comes from a final solve that ended at its iteration limit, or from a stop check that did not qualify).
 """
 Base.@kwdef mutable struct EquilibriumStatus
     status::SolverStatus = converged
@@ -693,12 +695,14 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
     st.stats["cut_level"] = kc
     st.stats["work"] = Dict{String,Any}(String(k) => v for (k, v) in pairs(info.work))   # products, CG iterations, seconds
     st.stats["roundoff"] = String(info.roundoff); st.stats["phi_floor"] = info.phi_floor
+    st.stats["gn_decrement_approx"] = info.gn_decrement_approx   # true: from a solve that did not converge (or not qualified)
     info.work.cg_abnormal > 0 && push!(st.messages, "$(info.work.cg_abnormal) abnormal CG exits (breakdown or non-finite)")
     if info.stop_check !== nothing                                     # the last stop qualification (PoissonTau.qualify_stop)
         q = info.stop_check
         st.stats["stop_check"] = Dict{String,Any}("outcome" => String(q.outcome), "step" => q.step, "lower" => q.lower,
                                                   "upper" => q.upper, "gn_tol" => q.gn_tol, "pred" => q.pred,
-                                                  "cg_its" => q.its, "true_rel" => q.true_rel, "at_returned_state" => q.step == steps)
+                                                  "cg_its" => q.its, "true_rel" => q.true_rel, "at_returned_state" => q.step == steps,
+                                                  "precond" => String(q.precond))
         info.reason == :unresolved &&
             push!(st.messages, @sprintf("stop unresolved: regularised decrement in [%.2e, %.2e] straddles %.0e after %d CG products (step %d)",
                                         q.lower, q.upper, q.gn_tol, q.its, q.step))

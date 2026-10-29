@@ -137,6 +137,7 @@ function run_mhs_poisson_ltau(cfg::Config)
                        "phi_start" => st.phi0, "phi_end" => st.phi,
                        "steps" => st.steps, "align" => G.align,
                        "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement, "status" => string(st.status),
+                       "gn_decrement_approx" => Int(st.stats["gn_decrement_approx"]),
                        "roundoff" => st.stats["roundoff"], "phi_floor" => st.stats["phi_floor"],
                        "qual_outcome" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["outcome"] : "none",
                        "qual_lower" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["lower"] : NaN,

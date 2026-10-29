@@ -1015,17 +1015,33 @@ e.g. a negative-curvature breakdown). b = 0 qualifies exactly (L = U = 0). Retur
 `lower`, `upper` (/ Φ), `pred` = bᵀx/Φ, `model` = (2bᵀx − ‖Jx‖²_W)/Φ, `ereg` = xᵀDx/Φ, `its`, `true_rel` = ‖r‖/‖b‖,
 `grad_norm` = ‖b‖, `gn_tol`, `qual_tol`, the `step` and `phi` at which it was evaluated, and its work: `aprod` and
 `minv` (operator and preconditioner applications, restarts and interval residuals included) and `seconds`. Uses `rhs` and `δ` as work
-arrays and leaves pr.ereg = ereg0, pr.mlm = 0.
+arrays and leaves pr.ereg = ereg0, pr.mlm = 0. `precond` (default :block) is the preconditioner of the qualification
+solve, whatever the outer steps use (pr.prec is restored on return): the column blocks where the grid has them
+(`blocks_ok`), the Fourier preconditioner otherwise (`precond` in the result says which), so that the interval is
+computed the same way for every outer preconditioner.
 """
-function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400, gn_tol = 1e-3, refine = true,
-                      margin = 1e-6, step = 0)
+function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; precond = :block, kw...)
+    p0 = pr.prec
+    pr.prec = precond == :block && blocks_ok(pr) ? :block : :fourier
+    try
+        return qualify_interval(pr, par, rhs, δ, ereg0, Φ; kw...)
+    finally
+        pr.prec = p0
+    end
+end
+
+"""Column blocks need distinct x and y neighbours (as tp_setup)."""
+blocks_ok(pr::TP) = pr.par.NX >= 3 && pr.ny >= 3
+
+function qualify_interval(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400, gn_tol = 1e-3, refine = true,
+                          margin = 1e-6, step = 0)
     t0 = time(); cnt = zeros(Int, 2); fl = Ref(:none)
     pr.ereg = copy(ereg0); pr.mlm = 0.0
     JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
     nb = gnorm(par, rhs)
     q(o, l, u, p, m, e, its, tr) = (outcome = o, lower = l, upper = u, pred = p, model = m, ereg = e, its = its,
                                     true_rel = tr, grad_norm = nb, gn_tol = gn_tol, qual_tol = tol, step = step, phi = Φ,
-                                    aprod = cnt[1], minv = cnt[2], seconds = time() - t0, pcg = fl[])
+                                    aprod = cnt[1], minv = cnt[2], seconds = time() - t0, pcg = fl[], precond = pr.prec)
     (isfinite(Φ) && Φ > 0 && all(isfinite, ereg0) && all(>(0), ereg0) && isfinite(nb)) ||
         return q(:invalid, NaN, NaN, NaN, NaN, NaN, 0, NaN)
     fill!(δ, 0.0)
@@ -1139,7 +1155,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     Z() = zeros(n1, ny, nx)
     _, bad = evaluate!(pr, u, c)
     if bad > 0                                       # gcount inside evaluate!: every rank takes this branch
-        info = (reason = :eos_out_of_envelope, gn_decrement = NaN, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
+        info = (reason = :eos_out_of_envelope, gn_decrement = NaN, gn_decrement_approx = true, grad_norm = NaN, cg_its = 0, cg_rel = NaN,
                 lm_mu = lm_mu0, rms0 = NaN, rms = NaN, phi0_zero = false, weights = nothing, stop_check = nothing,
                 work = WORK0, phi_floor = NaN, roundoff = :none)
         return u, copy(z0), NaN, NaN, 0, kc, info
@@ -1159,7 +1175,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     reason = :max_steps
     Φfl = phi_floor(pr, u)
     if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0 || Φ0 <= Φfl
-        info = (reason = :converged, gn_decrement = 0.0, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
+        info = (reason = :converged, gn_decrement = 0.0, gn_decrement_approx = false, grad_norm = 0.0, cg_its = 0, cg_rel = 0.0, lm_mu = lm_mu0,
                 rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ0 / Wtot), phi0_zero = Φ0 == 0, weights = wts, stop_check = nothing,
                 work = merge(WORK0, (evals = 2, total_s = time() - tstart)), phi_floor = Φfl,
                 roundoff = Φ0 <= Φfl ? :start : :none)
@@ -1295,20 +1311,23 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     logf("end: " * bands(pr, lt, Hb, dzf))
     # stationarity at the returned state (pr holds its evaluation): undamped Gauss–Newton step δ from (JᵀWJ + ereg) δ =
     # −JᵀWR and the predicted relative decrease δ·(−JᵀWR)/Φ. Diagnostics only: u and z are not changed.
-    gnd = NaN; gn = NaN; its = 0; rel = NaN; cfin = zeros(Int, 2); tf = time(); fin_its = 0
+    gnd = NaN; gn = NaN; its = 0; rel = NaN; cfin = zeros(Int, 2); tf = time(); fin_its = 0; gapprox = true
     if qinfo !== nothing && qinfo.step == steps && qinfo.outcome != :invalid   # a qualification at the returned state
-        gnd = qinfo.pred; gn = qinfo.grad_norm; its = qinfo.its; rel = qinfo.true_rel
+        gnd = qinfo.pred; gn = qinfo.grad_norm; its = qinfo.its; rel = qinfo.true_rel; gapprox = qinfo.outcome != :qualified
         logf(@sprintf("stationarity: from the stop check at step %d, decrement in [%.3e, %.3e]", steps, qinfo.lower, qinfo.upper))
     elseif stationarity
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
         gn = gnorm(par, rhs)
+        p0 = pr.prec; blocks_ok(pr) && (pr.prec = :block)  # the same preconditioner as the stop qualification
         setprec!(pr)
         its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit, cnt = cfin, flag = pfl); fin_its = its
+        pr.prec = p0
         pfl[] in PCG_ABNORMAL && logf("stationarity: PCG ended $(pfl[])")
-        gnd = gdot(par, δ, rhs) / Φ
-        logf(@sprintf("stationarity: Gauss–Newton decrement %.3e, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd, gn, its, rel))
+        gnd = gdot(par, δ, rhs) / Φ; gapprox = pfl[] != :converged && pfl[] != :start_within_tol && pfl[] != :zero_rhs
+        logf(@sprintf("stationarity: Gauss–Newton decrement %.3e%s, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd,
+                      gapprox ? " (approximate: CG ended $(pfl[]))" : "", gn, its, rel))
     end
-    info = (reason = reason, gn_decrement = gnd, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
+    info = (reason = reason, gn_decrement = gnd, gn_decrement_approx = gapprox, grad_norm = gn, cg_its = its, cg_rel = rel, lm_mu = μ,
             rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo,
             work = (cg = ncg, solves = nsolve, aprod = cstep[1], minv = cstep[2], evals = neval, restores = nrest,
                     qual_cg = nqual, qual_aprod = cqual[1], qual_minv = cqual[2], final_cg = fin_its, final_aprod = cfin[1],

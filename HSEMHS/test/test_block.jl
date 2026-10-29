@@ -73,6 +73,16 @@
         @test pdamped < 1e-3 && qs[end].pred > 100 * pdamped && qs[end].outcome == :not_stationary
         @test pr.ereg == e0 && pr.mlm == 0 && qs[end].step == 0 && qs[end].phi == Φq
         @test all(q -> q.aprod >= q.its + 1 && q.minv >= 1, qs[2:end])           # restarts and interval residuals counted
+        # the qualification preconditioner is the column blocks whatever the outer one (restored), Fourier on request;
+        # both intervals contain the dense decrement
+        for p0 in (:fourier, :block, :hybrid)
+            pr.prec = p0
+            qb = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-8, maxit = 400, gn_tol = 1e-3)
+            qf = PT.qualify_stop(pr, par, similar(b), similar(b), e0, Φq; tol = 1e-8, maxit = 400, gn_tol = 1e-3, precond = :fourier)
+            @test pr.prec == p0 && qb.precond == :block && qf.precond == :fourier
+            @test qb.lower <= dex * (1 + 1e-9) <= qb.upper * (1 + 2e-9) && qf.lower <= dex * (1 + 1e-9) <= qf.upper * (1 + 2e-9)
+        end
+        pr.prec = :block; PT.setprec!(pr)
         # restarted PCG (x0): an exact or within-tol start returns at once; b = 0 gives xs = 0 whatever the start; the
         # zero start converges with one A and one M⁻¹ per iteration; a restart from a partial solve reaches the tol
         PT.setprec!(pr)
@@ -168,6 +178,10 @@
         q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].gn_decrement == q5.pred      # reused, not re-solved
         q5.step == u5[5] && q5.outcome != :invalid && @test u5[7].work.final_cg == 0 && u5[7].work.final_aprod == 0
         @test u5[7].work.qual_aprod >= u5[7].work.qual_cg && u5[7].work.aprod >= u5[7].work.cg && u5[7].work.total_s > 0
+        @test q5.precond == :block && u5[7].gn_decrement_approx == (q5.step != u5[5] || q5.outcome != :qualified)
+        u6 = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
+                          max_steps = 2, mu = v.mu, slant = H.slant(v), cg_maxit = 1)    # final diagnostic capped at 1 it
+        @test u6[7].gn_decrement_approx && u6[7].work.final_cg == 1
         # the objective of another solve: same start and weights → the same solve; another start uses the weights given
         sv(u0, zz; w = nothing) = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, u0, zz, dx, dy; logtau_cut = -4.0,
                                      max_steps = 5, mu = v.mu, slant = H.slant(v), stop = :gn, lm = :gain, forcing = :ew,
