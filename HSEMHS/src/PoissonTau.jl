@@ -393,6 +393,8 @@ function phi_parts(pr::TP; nface = 3)
 end
 
 const ROUNDOFF_K = 64.0
+"""`pcg!` outcomes that are not a tolerance reached or an iteration budget spent (see `pcg!`)."""
+const PCG_ABNORMAL = (:nonfinite_start, :breakdown_rz, :breakdown_pAp, :nonfinite_step, :nonfinite_update)
 
 """
 Round-off floor of Φ at the evaluated state of `pr` (state u, heights pr.z): each residual with its terms replaced by
@@ -982,13 +984,13 @@ arrays and leaves pr.ereg = ereg0, pr.mlm = 0.
 """
 function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400, gn_tol = 1e-3, refine = true,
                       margin = 1e-6, step = 0)
-    t0 = time(); cnt = zeros(Int, 2)
+    t0 = time(); cnt = zeros(Int, 2); fl = Ref(:none)
     pr.ereg = copy(ereg0); pr.mlm = 0.0
     JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
     nb = gnorm(par, rhs)
     q(o, l, u, p, m, e, its, tr) = (outcome = o, lower = l, upper = u, pred = p, model = m, ereg = e, its = its,
                                     true_rel = tr, grad_norm = nb, gn_tol = gn_tol, qual_tol = tol, step = step, phi = Φ,
-                                    aprod = cnt[1], minv = cnt[2], seconds = time() - t0)
+                                    aprod = cnt[1], minv = cnt[2], seconds = time() - t0, pcg = fl[])
     (isfinite(Φ) && Φ > 0 && all(isfinite, ereg0) && all(>(0), ereg0) && isfinite(nb)) ||
         return q(:invalid, NaN, NaN, NaN, NaN, NaN, 0, NaN)
     fill!(δ, 0.0)
@@ -996,8 +998,9 @@ function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400, 
     setprec!(pr)
     t = similar(δ); its = 0; tol_k = tol
     while true
-        k, _ = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit - its, x0 = its > 0, cnt = cnt)
+        k, _ = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit - its, x0 = its > 0, cnt = cnt, flag = fl)
         its += k
+        abn = fl[] in PCG_ABNORMAL
         Aop!(pr, t, δ); cnt[1] += 1
         bx = gdot(par, δ, rhs); xAx = gdot(par, δ, t)
         rD = gsum(par, sum((rhs .- t) .^ 2 ./ ereg0)); tr = gnorm(par, rhs .- t) / nb
@@ -1008,7 +1011,7 @@ function qualify_stop(pr::TP, par, rhs, δ, ereg0, Φ; tol = 1e-2, maxit = 400, 
         all(isfinite, (L, U, xAx)) && L >= 0 && xAx >= 0 || return q(:invalid, vals...)
         up * (1 + margin) < gn_tol && return q(:qualified, vals...)
         lo * (1 - margin) > gn_tol && return q(:not_stationary, vals...)
-        (refine && its < maxit && tol_k > 1e-12) || return q(:undecided, vals...)
+        (refine && its < maxit && tol_k > 1e-12 && !abn) || return q(:undecided, vals...)   # no refining after a breakdown
         tol_k /= 10
     end
 end
@@ -1088,7 +1091,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                      balance = balance, precond = precond, klow = klow)
     kc, n1 = pr.kc, pr.n1
     WORK0 = (cg = 0, solves = 0, aprod = 0, minv = 0, evals = 1, restores = 0, qual_cg = 0, qual_aprod = 0, qual_minv = 0,
-             final_cg = 0, final_aprod = 0, final_minv = 0, feas_limited = 0, step_s = 0.0, qual_s = 0.0, final_s = 0.0, total_s = 0.0)
+             final_cg = 0, final_aprod = 0, final_minv = 0, feas_limited = 0, cg_abnormal = 0, step_s = 0.0, qual_s = 0.0, final_s = 0.0, total_s = 0.0)
     tstart = time()
     damping == :marquardt && pr.prec == :fourier && error("solve_tau: damping = :marquardt needs precond = :block or :hybrid")
     mq = damping == :marquardt
@@ -1132,7 +1135,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
     # work: CG recurrence iterations, linear solves (retries included), operator / preconditioner applications, trial
     # evaluations (start evaluations included), restorations of the linearisation state, qualification, seconds
     ncg = 0; nsolve = 0; neval = 2; nrest = 0; nqual = 0; cstep = zeros(Int, 2); cqual = zeros(Int, 2)
-    tsteps = 0.0; tqual = 0.0; nfeas = 0              # nfeas: tries whose start α the EOS boundary limited
+    tsteps = 0.0; tqual = 0.0; nfeas = 0; nabn = 0; pfl = Ref(:none)              # nfeas: tries whose start α the EOS boundary limited
     η = eta_max; tol_k, maxit_k = forcing == :ew ? (η, cg_cap) : (cg_tol, cg_maxit)
     jx, jy, jz = Z(), Z(), Z()
     for s in 1:max_steps
@@ -1149,7 +1152,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                 pr.ereg = ereg0 .+ μ .* Dlm
             end
             setprec!(pr)
-            its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit_k, cnt = cstep)
+            its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = tol_k, maxit = maxit_k, cnt = cstep, flag = pfl)
+            pfl[] in PCG_ABNORMAL && (nabn += 1; logf(@sprintf("step %2d: PCG ended %s after %d its (true rel %.2e)", s, pfl[], its, rel)))
             cg_s += its
             pred = gdot(par, δ, rhs) / Φ
             Jop!(pr, jx, jy, jz, δ)                   # ‖Jδ‖²_W at the linearisation state (before the line search)
@@ -1254,7 +1258,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         JTop!(pr, rhs, pr.Rx .* pr.wc, pr.Ry .* pr.wc, pr.Rz .* vcat(pr.wf, 0.0)); rhs .*= -1
         gn = gnorm(par, rhs)
         setprec!(pr)
-        its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit, cnt = cfin); fin_its = its
+        its, rel = pcg!(Aop!, Minv!, par, pr, δ, rhs; tol = cg_tol, maxit = cg_maxit, cnt = cfin, flag = pfl); fin_its = its
+        pfl[] in PCG_ABNORMAL && logf("stationarity: PCG ended $(pfl[])")
         gnd = gdot(par, δ, rhs) / Φ
         logf(@sprintf("stationarity: Gauss–Newton decrement %.3e, ‖JᵀWR‖ %.3e (CG %d its, rel %.1e)", gnd, gn, its, rel))
     end
@@ -1262,7 +1267,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
             rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot), phi0_zero = false, weights = wts, stop_check = qinfo,
             work = (cg = ncg, solves = nsolve, aprod = cstep[1], minv = cstep[2], evals = neval, restores = nrest,
                     qual_cg = nqual, qual_aprod = cqual[1], qual_minv = cqual[2], final_cg = fin_its, final_aprod = cfin[1],
-                    final_minv = cfin[2], feas_limited = nfeas, step_s = tsteps, qual_s = tqual, final_s = time() - tf, total_s = time() - tstart),
+                    final_minv = cfin[2], feas_limited = nfeas, cg_abnormal = nabn, step_s = tsteps, qual_s = tqual, final_s = time() - tf, total_s = time() - tstart),
             phi_floor = phi_floor(pr, u), roundoff = rnd)
     w = info.work
     logf(@sprintf("work: steps %d CG its in %d solves (%d A, %d M⁻¹ applications), %d evaluations + %d restorations, %.1f s; qualification %d CG (%d A, %d M⁻¹), %.1f s; final diagnostic %d CG (%d A), %.1f s%s; total %.1f s",
