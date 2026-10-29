@@ -221,8 +221,8 @@ recursion on a normal exit (tol reached or maxit), the true residual of the retu
 xs = 0 (the exact solution, whatever the start). A start already within `tol` returns at once with its true residual.
 
 Each update is formed out of place and kept only if the new x and r are finite (tested in the residual-norm
-reduction: ‖r‖² and Σx, one collective; a sum of finite values that overflows is treated as non-finite), so xs is
-always the last good iterate. Three global reductions per iteration (pᵀAp, ‖r‖² with Σx, rᵀM⁻¹r).
+reduction: ‖r‖² and the number of non-finite entries of x, one collective, so every rank takes the same decision), so
+xs is always the last good iterate. Three global reductions per iteration (pᵀAp, ‖r‖² with the count, rᵀM⁻¹r).
 `flag` (a Ref{Symbol} or nothing) receives the outcome: :converged, :maxit, :zero_rhs, :start_within_tol, or the
 abnormal exits :nonfinite_start (the start residual is not finite; xs unchanged), :breakdown_rz (rᵀM⁻¹r non-positive or
 non-finite), :breakdown_pAp (pᵀAp non-positive or non-finite), :nonfinite_step (α = rᵀM⁻¹r/pᵀAp not finite) and
@@ -263,9 +263,9 @@ function pcg!(Aop!, Minv!, par, pr, xs, b; tol = 1e-3, maxit = 80, x0 = false, c
             tbcast!((zz, pp, x) -> (x + a * pp,), (zv,), p, xs)
             tbcast!((ap, rr) -> (rr - a * ap,), (Ap,), r)
         end
-        rs = gsum(par, [dot(Ap, Ap), sum(zv)])         # one reduction: ‖r‖² and Σx (non-finite if any x is)
+        rs = gsum(par, [dot(Ap, Ap), Float64(count(!isfinite, zv))])   # one reduction: ‖r‖² and the non-finite x
         reln = sqrt(rs[1]) / nb
-        (isfinite(reln) && isfinite(rs[2])) || return it - 1, abnormal(:nonfinite_update)
+        (isfinite(reln) && rs[2] == 0) || return it - 1, abnormal(:nonfinite_update)
         tbcast!((x, rr, zz, ap) -> (zz, ap), (xs, r), zv, Ap); rel = reln
         rel < tol && (setf(:converged); break)
         Minv!(pr, zv, r); nm += 1; rz2 = gdot(par, r, zv)

@@ -15,7 +15,8 @@ lab:  julia ... ml_lab.jl lab FROZEN.h5 [KEY=VALUE ...]
                                     the aggregate (piecewise constant in x, y), Galerkin A_c = Pᵀ A P probed from the actual
                                     operator (coloured probes), sparse Cholesky; add: M⁻¹ = B⁻¹ + P A_c⁻¹ Pᵀ; mult: damped
                                     block Jacobi pre-smoothing, coarse correction, post-smoothing (symmetric; SPD for
-                                    ω λmax(B⁻¹A) < 2, ω = `omega`/λmax with λmax by power iteration)
+                                    ω λmax(B⁻¹A) < 2: ω = `omega`/λs, λs = 1.2 × the B-Rayleigh
+                                    estimate capped at the provable bound 13; omega_safe = 1: λs = 13, proven)
         add:a:k / mult:a:k          the same with k column shapes per aggregate: the k smallest eigenvectors of the
                                     aggregate's diagonal block of A_c (compact coarse space, A_c' = Vᵀ A_c V)
         addb:a[:k] / multb:a[:k]    four branches per aggregate: the smooth basis and its (−1)ⁱ, (−1)ʲ, (−1)ⁱ⁺ʲ modulations
@@ -23,7 +24,7 @@ lab:  julia ... ml_lab.jl lab FROZEN.h5 [KEY=VALUE ...]
       For each: setup time, PCG to tol 1e-3 and 1e-5 (iterations, A and M⁻¹ applications, the true relative residual
       recomputed, solve time), and against a tight reference δ (block PCG to 1e-10): scaled ‖δ − δ_ref‖ / ‖δ_ref‖ and
       the model decrease δ·b/Φ against the reference's.
-KEY: precs (default fourier,block,hybrid,add:2,mult:2,mult:4,mult:2:8,mult:4:8), mlm (Marquardt damping, 0), omega (1.0),
+KEY: precs (default fourier,block,hybrid,add:2,mult:2,mult:4,mult:2:8,mult:4:8), mlm (Marquardt damping, 0), omega (1.0), omega_safe (0),
      explicit (1: dense M⁻¹ and A by probes on systems ≤ 6000 unknowns: symmetry and positivity of M⁻¹ and of M⁻¹A),
      gauge (1: the cut-height checkerboard and constant modes: ‖A q‖/‖q‖ and the error reduction ‖(I − M⁻¹A) q‖_A per
      preconditioner), ref_tol (1e-10), rhs (b: the Gauss–Newton right-hand side; smooth: random modes |k| ≤ 4 of the whole
@@ -343,12 +344,20 @@ function ml_apply!(pr, T::TwoLevel, out, r)
     return out
 end
 
-"""Largest eigenvalue of B⁻¹A (B the column blocks; real positive spectrum) by power iteration (n steps)."""
+"""Largest eigenvalue of B⁻¹A (B the column blocks; B⁻¹A is B-self-adjoint, real positive spectrum): power iteration
+x ← B⁻¹A x (n steps) with the B-Rayleigh quotient xᵀAx / xᵀBx (B x_k+1 = A x_k, so xᵀBx needs no B application), a
+lower bound of λmax. Also the provable upper bound: A couples a column only to the columns of its residuals' centred
+stencils (Manhattan distance ≤ 2: LMAX_BOUND = 13 blocks per block row), and by block Cauchy–Schwarz
+xᵀAx ≤ 13 xᵀBx."""
+const LMAX_BOUND = 13
 function lmax_block(pr, n)
     Random.seed!(3); x = randn(size(pr.Rx)); y = similar(x); zz = similar(x); λ = 0.0
+    PT.Aop!(pr, y, x)
     for _ in 1:n
-        PT.Aop!(pr, y, x); PT.block_solve!(zz, pr.blk, y)
-        λ = norm(zz) / norm(x); x .= zz ./ norm(zz)
+        PT.block_solve!(zz, pr.blk, y); s = norm(zz); zz ./= s       # x_k+1 = B⁻¹A x_k / s; B x_k+1 = A x_k / s
+        xBx = dot(zz, y) / s
+        x .= zz; PT.Aop!(pr, y, x)
+        λ = dot(x, y) / xBx
     end
     return λ
 end
@@ -356,7 +365,7 @@ end
 function lab(path, kv...)
     H.ensure_mpi()
     o = Dict{String,Any}("precs" => "fourier,block,hybrid,add:2,mult:2,mult:4,mult:2:8,mult:4:8", "mlm" => 0.0,
-                         "omega" => 1.0, "explicit" => 1, "gauge" => 1, "ref_tol" => 1e-10, "rhs" => "b",
+                         "omega" => 1.0, "omega_safe" => 0, "explicit" => 1, "gauge" => 1, "ref_tol" => 1e-10, "rhs" => "b",
                          "assembly" => "probe", "galcheck" => 0,
                          "max_coarse" => 60000)
     for a in kv
@@ -420,8 +429,13 @@ function lab(path, kv...)
     rr = truerel(δr); pref = dot(δr, b) / Φ
     logf(@sprintf("reference δ: block PCG %d its (%s), true rel %.2e%s; pred %.6e", kr, fl[], rr,
                   rr > 10 * o["ref_tol"] ? " (UNRESOLVED reference)" : "", pref))
-    λB = lmax_block(pr, 60)
-    logf(@sprintf("λmax(B⁻¹A) ≈ %.3f (power iteration 60): smoother ω = %.3f/λmax = %.3f", λB, o["omega"], o["omega"] / λB))
+    λq = lmax_block(pr, 60)
+    # mult is SPD for ω λmax < 2. omega_safe = 1: ω = omega/LMAX_BOUND (proven for omega < 2); otherwise ω = omega/λs
+    # with λs = 1.2 × the Rayleigh lower bound, proven only when 2λs ≥ LMAX_BOUND (else breakdown_rz in PCG is the
+    # fallback signal)
+    λB = o["omega_safe"] == 1 ? Float64(LMAX_BOUND) : min(1.2λq, Float64(LMAX_BOUND))
+    logf(@sprintf("λmax(B⁻¹A) ≥ %.3f (B-Rayleigh, power iteration 60), ≤ %d (block stencil): smoother ω = %.3f/%.3f = %.4f, SPD of mult %s",
+                  λq, LMAX_BOUND, o["omega"], λB, o["omega"] / λB, o["omega"] / λB * LMAX_BOUND < 2 ? "proven" : "not proven (estimate)"))
     precs = split(o["precs"], ",")
     for pname in precs
         M! = nothing; setup = 0.0; T = nothing; prx = pr

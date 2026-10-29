@@ -435,9 +435,12 @@ their magnitudes, times K·eps (K = ROUNDOFF_K; differences of neighbours estima
     R_x: |u|/dx + |W| |z|/dx + |L_x e|,   R_y: the same with dy,
     R_z: |u_k| + |u_k+1| + Δln τ/2 (|W a|_k + |W a|_k+1) (+ |Δz| (|t_x| s_x + |t_y| s_y)/2 in the vertical balance),
 
-summed with the weights of Φ. Φ ≤ this floor means the residuals are at the precision of the arithmetic that forms them
-(the state is a discrete equilibrium to round-off); the comparison uses Φ's own weights, so it does not depend on the
-grid. Global.
+summed with the weights of Φ. A numerical-precision acceptance heuristic, not a stationarity theorem or a rigorous error
+bound: Φ ≤ this floor is taken to mean the residuals are at the precision of the arithmetic that forms them. K is not
+tuned; cancellation inside W and the Lorentz force is not estimated; the floor depends on the grid (1/dx) and on the
+height gauge (|z| as stored: a translation of all heights moves it, as it moves the rounding of the differences of z).
+It is used only for a start at the floor and a step without decrease from the floor, never to accept a stalled run.
+Global.
 """
 function phi_floor(pr::TP, u)
     ε = ROUNDOFF_K * eps(Float64); tx = abs(pr.tx); ty = abs(pr.ty); vt = vertical(pr)

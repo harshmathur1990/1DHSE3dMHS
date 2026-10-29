@@ -111,6 +111,8 @@
         @test fl[] == :nonfinite_step && all(==(0), xt) && rel ≈ 1
         k, rel = PT.pcg!((_, o, v) -> (o .= 1e-300 .* v), pid!, par, nothing, xt, 1e10 .* bt; flag = fl)  # x + αp overflows
         @test fl[] == :nonfinite_update && all(==(0), xt) && rel ≈ 1
+        k, rel = PT.pcg!((_, o, v) -> (o .= 1e-307 .* v), pid!, par, nothing, xt, bt; flag = fl)     # Σx overflows, x finite
+        @test fl[] == :converged && k == 1 && all(isfinite, xt) && !isfinite(sum(xt)) && xt ≈ 1e307 .* bt
         k, rel = PT.pcg!((_, o, v) -> (o .= v), (_, o, r) -> (o .= -r), par, nothing, xt, bt; flag = fl)  # M⁻¹ not SPD
         @test fl[] == :breakdown_rz && all(==(0), xt)
         nA = Ref(0); sick!(_, o, v) = (nA[] += 1; o .= nA[] <= 2 ? dg .* v : NaN)                 # A fails at call 3
@@ -206,6 +208,12 @@
         for k in kc+1:size(up, 1); up[k, :, :] .+= 1e-3 .* cos.(2π .* (0:size(up, 3)-1)' ./ size(up, 3)); end
         r3 = sv0(up, copy(zr))
         @test r3[7].reason == :converged && r3[5] >= 1 && r3[7].roundoff != :start
+        for r in (r1, r2, r3); @test isfinite(r[4]) && isfinite(r[7].phi_floor) && r[7].phi_floor > 0; end
+        # the same equilibrium in a translated height gauge (+1 Mm): still accepted at once; the floor moves (z enters
+        # its magnitudes as the arithmetic stores it) but not materially
+        r5 = sv0(copy(r1[1]), zr .+ 1e6)
+        @test r5[7].reason == :converged && r5[5] <= 1 && isfinite(r5[7].phi_floor)
+        @test 1 / 2 < r5[7].phi_floor / r2[7].phi_floor < 2                  # measured: +0.7 %
         lnP, z0, _ = PT.column_hse_tau(par, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, tab, g)
         r4 = PT.solve_tau(par, tab, g, lt, fx.lnT, fx.Bx, fx.By, fx.Bz, copy(lnP), copy(z0), dx, dy; logtau_cut = -4.0,
                           max_steps = 5, cg_maxit = 0)
