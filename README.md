@@ -353,8 +353,8 @@ interpreter. The suite covers units/config, operators, parallel infrastructure, 
 including bitwise thread/rank invariance of column HSE), staggered MHS gradients and invariance, Gate C synthetic tests
 and the M5 solver tests, and runs `test/mpi/mpi_tests.jl` on 2, 4 and 6 ranks via `MPI.mpiexec`.
 `HSEMHS_SKIP_MPI=1` skips the multi-rank part (reduced coverage, not MPI validation). The four fixed-B modes are tested
-through the embedding API (`test_embedded.jl`: equivalence with the standalone drivers, validation, status, CLI exit
-codes, allocations), the τ-grid solver and viewing angle by `test_view.jl` (μ = 1 bitwise, plane-parallel shift,
+through the embedding API (`test_embedded.jl`: interface parity with the standalone drivers, validation, status, CLI exit
+codes in process and as a subprocess, invalid reruns, allocations), the τ-grid solver and viewing angle by `test_view.jl` (μ = 1 bitwise, plane-parallel shift,
 inclined Jacobians, column HSE at angles), `test_block.jl` (preconditioners, PCG outcomes, stop qualification,
 round-off acceptance, `switch`) and `test_warm.jl`; multi-rank by `test/mpi/mpi_embedded.jl` and `test/mpi/mpi_view.jl`
 (run them as `mpiexecjl -n R julia --project=. -t 2 test/mpi/<file>.jl`, R = 2, 3, 4). Status on `solver-time`
