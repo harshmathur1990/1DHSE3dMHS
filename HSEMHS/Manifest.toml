@@ -2,7 +2,7 @@
 
 julia_version = "1.13.1"
 manifest_format = "2.1"
-project_hash = "25564efcd1044ed77180b143bdabc36aec46ca1e"
+project_hash = "f8ab8d3b60adc8a95d30d7877246a2e1b0292005"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -112,7 +112,7 @@ uuid = "0234f1f7-429e-5d53-9886-15a909be8d59"
 version = "2.2.3+0"
 
 [[deps.HSEMHS]]
-deps = ["Dates", "DelimitedFiles", "FFTW", "HDF5", "Libdl", "LinearAlgebra", "MPI", "MPIPreferences", "OffsetArrays", "Printf", "Random", "SHA", "Statistics", "TOML"]
+deps = ["Dates", "DelimitedFiles", "FFTW", "HDF5", "Libdl", "LinearAlgebra", "MPI", "MPIPreferences", "OffsetArrays", "Printf", "ProgressMeter", "Random", "SHA", "Statistics", "TOML"]
 path = "."
 uuid = "3f8a2c4e-6b1d-4e7a-9c55-2d0f7e1a9b31"
 version = "0.1.0"
@@ -339,6 +339,21 @@ version = "1.6.0"
 deps = ["Unicode"]
 uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 version = "1.11.0"
+
+[[deps.ProgressMeter]]
+deps = ["Printf"]
+git-tree-sha1 = "ce5ba3edfdeba107a721748d53b5f5887f415853"
+registries = "General"
+uuid = "92933f4c-e287-5a05-a399-4b506db050ca"
+version = "1.13.0"
+
+    [deps.ProgressMeter.extensions]
+    ProgressMeterDistributedExt = "Distributed"
+    ProgressMeterIJuliaExt = "IJulia"
+
+    [deps.ProgressMeter.weakdeps]
+    Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+    IJulia = "7073ff75-c697-5162-941a-fcdaad2a7d2a"
 
 [[deps.Random]]
 deps = ["SHA"]
