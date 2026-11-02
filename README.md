@@ -6,14 +6,15 @@ geometric-height grid (a simulation snapshot such as Bifrost) or on an optical-d
 inversion). The physics goes from independent hydrostatic columns to progressively more coupled magnetohydrostatic (MHS)
 approximations. The Julia package lives in `HSEMHS/`; this file is the entry point.
 
-**Status (29 Oct 2026, branch `solver-time`, release candidate for the viewing angle).** All five modes below are
+**Status (2 Nov 2026, `main`, merged from `solver-time`).** All five modes below are
 implemented, run with MPI + threads and are documented; the two τ-grid modes take a viewing angle (μ, azimuth; see
 [Viewing angle](#viewing-angle-τ-grid-modes)). That is not the same as scientifically converged results: see
 [Stopping, status and what "finished" means](#stopping-status-and-what-finished-means), the
 [release result table](#release-result-table-τ-grid-modes-29-oct-2026) and [Known limitations](#known-limitations).
 On the full Bifrost cube `mhs-poisson-ltau` returns valid atmospheres at every μ tested but **does not meet its stopping
 rule within the default 25 steps at any μ** (status `max_iter`); `mhs-poisson-z` reached its step limit while still
-decreasing, and `full-mhs-z` has not reached its stopping rule in any production run.
+decreasing, and `full-mhs-z` has not reached its stopping rule in any production run. Before using a τ-grid mode, read
+[What the τ-grid modes are and are not](#what-the-τ-grid-modes-are-and-are-not).
 
 ## Conventions
 
@@ -44,6 +45,51 @@ The `mhs-poisson` modes keep **B fixed**: they can reduce, but in general not re
 cannot hold up every horizontal density contrast). Only `full-mhs-z` **adjusts B**. Moving the τ surfaces in the τ-grid
 modes while keeping the B values on them does not enforce a discrete ∇·B = 0; only `full-mhs-z` has ∇·B = 0 exactly
 (B = curl A on a staggered grid).
+
+### What the τ-grid modes are and are not
+
+The τ-grid modes (`column-hse-ltau`, `mhs-poisson-ltau`) exist to turn an inversion's output into a full
+thermodynamic atmosphere. Everything below applies to both unless named.
+
+**What they are**
+
+* **A reconstruction on the input's τ axis.** T and B are held fixed on the log₁₀ τ₅₀₀ levels they were given. The modes
+  solve for P(τ), ρ, nₑ, χ₅₀₀ and one vertical height z per node.
+  * `column-hse-ltau` balances each column on its own.
+  * `mhs-poisson-ltau` also minimises the weighted force residual −∇P + J×B − ρg ẑ across columns below `logtau_cut`, with
+    τ-hydrostatic layers above.
+* **Heights relative to a gauge.** z is vertical in the local solar frame, gauged so that mean z(τ_LOS = 1) = 0. Column
+  offsets come from the total-pressure alignment (column HSE) or from the solve (MHS).
+* **Budget-limited by default** (`mhs-poisson-ltau`). On a full 504² cube it ends at `max_steps` (status `max_iter`) at
+  every μ tested. `valid = true` means the fields are physically usable, not that the force balance converged.
+* **Fast enough for an inversion loop.** For 504² × 95: about 1 min for column HSE. The MHS solve (25 steps) takes 6.5–26
+  min on one node ([release table](#release-result-table-τ-grid-modes-29-oct-2026)), or 9–11 min on six hyades nodes
+  (2 Nov 2026).
+
+**What they are not**
+
+* **Not an exact equilibrium.** B is fixed, so the residual can be reduced but in general not removed. Moving τ surfaces
+  with B kept on them does not keep ∇·B = 0.
+* **Not a radiative-transfer or viewing-angle converter.** T(τ) and B(τ) are returned unchanged, so anything set by
+  T(τ_LOS) — the continuum intensity, limb darkening, line formation — is exactly what the input had. Setting `view.mu`
+  does **not** turn a disk-centre cube into an off-centre view. It declares that the input *already is* one.
+* **Not valid with a mismatched μ.** `view.mu < 1` requires T and B on τ counted **along the line of sight at that μ**, on
+  deprojected footprints (see [Viewing angle](#viewing-angle-τ-grid-modes)). A vertical-τ (μ = 1) cube must run with
+  μ = 1.
+  * Measured on a vertical-τ cube run as μ = 0.5 inclined (2 Nov 2026,
+    [`HSEMHS/reports/mu_mismatch_2026-11-02/`](HSEMHS/reports/mu_mismatch_2026-11-02/README.md)): column HSE barely
+    changed (z(τ = 1) rms 5.7 km; P × 0.665).
+  * `mhs-poisson-ltau` was badly wrong: 460× the initial force imbalance, a 3× rougher τ = 1 surface, a ±150 km
+    large-scale pattern tied to the field layout along the tilt, and strong-field depressions turned into elevations.
+  * To model an off-centre view of a 3-D atmosphere, build a slanted-ray input from a height-grid cube first
+    (`HSEMHS/scripts/viewing/make_slanted_tau.jl`).
+* **Not converged unless the status says so.** Callers must read `status`/`reason` (embedding API) or the exit code (2 =
+  valid, not converged). An embedding caller that checks only `valid` will accept a `:max_steps` atmosphere silently.
+* **Not absolute heights, and not reliable at the top.** Heights depend on the gauge, the top closure and the alignment.
+  Where the input's top levels are coronal (MK temperatures), their τ-hydrostatic heights can reach tens of Mm and carry
+  no meaning.
+* **Not bitwise reproducible.** Results from different thread counts, CPUs or rank counts agree only to rounding, which a
+  budget-limited solve can amplify (see [Known limitations](#known-limitations)).
 
 Other `run.mode` values: `column_hse` (alias of `column-hse-z`), and the auxiliary modes `gate0` (input audit and EOS
 envelope), `eos_table` (builds the EOS/opacity table) and `screening`. The schema also lists a legacy `mhs`, which has no
@@ -459,7 +505,8 @@ Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.
 * `HSEMHS/test/`, `HSEMHS/oracles/` – test suite and Python oracles.
 * `HSEMHS/scripts/m5_bifrost/` – the full-MHS driver (`m5h_fullres.jl`, `bif_setup.jl`) and M5-era experiment and
   analysis scripts; `HSEMHS/scripts/poisson/` – the original Poisson scripts (history; the modes supersede them).
-* `HSEMHS/reports/` – gate reports and earlier write-ups; `docs/` – the current mode documents.
+* `HSEMHS/reports/` – gate reports and earlier write-ups (`mu_mismatch_2026-11-02/`: a vertical-τ cube run at μ = 0.5
+  vs μ = 1); `docs/` – the current mode documents.
 * `design/` – `DESIGN_HISTORY.md` (condensed history and decisions in force), `old/` (the original specification,
   design reviews and Codex briefs/reviews, unchanged), and one folder per new design topic (`tau/`: viewing angle).
   The code and `docs/` are current.
