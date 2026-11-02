@@ -1,0 +1,19 @@
+[run]
+mode = "column-hse-z"
+output = "out/modes/zview_col_mu05_inc.h5"
+overwrite = true
+[input]
+file = "../IO/input-mhs-hse.nc"
+[physics]
+g = "from_input"
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"      # median Bifrost P on the bottom plane (file attribute P_ref_Pa)
+[tau]
+top = "exp_tail"
+[view]
+mu = 0.5
+azimuth_deg = 0.0
+geometry = "inclined"

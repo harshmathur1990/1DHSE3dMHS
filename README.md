@@ -288,8 +288,8 @@ on it.
   * Plane-parallel τ was exactly 2 × the vertical τ.
   * An independent re-implementation of the inclined method reproduced τ to 4e-13 and z(τ = 1) to 1e-10 m.
   * z(τ = 1) median: 63.5 km (μ = 1), 103.1 km (0.5 plane-parallel), 103.3 km (0.5 inclined); std 37.6, 35.0, 31.3 km.
-  * Outputs, logs and configs: `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/viewing_z_2026-11-02/`; check script
-    `HSEMHS/scripts/viewing/check_zview.py`.
+  * Report: `HSEMHS/reports/viewing_z_2026-11-02/`; outputs in
+    `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/viewing_z_2026-11-02/`; check script `HSEMHS/scripts/viewing/check_zview.py`.
 
 **τ-grid input contract (μ < 1).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
 off-centre Stokes profiles returns), on a **regular, deprojected footprint grid** in the local solar frame (x, y in metres;
@@ -529,7 +529,8 @@ Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.
 * `HSEMHS/scripts/m5_bifrost/` – the full-MHS driver (`m5h_fullres.jl`, `bif_setup.jl`) and M5-era experiment and
   analysis scripts; `HSEMHS/scripts/poisson/` – the original Poisson scripts (history; the modes supersede them).
 * `HSEMHS/reports/` – gate reports and earlier write-ups (`mu_mismatch_2026-11-02/`: a vertical-τ cube run at μ = 0.5
-  vs μ = 1); `docs/` – the current mode documents.
+  vs μ = 1; `viewing_z_2026-11-02/`: the viewing angle in the height modes). Run outputs are not in git: each report's
+  `data/` links to them on the cluster, in `HSEMHS/out/<report>/`. `docs/` – the current mode documents.
 * `design/` – `DESIGN_HISTORY.md` (condensed history and decisions in force), `old/` (the original specification,
   design reviews and Codex briefs/reviews, unchanged), and one folder per new design topic (`tau/`: viewing angle).
   The code and `docs/` are current.

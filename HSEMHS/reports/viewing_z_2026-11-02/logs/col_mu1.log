@@ -1,0 +1,8 @@
+=== col_mu1 on hyades20.uio.no Monday 02 November 2026 03:04:59 PM CET
+[    5.4s] column_hse: grid 504×504×177, anchor bottom, P_ref = 103509 Pa (input attribute P_ref_Pa), g = 274.000, ranks 4 (2×2), threads 24
+[   12.2s] column_hse: read temperature; EOS table cache/eos_table_fullz.h5 (T_sw = 15019.647166203165 K)
+[   17.0s] column_hse: integrated: columns_eos_failed = 0, columns_rk_refined = 22127, columns_rk_tol_not_met = 0, max_substeps = 32, tau_exp_tail_columns = 194522, tau_half_cell_columns = 59494, tau_zero_columns = 0
+[   17.5s] column_hse: residual done
+[   37.3s] column_hse: z(τ500 = 1) p1/p50/p99 = -29.2 / 63.5 / 127.4 km
+[  272.8s] column_hse: wrote out/modes/zview_col_mu1.h5; status converged
+EXIT 0 wall 308 s

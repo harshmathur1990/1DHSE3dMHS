@@ -1,0 +1,21 @@
+[run]
+mode = "mhs-poisson-z"
+output = "out/modes/zview_poi_mu1.h5"
+overwrite = true
+[input]
+file = "../IO/input-mhs-hse.nc"
+[physics]
+g = "from_input"
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[column_hse]
+anchor = "bottom"
+P_ref = "from_input"
+[poisson]
+z_cut_m = 1.0e6
+max_steps = 100
+rtol = 1.0e-4
+[view]
+mu = 1.0
+azimuth_deg = 0.0
+geometry = "plane_parallel"

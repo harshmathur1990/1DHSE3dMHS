@@ -4,6 +4,8 @@ IO/
 # HSEMHS: large generated data (EOS table, RH copy and runs, model outputs)
 HSEMHS/cache/
 HSEMHS/out/
+# report data/ folders: links to the outputs in HSEMHS/out (data stays out of git)
+HSEMHS/reports/*/data/
 # HSEMHS: machine-specific build products (rebuilt by deps/witt/build.jl)
 HSEMHS/deps/witt/libwitt.dylib
 HSEMHS/deps/witt/libwitt.so

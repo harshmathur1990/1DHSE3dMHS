@@ -1,0 +1,111 @@
+=== poi_mu1 on hyades21.uio.no Monday 02 November 2026 03:05:08 PM CET
+[   15.9s] mhs-poisson-z: grid 504×504×177, z_cut 1.000 Mm, anchor bottom P_ref = 103509 Pa (input attribute P_ref_Pa), g = 274.000, ranks 4 (x slabs), threads 32
+[   41.6s] mhs-poisson-z: start: Φ 4.068564e+10, RMS |R| H̄ 1.8942e-01 over 77 layers (z 0.981 … -0.494 Mm)
+[   71.0s] mhs-poisson-z: step  1: Φ 4.686536e+09 (Φ/Φ₀ 1.152e-01, ΔΦ/Φ 8.85e-01), RMS |R| H̄ 6.4288e-02 | CG 80 its (rel 4.1e-03), α 1, capped 80, max|αδu| 2.000, 29.4 s
+[   87.1s] mhs-poisson-z: step  2: Φ 3.386804e+09 (Φ/Φ₀ 8.324e-02, ΔΦ/Φ 2.77e-01), RMS |R| H̄ 5.4651e-02 | CG 49 its (rel 8.6e-04), α 1, capped 0, max|αδu| 1.470, 16.1 s
+[   98.6s] mhs-poisson-z: step  3: Φ 3.335792e+09 (Φ/Φ₀ 8.199e-02, ΔΦ/Φ 1.51e-02), RMS |R| H̄ 5.4238e-02 | CG 36 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.883, 11.5 s
+[  109.0s] mhs-poisson-z: step  4: Φ 3.334214e+09 (Φ/Φ₀ 8.195e-02, ΔΦ/Φ 4.73e-04), RMS |R| H̄ 5.4225e-02 | CG 33 its (rel 7.8e-04), α 1, capped 0, max|αδu| 0.227, 10.4 s
+[  119.0s] mhs-poisson-z: step  5: Φ 3.333450e+09 (Φ/Φ₀ 8.193e-02, ΔΦ/Φ 2.29e-04), RMS |R| H̄ 5.4219e-02 | CG 31 its (rel 8.6e-04), α 1, capped 0, max|αδu| 0.082, 10.0 s
+[  128.1s] mhs-poisson-z: step  6: Φ 3.332778e+09 (Φ/Φ₀ 8.192e-02, ΔΦ/Φ 2.01e-04), RMS |R| H̄ 5.4213e-02 | CG 27 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.047, 9.1 s
+[  136.7s] mhs-poisson-z: step  7: Φ 3.332128e+09 (Φ/Φ₀ 8.190e-02, ΔΦ/Φ 1.95e-04), RMS |R| H̄ 5.4208e-02 | CG 24 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.029, 8.7 s
+[  144.5s] mhs-poisson-z: step  8: Φ 3.331485e+09 (Φ/Φ₀ 8.188e-02, ΔΦ/Φ 1.93e-04), RMS |R| H̄ 5.4203e-02 | CG 21 its (rel 8.0e-04), α 1, capped 0, max|αδu| 0.019, 7.8 s
+[  151.4s] mhs-poisson-z: step  9: Φ 3.330845e+09 (Φ/Φ₀ 8.187e-02, ΔΦ/Φ 1.92e-04), RMS |R| H̄ 5.4198e-02 | CG 20 its (rel 8.9e-04), α 1, capped 0, max|αδu| 0.014, 6.9 s
+[  157.1s] mhs-poisson-z: step 10: Φ 3.330206e+09 (Φ/Φ₀ 8.185e-02, ΔΦ/Φ 1.92e-04), RMS |R| H̄ 5.4193e-02 | CG 14 its (rel 7.8e-04), α 1, capped 0, max|αδu| 0.009, 5.7 s
+[  161.7s] mhs-poisson-z: step 11: Φ 3.329568e+09 (Φ/Φ₀ 8.184e-02, ΔΦ/Φ 1.92e-04), RMS |R| H̄ 5.4187e-02 | CG 12 its (rel 8.7e-04), α 1, capped 0, max|αδu| 0.006, 4.6 s
+[  166.2s] mhs-poisson-z: step 12: Φ 3.328931e+09 (Φ/Φ₀ 8.182e-02, ΔΦ/Φ 1.91e-04), RMS |R| H̄ 5.4182e-02 | CG 11 its (rel 8.5e-04), α 1, capped 0, max|αδu| 0.002, 4.5 s
+[  170.3s] mhs-poisson-z: step 13: Φ 3.328295e+09 (Φ/Φ₀ 8.181e-02, ΔΦ/Φ 1.91e-04), RMS |R| H̄ 5.4177e-02 | CG 11 its (rel 9.0e-04), α 1, capped 0, max|αδu| 0.002, 4.1 s
+[  174.1s] mhs-poisson-z: step 14: Φ 3.327660e+09 (Φ/Φ₀ 8.179e-02, ΔΦ/Φ 1.91e-04), RMS |R| H̄ 5.4172e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  178.6s] mhs-poisson-z: step 15: Φ 3.327025e+09 (Φ/Φ₀ 8.177e-02, ΔΦ/Φ 1.91e-04), RMS |R| H̄ 5.4167e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  182.9s] mhs-poisson-z: step 16: Φ 3.326391e+09 (Φ/Φ₀ 8.176e-02, ΔΦ/Φ 1.91e-04), RMS |R| H̄ 5.4161e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  187.9s] mhs-poisson-z: step 17: Φ 3.325758e+09 (Φ/Φ₀ 8.174e-02, ΔΦ/Φ 1.90e-04), RMS |R| H̄ 5.4156e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 5.0 s
+[  191.8s] mhs-poisson-z: step 18: Φ 3.325125e+09 (Φ/Φ₀ 8.173e-02, ΔΦ/Φ 1.90e-04), RMS |R| H̄ 5.4151e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  196.2s] mhs-poisson-z: step 19: Φ 3.324494e+09 (Φ/Φ₀ 8.171e-02, ΔΦ/Φ 1.90e-04), RMS |R| H̄ 5.4146e-02 | CG 11 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  200.1s] mhs-poisson-z: step 20: Φ 3.323863e+09 (Φ/Φ₀ 8.170e-02, ΔΦ/Φ 1.90e-04), RMS |R| H̄ 5.4141e-02 | CG 9 its (rel 1.0e-03), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  204.6s] mhs-poisson-z: step 21: Φ 3.323233e+09 (Φ/Φ₀ 8.168e-02, ΔΦ/Φ 1.90e-04), RMS |R| H̄ 5.4136e-02 | CG 11 its (rel 9.6e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  208.7s] mhs-poisson-z: step 22: Φ 3.322604e+09 (Φ/Φ₀ 8.167e-02, ΔΦ/Φ 1.89e-04), RMS |R| H̄ 5.4131e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.1 s
+[  213.3s] mhs-poisson-z: step 23: Φ 3.321975e+09 (Φ/Φ₀ 8.165e-02, ΔΦ/Φ 1.89e-04), RMS |R| H̄ 5.4126e-02 | CG 11 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  217.3s] mhs-poisson-z: step 24: Φ 3.321347e+09 (Φ/Φ₀ 8.163e-02, ΔΦ/Φ 1.89e-04), RMS |R| H̄ 5.4120e-02 | CG 9 its (rel 1.0e-03), α 1, capped 0, max|αδu| 0.001, 4.1 s
+[  221.9s] mhs-poisson-z: step 25: Φ 3.320720e+09 (Φ/Φ₀ 8.162e-02, ΔΦ/Φ 1.89e-04), RMS |R| H̄ 5.4115e-02 | CG 11 its (rel 9.6e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  226.0s] mhs-poisson-z: step 26: Φ 3.320094e+09 (Φ/Φ₀ 8.160e-02, ΔΦ/Φ 1.89e-04), RMS |R| H̄ 5.4110e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.0 s
+[  230.6s] mhs-poisson-z: step 27: Φ 3.319468e+09 (Φ/Φ₀ 8.159e-02, ΔΦ/Φ 1.88e-04), RMS |R| H̄ 5.4105e-02 | CG 11 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.7 s
+[  235.1s] mhs-poisson-z: step 28: Φ 3.318843e+09 (Φ/Φ₀ 8.157e-02, ΔΦ/Φ 1.88e-04), RMS |R| H̄ 5.4100e-02 | CG 10 its (rel 9.1e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  239.6s] mhs-poisson-z: step 29: Φ 3.318219e+09 (Φ/Φ₀ 8.156e-02, ΔΦ/Φ 1.88e-04), RMS |R| H̄ 5.4095e-02 | CG 11 its (rel 9.0e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  243.4s] mhs-poisson-z: step 30: Φ 3.317596e+09 (Φ/Φ₀ 8.154e-02, ΔΦ/Φ 1.88e-04), RMS |R| H̄ 5.4090e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  247.8s] mhs-poisson-z: step 31: Φ 3.316974e+09 (Φ/Φ₀ 8.153e-02, ΔΦ/Φ 1.88e-04), RMS |R| H̄ 5.4085e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  251.8s] mhs-poisson-z: step 32: Φ 3.316352e+09 (Φ/Φ₀ 8.151e-02, ΔΦ/Φ 1.87e-04), RMS |R| H̄ 5.4080e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  256.2s] mhs-poisson-z: step 33: Φ 3.315731e+09 (Φ/Φ₀ 8.150e-02, ΔΦ/Φ 1.87e-04), RMS |R| H̄ 5.4075e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  259.9s] mhs-poisson-z: step 34: Φ 3.315111e+09 (Φ/Φ₀ 8.148e-02, ΔΦ/Φ 1.87e-04), RMS |R| H̄ 5.4070e-02 | CG 9 its (rel 9.9e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  264.5s] mhs-poisson-z: step 35: Φ 3.314491e+09 (Φ/Φ₀ 8.147e-02, ΔΦ/Φ 1.87e-04), RMS |R| H̄ 5.4065e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  268.5s] mhs-poisson-z: step 36: Φ 3.313872e+09 (Φ/Φ₀ 8.145e-02, ΔΦ/Φ 1.87e-04), RMS |R| H̄ 5.4059e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 4.0 s
+[  272.7s] mhs-poisson-z: step 37: Φ 3.313254e+09 (Φ/Φ₀ 8.144e-02, ΔΦ/Φ 1.87e-04), RMS |R| H̄ 5.4054e-02 | CG 11 its (rel 9.6e-04), α 1, capped 0, max|αδu| 0.001, 4.2 s
+[  276.3s] mhs-poisson-z: step 38: Φ 3.312637e+09 (Φ/Φ₀ 8.142e-02, ΔΦ/Φ 1.86e-04), RMS |R| H̄ 5.4049e-02 | CG 9 its (rel 9.9e-04), α 1, capped 0, max|αδu| 0.001, 3.6 s
+[  280.8s] mhs-poisson-z: step 39: Φ 3.312020e+09 (Φ/Φ₀ 8.141e-02, ΔΦ/Φ 1.86e-04), RMS |R| H̄ 5.4044e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  284.7s] mhs-poisson-z: step 40: Φ 3.311405e+09 (Φ/Φ₀ 8.139e-02, ΔΦ/Φ 1.86e-04), RMS |R| H̄ 5.4039e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 4.0 s
+[  288.9s] mhs-poisson-z: step 41: Φ 3.310790e+09 (Φ/Φ₀ 8.137e-02, ΔΦ/Φ 1.86e-04), RMS |R| H̄ 5.4034e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.1 s
+[  292.9s] mhs-poisson-z: step 42: Φ 3.310175e+09 (Φ/Φ₀ 8.136e-02, ΔΦ/Φ 1.86e-04), RMS |R| H̄ 5.4029e-02 | CG 10 its (rel 8.9e-04), α 1, capped 0, max|αδu| 0.001, 4.0 s
+[  297.2s] mhs-poisson-z: step 43: Φ 3.309562e+09 (Φ/Φ₀ 8.134e-02, ΔΦ/Φ 1.85e-04), RMS |R| H̄ 5.4024e-02 | CG 11 its (rel 9.2e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  301.0s] mhs-poisson-z: step 44: Φ 3.308949e+09 (Φ/Φ₀ 8.133e-02, ΔΦ/Φ 1.85e-04), RMS |R| H̄ 5.4019e-02 | CG 9 its (rel 9.9e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  305.1s] mhs-poisson-z: step 45: Φ 3.308337e+09 (Φ/Φ₀ 8.131e-02, ΔΦ/Φ 1.85e-04), RMS |R| H̄ 5.4014e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.1 s
+[  309.0s] mhs-poisson-z: step 46: Φ 3.307725e+09 (Φ/Φ₀ 8.130e-02, ΔΦ/Φ 1.85e-04), RMS |R| H̄ 5.4009e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  313.5s] mhs-poisson-z: step 47: Φ 3.307115e+09 (Φ/Φ₀ 8.128e-02, ΔΦ/Φ 1.85e-04), RMS |R| H̄ 5.4004e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  317.3s] mhs-poisson-z: step 48: Φ 3.306505e+09 (Φ/Φ₀ 8.127e-02, ΔΦ/Φ 1.84e-04), RMS |R| H̄ 5.3999e-02 | CG 9 its (rel 9.9e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  321.6s] mhs-poisson-z: step 49: Φ 3.305895e+09 (Φ/Φ₀ 8.125e-02, ΔΦ/Φ 1.84e-04), RMS |R| H̄ 5.3994e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  325.7s] mhs-poisson-z: step 50: Φ 3.305287e+09 (Φ/Φ₀ 8.124e-02, ΔΦ/Φ 1.84e-04), RMS |R| H̄ 5.3989e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 4.1 s
+[  330.3s] mhs-poisson-z: step 51: Φ 3.304679e+09 (Φ/Φ₀ 8.122e-02, ΔΦ/Φ 1.84e-04), RMS |R| H̄ 5.3984e-02 | CG 11 its (rel 9.5e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  334.0s] mhs-poisson-z: step 52: Φ 3.304072e+09 (Φ/Φ₀ 8.121e-02, ΔΦ/Φ 1.84e-04), RMS |R| H̄ 5.3979e-02 | CG 9 its (rel 9.9e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  338.6s] mhs-poisson-z: step 53: Φ 3.303466e+09 (Φ/Φ₀ 8.119e-02, ΔΦ/Φ 1.84e-04), RMS |R| H̄ 5.3975e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  342.4s] mhs-poisson-z: step 54: Φ 3.302860e+09 (Φ/Φ₀ 8.118e-02, ΔΦ/Φ 1.83e-04), RMS |R| H̄ 5.3970e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  347.0s] mhs-poisson-z: step 55: Φ 3.302256e+09 (Φ/Φ₀ 8.117e-02, ΔΦ/Φ 1.83e-04), RMS |R| H̄ 5.3965e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  350.8s] mhs-poisson-z: step 56: Φ 3.301652e+09 (Φ/Φ₀ 8.115e-02, ΔΦ/Φ 1.83e-04), RMS |R| H̄ 5.3960e-02 | CG 9 its (rel 9.9e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  355.0s] mhs-poisson-z: step 57: Φ 3.301048e+09 (Φ/Φ₀ 8.114e-02, ΔΦ/Φ 1.83e-04), RMS |R| H̄ 5.3955e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.2 s
+[  358.7s] mhs-poisson-z: step 58: Φ 3.300445e+09 (Φ/Φ₀ 8.112e-02, ΔΦ/Φ 1.83e-04), RMS |R| H̄ 5.3950e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  363.1s] mhs-poisson-z: step 59: Φ 3.299843e+09 (Φ/Φ₀ 8.111e-02, ΔΦ/Φ 1.82e-04), RMS |R| H̄ 5.3945e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  367.0s] mhs-poisson-z: step 60: Φ 3.299242e+09 (Φ/Φ₀ 8.109e-02, ΔΦ/Φ 1.82e-04), RMS |R| H̄ 5.3940e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 4.0 s
+[  371.3s] mhs-poisson-z: step 61: Φ 3.298642e+09 (Φ/Φ₀ 8.108e-02, ΔΦ/Φ 1.82e-04), RMS |R| H̄ 5.3935e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.2 s
+[  375.0s] mhs-poisson-z: step 62: Φ 3.298042e+09 (Φ/Φ₀ 8.106e-02, ΔΦ/Φ 1.82e-04), RMS |R| H̄ 5.3930e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  379.4s] mhs-poisson-z: step 63: Φ 3.297443e+09 (Φ/Φ₀ 8.105e-02, ΔΦ/Φ 1.82e-04), RMS |R| H̄ 5.3925e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  383.3s] mhs-poisson-z: step 64: Φ 3.296845e+09 (Φ/Φ₀ 8.103e-02, ΔΦ/Φ 1.81e-04), RMS |R| H̄ 5.3920e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  387.5s] mhs-poisson-z: step 65: Φ 3.296247e+09 (Φ/Φ₀ 8.102e-02, ΔΦ/Φ 1.81e-04), RMS |R| H̄ 5.3916e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  391.5s] mhs-poisson-z: step 66: Φ 3.295650e+09 (Φ/Φ₀ 8.100e-02, ΔΦ/Φ 1.81e-04), RMS |R| H̄ 5.3911e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  395.9s] mhs-poisson-z: step 67: Φ 3.295054e+09 (Φ/Φ₀ 8.099e-02, ΔΦ/Φ 1.81e-04), RMS |R| H̄ 5.3906e-02 | CG 11 its (rel 9.4e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  399.9s] mhs-poisson-z: step 68: Φ 3.294458e+09 (Φ/Φ₀ 8.097e-02, ΔΦ/Φ 1.81e-04), RMS |R| H̄ 5.3901e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  404.2s] mhs-poisson-z: step 69: Φ 3.293863e+09 (Φ/Φ₀ 8.096e-02, ΔΦ/Φ 1.81e-04), RMS |R| H̄ 5.3896e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  407.9s] mhs-poisson-z: step 70: Φ 3.293269e+09 (Φ/Φ₀ 8.094e-02, ΔΦ/Φ 1.80e-04), RMS |R| H̄ 5.3891e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  412.6s] mhs-poisson-z: step 71: Φ 3.292676e+09 (Φ/Φ₀ 8.093e-02, ΔΦ/Φ 1.80e-04), RMS |R| H̄ 5.3886e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.7 s
+[  416.6s] mhs-poisson-z: step 72: Φ 3.292083e+09 (Φ/Φ₀ 8.092e-02, ΔΦ/Φ 1.80e-04), RMS |R| H̄ 5.3881e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 4.0 s
+[  420.9s] mhs-poisson-z: step 73: Φ 3.291491e+09 (Φ/Φ₀ 8.090e-02, ΔΦ/Φ 1.80e-04), RMS |R| H̄ 5.3877e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  424.8s] mhs-poisson-z: step 74: Φ 3.290900e+09 (Φ/Φ₀ 8.089e-02, ΔΦ/Φ 1.80e-04), RMS |R| H̄ 5.3872e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  429.1s] mhs-poisson-z: step 75: Φ 3.290309e+09 (Φ/Φ₀ 8.087e-02, ΔΦ/Φ 1.79e-04), RMS |R| H̄ 5.3867e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  432.8s] mhs-poisson-z: step 76: Φ 3.289719e+09 (Φ/Φ₀ 8.086e-02, ΔΦ/Φ 1.79e-04), RMS |R| H̄ 5.3862e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  437.3s] mhs-poisson-z: step 77: Φ 3.289130e+09 (Φ/Φ₀ 8.084e-02, ΔΦ/Φ 1.79e-04), RMS |R| H̄ 5.3857e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  441.0s] mhs-poisson-z: step 78: Φ 3.288541e+09 (Φ/Φ₀ 8.083e-02, ΔΦ/Φ 1.79e-04), RMS |R| H̄ 5.3852e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  445.6s] mhs-poisson-z: step 79: Φ 3.287954e+09 (Φ/Φ₀ 8.081e-02, ΔΦ/Φ 1.79e-04), RMS |R| H̄ 5.3848e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  449.3s] mhs-poisson-z: step 80: Φ 3.287366e+09 (Φ/Φ₀ 8.080e-02, ΔΦ/Φ 1.79e-04), RMS |R| H̄ 5.3843e-02 | CG 9 its (rel 9.8e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  453.7s] mhs-poisson-z: step 81: Φ 3.286780e+09 (Φ/Φ₀ 8.078e-02, ΔΦ/Φ 1.78e-04), RMS |R| H̄ 5.3838e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  457.5s] mhs-poisson-z: step 82: Φ 3.286194e+09 (Φ/Φ₀ 8.077e-02, ΔΦ/Φ 1.78e-04), RMS |R| H̄ 5.3833e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  462.0s] mhs-poisson-z: step 83: Φ 3.285609e+09 (Φ/Φ₀ 8.076e-02, ΔΦ/Φ 1.78e-04), RMS |R| H̄ 5.3828e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  465.9s] mhs-poisson-z: step 84: Φ 3.285025e+09 (Φ/Φ₀ 8.074e-02, ΔΦ/Φ 1.78e-04), RMS |R| H̄ 5.3824e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  470.2s] mhs-poisson-z: step 85: Φ 3.284441e+09 (Φ/Φ₀ 8.073e-02, ΔΦ/Φ 1.78e-04), RMS |R| H̄ 5.3819e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.2 s
+[  473.9s] mhs-poisson-z: step 86: Φ 3.283858e+09 (Φ/Φ₀ 8.071e-02, ΔΦ/Φ 1.77e-04), RMS |R| H̄ 5.3814e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  478.4s] mhs-poisson-z: step 87: Φ 3.283276e+09 (Φ/Φ₀ 8.070e-02, ΔΦ/Φ 1.77e-04), RMS |R| H̄ 5.3809e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  482.3s] mhs-poisson-z: step 88: Φ 3.282694e+09 (Φ/Φ₀ 8.068e-02, ΔΦ/Φ 1.77e-04), RMS |R| H̄ 5.3805e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  486.6s] mhs-poisson-z: step 89: Φ 3.282113e+09 (Φ/Φ₀ 8.067e-02, ΔΦ/Φ 1.77e-04), RMS |R| H̄ 5.3800e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.3 s
+[  490.6s] mhs-poisson-z: step 90: Φ 3.281533e+09 (Φ/Φ₀ 8.066e-02, ΔΦ/Φ 1.77e-04), RMS |R| H̄ 5.3795e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 4.1 s
+[  495.4s] mhs-poisson-z: step 91: Φ 3.280953e+09 (Φ/Φ₀ 8.064e-02, ΔΦ/Φ 1.77e-04), RMS |R| H̄ 5.3790e-02 | CG 11 its (rel 9.3e-04), α 1, capped 0, max|αδu| 0.001, 4.7 s
+[  499.2s] mhs-poisson-z: step 92: Φ 3.280375e+09 (Φ/Φ₀ 8.063e-02, ΔΦ/Φ 1.76e-04), RMS |R| H̄ 5.3786e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.8 s
+[  503.4s] mhs-poisson-z: step 93: Φ 3.279796e+09 (Φ/Φ₀ 8.061e-02, ΔΦ/Φ 1.76e-04), RMS |R| H̄ 5.3781e-02 | CG 11 its (rel 9.2e-04), α 1, capped 0, max|αδu| 0.001, 4.2 s
+[  507.3s] mhs-poisson-z: step 94: Φ 3.279219e+09 (Φ/Φ₀ 8.060e-02, ΔΦ/Φ 1.76e-04), RMS |R| H̄ 5.3776e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  511.9s] mhs-poisson-z: step 95: Φ 3.278642e+09 (Φ/Φ₀ 8.058e-02, ΔΦ/Φ 1.76e-04), RMS |R| H̄ 5.3771e-02 | CG 11 its (rel 9.2e-04), α 1, capped 0, max|αδu| 0.001, 4.6 s
+[  515.7s] mhs-poisson-z: step 96: Φ 3.278066e+09 (Φ/Φ₀ 8.057e-02, ΔΦ/Φ 1.76e-04), RMS |R| H̄ 5.3767e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  520.1s] mhs-poisson-z: step 97: Φ 3.277490e+09 (Φ/Φ₀ 8.056e-02, ΔΦ/Φ 1.76e-04), RMS |R| H̄ 5.3762e-02 | CG 11 its (rel 9.2e-04), α 1, capped 0, max|αδu| 0.001, 4.4 s
+[  524.0s] mhs-poisson-z: step 98: Φ 3.276916e+09 (Φ/Φ₀ 8.054e-02, ΔΦ/Φ 1.75e-04), RMS |R| H̄ 5.3757e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.9 s
+[  528.5s] mhs-poisson-z: step 99: Φ 3.276341e+09 (Φ/Φ₀ 8.053e-02, ΔΦ/Φ 1.75e-04), RMS |R| H̄ 5.3752e-02 | CG 11 its (rel 9.2e-04), α 1, capped 0, max|αδu| 0.001, 4.5 s
+[  532.2s] mhs-poisson-z: step 100: Φ 3.275768e+09 (Φ/Φ₀ 8.051e-02, ΔΦ/Φ 1.75e-04), RMS |R| H̄ 5.3748e-02 | CG 9 its (rel 9.7e-04), α 1, capped 0, max|αδu| 0.001, 3.7 s
+[  536.5s] mhs-poisson-z: stationarity: Gauss–Newton decrement 8.746e-05, ‖JᵀWR‖ 1.354e+06 (CG 11 its, rel 9.2e-04)
+[  538.0s] mhs-poisson-z: column HSE: columns_eos_failed = 0, columns_rk_refined = 22127, columns_rk_tol_not_met = 0, cut_level = 101, max_substeps = 32, tau_exp_tail_columns = 194522, tau_half_cell_columns = 59494, view_azimuth_deg = 0.0, view_geometry = plane_parallel, view_mu = 1.0
+[  541.5s] mhs-poisson-z: done: ln(P/P_colhse) below z_cut p1/p50/p99 -0.518 / 0.075 / 0.998; z(τ=1) p1/p50/p99 -2.6 / 69.9 / 125.7 km
+[  553.3s] mhs-poisson-z: wrote out/modes/zview_poi_mu1.h5
+[91m[1m┌ [22m[39m[91m[1mError: [22m[39mThe MPI process failed
+[91m[1m│ [22m[39m  proc = Process(setenv(`[4m/mn/stornext/u3/harshm/.julia/artifacts/5d01062e0bb24ddc69e3bc74d421671c3328df53/bin/mpiexec[24m [4m-n[24m [4m4[24m [4mjulia[24m [4m-t[24m [4m32[24m [4mscripts/run.jl[24m [4mconfig/modes/zview_poi_mu1.toml[24m`,["PACKAGES=/mn/stornext/u3/harshm/packages", "UCX_MEMTYPE_CACHE=no", "CPPFLAGS=-I/mn/stornext/u3/harshm/packages/gnetcdf-cxx4-4.3.1/include -I/mn/stornext/u3/harshm/packages/gnetcdf-c-4.9.3/include -I/mn/stornext/u3/harshm/packages/gpnetcdf-1.14.1/include -I/mn/stornext/u3/harshm/packages/ghdf5-1.14/include -I/mn/stornext/u3/harshm/packages/usr/include ", "OPENBLAS_MAIN_FREE=1", "OLDPATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin", "SHELL=/local/bin/zsh", "SSH_CONNECTION=129.240.190.218 50646 129.240.45.126 22", "SSH_CLIENT=129.240.190.218 50646 22", "MPIF90=mpif90", "UCX_ERROR_SIGNALS=SIGILL,SIGBUS,SIGFPE"  …  "CPU=x86_64", "HOME=/mn/stornext/u3/harshm", "OLDCXXFLAGS=", "_=/tmp/julia-1.13.1/bin/julia", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/410089/bus", "OLDCFLAGS=", "OLDLDFLAGS=", "MOTD_SHOWN=pam", "LANG=en_IN.UTF-8", "XDG_SESSION_CLASS=user"]), ProcessExited(2))
+[91m[1m└ [22m[39m[90m@ Main none:7[39m
+EXIT 2 wall 608 s
