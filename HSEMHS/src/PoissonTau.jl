@@ -24,6 +24,12 @@
 # With balance = :vertical (default; SOLVER_TIME_DESIGN.md D0) the column residual is the vertical balance
 # R_v = R_ray − Δz t·R̄_h (R̄_h the mean horizontal residual of the interval's two nodes): the along-ray residual mixes the
 # horizontal imbalance in with weight tan θ, which swamps the vertical balance at strong inclination.
+#
+# Column-mass axis (run.mode = "column-hse-logm", "mhs-poisson-logm"; `mass = true`): the axis is log10 m, m [kg m⁻²] the
+# column mass above the level along the line of sight. dm = ρ dz has the form of dτ = χ dz, so every equation above holds
+# with τ → m and χ → ρ: dz = −μ m/ρ d ln m and d ln P/d ln m = μ g m/P, whose solution with the top closure P = μ g m₁
+# (no mass above the top level beyond m₁) is P = μ g m. The Poisson unknowns, residuals and Jacobian are the same; only
+# a = μ m/ρ and its pressure derivative differ. τ₅₀₀ is then an output: dτ = (χ/ρ) m d ln m (`logtau_mass`).
 module PoissonTau
 
 using MPI, FFTW, LinearAlgebra, Printf, HDF5
@@ -36,10 +42,10 @@ import ..PoissonZ: tbcast!, pcg!
 
 const LN10 = log(10.0)
 
-"""ρ/P [s² m⁻²] and χ₅₀₀ [m⁻¹] at (ln T, ln P)."""
-@inline function q_chi(tab, lT, lP)
+"""ρ/P [s² m⁻²] at (ln T, ln P) and what the axis counts per unit length: χ₅₀₀ [m⁻¹], or ρ [kg m⁻³] on the mass axis."""
+@inline function q_chi(tab, lT, lP, mass = false)
     r, _, c, _ = H.state(tab, lT, lP)
-    return exp(r - lP), exp(c)
+    return exp(r - lP), exp(mass ? r : c)
 end
 
 """Value of a column quantity at log10 τ = L (linear in log10 τ; extrapolated from the end segments)."""
@@ -57,12 +63,14 @@ The rise of ln P is not limited: below a hot-over-cool interface the low opacity
 a large column mass per unit τ. Steps are limited by the slope at both ends (Heun), so that rise is resolved rather than
 averaged over a whole level. Returns true, or false if the pressure leaves the EOS table (or the EOS fails) in some
 interval; then lnP and z are NaN from that level down and the column is reported as failed.
+`mass = true`: lt is log10 m and the same integration gives P = μ g m (exact: the slope of ln P is 1 at every substep)
+and dz = −μ m/ρ d ln m.
 """
-function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0)
+function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0, mass = false)
     nt = length(lt)
     τ = exp.(LN10 .* lt)
-    lp = log(1e2)
-    for _ in 1:200                                                 # top: P = g τ ρ/χ (κ constant above the top level)
+    lp = mass ? log(mu * g * τ[1]) : log(1e2)
+    for _ in 1:(mass ? 0 : 200)                                    # top: P = g τ ρ/χ (κ constant above the top level)
         q, χ = q_chi(tab, lT[1], lp)
         new = log(mu * g * τ[1] * q / χ) + lp
         abs(new - lp) < 1e-10 && break
@@ -70,7 +78,7 @@ function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0)
     end
     lnP[1] = lp
     lPmax = tab.Y[end] - 1.0
-    rhs(lTs, lτ, l) = (s = q_chi(tab, lTs, l); (mu * g * exp(lτ) * s[1] / s[2], -mu * exp(lτ) / s[2]))
+    rhs(lTs, lτ, l) = (s = q_chi(tab, lTs, l, mass); (mu * g * exp(lτ) * s[1] / s[2], -mu * exp(lτ) / s[2]))
     z[1] = 0.0
     isfinite(lp) || (lnP .= NaN; z .= NaN; return false)
     for k in 1:nt-1
@@ -131,10 +139,38 @@ function align_ptot!(par, z, lnP, lT, Bx, By, Bz, tab, g)
     return exp(ref), gcount(par, nbelow[])
 end
 
-"""Gauge: global mean z(τ = 1) = 0. Returns the shift subtracted."""
-function gauge!(par, z, lt)
+"""
+log10 τ₅₀₀ (nt, ny, nx) on the mass axis `lm` from (ln T, ln P): dτ = (χ/ρ) m d ln m (trapezoid, as the heights), with
+χ/ρ constant above the top level, τ₁ = (χ/ρ)₁ m₁, the closure of the τ axis. τ counts along the same line as m.
+"""
+function logtau_mass(lT, lnP, lm, tab)
+    nt, ny, nx = size(lT)
+    out = zeros(nt, ny, nx)
+    lnm = LN10 .* lm
+    Threads.@threads for i in 1:nx
+        @inbounds for j in 1:ny
+            r, _, c, _ = H.state(tab, lT[1, j, i], lnP[1, j, i])
+            f = exp(c - r + lnm[1]); τ = f
+            out[1, j, i] = log10(τ)
+            for k in 2:nt
+                r, _, c, _ = H.state(tab, lT[k, j, i], lnP[k, j, i])
+                fn = exp(c - r + lnm[k])
+                τ += (lnm[k] - lnm[k-1]) / 2 * (f + fn); f = fn
+                out[k, j, i] = log10(τ)
+            end
+        end
+    end
+    return out
+end
+
+"""
+Gauge: global mean z(τ = 1) = 0. Returns the shift subtracted. `logtau` (mass axis): log10 τ of every cell, on which each
+column's z(τ = 1) is interpolated (the axis itself is log10 τ otherwise).
+"""
+function gauge!(par, z, lt, logtau = nothing)
     nt, ny, nx = size(z)
-    s = gsum(par, sum(interp_lt(@view(z[:, j, i]), lt, 0.0) for j in 1:ny, i in 1:nx)) / (ny * par.NX)
+    zt1(j, i) = interp_lt(@view(z[:, j, i]), logtau === nothing ? lt : @view(logtau[:, j, i]), 0.0)
+    s = gsum(par, sum(zt1(j, i) for j in 1:ny, i in 1:nx)) / (ny * par.NX)
     z .-= s
     return s
 end
@@ -143,9 +179,9 @@ end
 Column HSE in τ for every owned column, aligned and gauged; `mu` = cos θ of the line of sight (τ is τ_LOS). Returns (lnP, z, nfailed, Pref_total, nbelow, nbad):
 nfailed is the global number of columns whose pressure left the EOS table, nbad the global number of non-finite ln P;
 when nbad > 0 the alignment and gauge are skipped (they would spread the NaNs) and every rank returns the same values,
-so callers decide collectively.
+so callers decide collectively. `mass = true`: lt is log10 m (along the line of sight), gauged on the τ computed from it.
 """
-function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false, mu = 1.0)
+function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false, mu = 1.0, mass = false)
     nt, ny, nx = size(lT)
     lnP = zeros(nt, ny, nx); z = zeros(nt, ny, nx)
     nfail = Threads.Atomic{Int}(0)
@@ -153,7 +189,7 @@ function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progres
                    enabled = progress)
     Threads.@threads for i in 1:nx
         for j in 1:ny
-            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g; mu = mu) ||
+            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g; mu = mu, mass = mass) ||
                 Threads.atomic_add!(nfail, 1)
             next!(bar)
         end
@@ -163,26 +199,27 @@ function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progres
     nbad = gcount(par, count(!isfinite, lnP))
     nbad > 0 && return lnP, z, nfailed, NaN, 0, nbad
     Pt, nb = align == "ptot" ? align_ptot!(par, z, lnP, lT, Bx, By, Bz, tab, g) : (NaN, 0)
-    gauge!(par, z, lt)
+    gauge!(par, z, lt, mass ? logtau_mass(lT, lnP, lt, tab) : nothing)
     return lnP, z, nfailed, Pt, nb, 0
 end
 
 """
 Read a τ-grid input (IO/input-mhs-ltau.nc layout: log10tau500 (nt), x (NX), y (NY), temperature, B_x, B_y, B_z as h5py
 (x, y, τ); or the make_tau_input.py layout with logtau500, x_m, y_m and h5py (τ, y, x)); this rank's x slab, Julia (τ, y, x).
-Only x and y honour a units attribute; temperature and the field are read as K and T without conversion.
+Only x and y honour a units attribute; temperature and the field are read as K and T without conversion. A column-mass
+input is the first layout with log10m (nm, `read_log10m`) in place of log10tau500.
 """
 function read_tau_input(par, path; xname = "x", yname = "y")
     ir = owned_x(par)
     h5open(path, "r") do f
-        if haskey(f, "log10tau500")
+        if haskey(f, "log10tau500") || haskey(f, "log10m")
             for nm in (xname, yname)
                 haskey(f, nm) || H.invalid("$path has no dataset \"$nm\" (τ-grid inputs carry x and y like the height-grid input)")
             end
             ax(nm) = (a = attributes(f[nm]); fac = haskey(a, "units") ? H.UNIT_FACTORS[:length][H.attr_string(read(a["units"]))] : 1.0;
                       Float64.(read(f[nm])) .* fac)
             rd(nm) = Float64.(f[nm][:, :, ir])
-            lt = read(f["log10tau500"])
+            lt = haskey(f, "log10tau500") ? read(f["log10tau500"]) : read_log10m(f)
             x, y = ax(xname), ax(yname)
             (length(x), length(y)) == (size(f["temperature"], 3), size(f["temperature"], 2)) ||
                 H.invalid("$path: x, y lengths $((length(x), length(y))) do not match temperature $(size(f["temperature"]))")
@@ -194,10 +231,22 @@ function read_tau_input(par, path; xname = "x", yname = "y")
     end
 end
 
-"""Global (NX, NY, nt) of a τ-grid input file."""
+"""
+log10 m [kg m⁻²] of a column-mass input: dataset log10m, SI unless its `units` attribute (of m) says g cm⁻²
+(1 g cm⁻² = 10 kg m⁻²). An unknown unit is an error: a wrong factor would silently scale every pressure.
+"""
+function read_log10m(f)
+    a = attributes(f["log10m"])
+    u = haskey(a, "units") ? H.attr_string(read(a["units"])) : "kg m-2"
+    off = u in ("kg m-2", "kg/m2", "kg/m^2", "kg m^-2") ? 0.0 : u in ("g cm-2", "g/cm2", "g/cm^2", "g cm^-2") ? 1.0 :
+          H.invalid("log10m: unknown units \"$u\" (kg m-2 or g cm-2)")
+    return Float64.(read(f["log10m"])) .+ off
+end
+
+"""Global (NX, NY, nt) of a τ-grid or column-mass input file."""
 function tau_input_size(path)
     h5open(path, "r") do f
-        if haskey(f, "log10tau500")
+        if haskey(f, "log10tau500") || haskey(f, "log10m")
             s = size(f["temperature"]); return s[3], s[2], s[1]
         else
             s = size(f["T"]); return s[1], s[2], s[3]
@@ -238,6 +287,7 @@ mutable struct TP
     dlm::Array{Float64,3}                           # :block, :hybrid: diag(JᵀWJ), set by colblocks! (Marquardt damping)
     mlm::Float64                                    # Marquardt damping: the operator adds mlm · dlm
     fdamp::Bool                                     # :hybrid: the Fourier part includes mlm × the layer medians of dlm
+    mass::Bool                                      # the axis is log10 m: a = μ m/ρ (else log10 τ: a = μ τ/χ)
 end
 
 inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
@@ -297,8 +347,9 @@ function evaluate!(pr::TP, u, c)
             for m in 1:n1
                 k = node(pr, m); lT = pr.lT[k, j, i]; lp = u[k, j, i]
                 r, dr, _ = H.lnrho_dY(pr.tab, lT, lp)
-                _, _, c0, _ = H.state(pr.tab, lT, lp)
-                _, _, cp, _ = H.state(pr.tab, lT, lp + ε); _, _, cm, _ = H.state(pr.tab, lT, lp - ε)   # ε = EPS_PROBE
+                r0, _, c0, _ = H.state(pr.tab, lT, lp)
+                rp, _, cp, _ = H.state(pr.tab, lT, lp + ε); rm, _, cm, _ = H.state(pr.tab, lT, lp - ε)   # ε = EPS_PROBE
+                pr.mass && (c0 = r0; cp = rp; cm = rm)     # the axis counts mass: ρ in the place of χ
                 isfinite(r + c0 + cp + cm) || (Threads.atomic_add!(bad, 1); r = 0.0; dr = 1.0; c0 = cp = cm = 0.0)
                 pr.q[m, j, i] = exp(r - lp); ρu[m, j, i] = dr
                 a = pr.mu * exp(pr.lτ[k] - c0); pr.a[m, j, i] = a; pr.aχ[m, j, i] = a * (cp - cm) / (2ε)
@@ -846,16 +897,17 @@ function block_solve!(out, F, r)
     return out
 end
 
-"""Residual summary by log10 τ band: RMS H̄|R_h| (horizontal) and H̄ R_z/Δz̄ (vertical), ≈ |F|/ρg."""
+"""Residual summary by band of the axis (log10 τ or log10 m): RMS H̄|R_h| (horizontal) and H̄ R_z/Δz̄ (vertical), ≈ |F|/ρg."""
 function bands(pr::TP, lt, Hb, dzb)
     out = String[]; N = pr.ny * pr.par.NX
-    for (lo, hi) in ((-9.0, -3.0), (-3.0, -2.0), (-2.0, -1.0), (-1.0, 0.0), (0.0, 9.0))
+    for (lo, hi) in (pr.mass ? ((-9.0, -1.0), (-1.0, 0.0), (0.0, 1.0), (1.0, 2.0), (2.0, 9.0)) :
+                     ((-9.0, -3.0), (-3.0, -2.0), (-2.0, -1.0), (-1.0, 0.0), (0.0, 9.0)))
         ms = [m for m in 1:pr.n1 if lo <= lt[node(pr, m)] < hi]
         isempty(ms) && continue
         h = sqrt(gsum(pr.par, sum(Hb[m]^2 * (pr.Rx[m, j, i]^2 + pr.Ry[m, j, i]^2) for m in ms, j in 1:pr.ny, i in 1:pr.nx)) / (length(ms) * N))
         fs = [f for f in ms if f < pr.n1]
         v = isempty(fs) ? NaN : sqrt(gsum(pr.par, sum((Hb[f] * pr.Rz[f, j, i] / dzb[f])^2 for f in fs, j in 1:pr.ny, i in 1:pr.nx)) / (length(fs) * N))
-        push!(out, @sprintf("log τ [%.0f, %.0f): horiz %.3f, vert %.3f", lo, hi, h, v))
+        push!(out, @sprintf("%s [%.0f, %.0f): horiz %.3f, vert %.3f", pr.mass ? "log m" : "log τ", lo, hi, h, v))
     end
     return join(out, "; ")
 end
@@ -898,7 +950,7 @@ Problem on the τ grid from the start heights z0 (the cut level from `logtau_cut
 of the cut level. Weights and regularisation are set by `solve_tau`; `evaluate!`, `Jop!` and `JTop!` work on `pr`.
 """
 function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0, S = nothing, mu = 1.0,
-                  slant = (0.0, 0.0), balance = :vertical, precond = :fourier, klow = 8)
+                  slant = (0.0, 0.0), balance = :vertical, precond = :fourier, klow = 8, mass = false)
     nt, ny, nx = size(lT); NX = par.NX
     kc = argmin(abs.(lt .- logtau_cut)); n1 = nt - kc + 1
     zrel = z0[1:kc, :, :] .- z0[kc:kc, :, :]
@@ -919,7 +971,7 @@ function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
             Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z(),
-            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0, true)
+            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0, true, mass)
     return pr, c
 end
 
@@ -971,7 +1023,7 @@ end
 Cells of (u, c) that `evaluate!` rejects (global counts): ln P below / above the table (`lo`, `hi`), in it but with a
 derivative probe outside (`probe_lo`, `probe_hi`), other non-finite states (`other`, e.g. T outside); and the cell
 furthest outside (largest distance in ln P from the nearer edge of the probe-valid range): global x, y, level, log τ,
-T, ln P, distance, `du` = its δ (when given). For diagnostics after a failed trial; collective.
+T, ln P, distance, `du` = its δ (when given); `logtau` is ln of the axis value (τ or m). For diagnostics after a failed trial; collective.
 """
 function eos_cells(pr::TP, u; δ = nothing)
     tab = pr.tab; Y1 = tab.Y[1]; Y2 = tab.Y[end]; gi = owned_x(pr.par)
@@ -998,7 +1050,7 @@ function eos_cells(pr::TP, u; δ = nothing)
 end
 
 eos_str(e) = e.total == 0 ? "none" :
-    @sprintf("%d (ln P below %d, above %d; probe only %d/%d; other %d; worst x %d y %d level %d log τ %.2f T %.0f ln P %.3f, %.2g beyond the edge [%.3f, %.3f], δu %.3g)",
+    @sprintf("%d (ln P below %d, above %d; probe only %d/%d; other %d; worst x %d y %d level %d ln axis %.2f T %.0f ln P %.3f, %.2g beyond the edge [%.3f, %.3f], δu %.3g)",
              e.total, e.lo, e.hi, e.probe_lo, e.probe_hi, e.other, e.worst.x, e.worst.y, e.worst.level, e.worst.logtau,
              e.worst.T, e.worst.lnP, e.worst.dist, e.Y..., e.worst.du)
 
@@ -1097,7 +1149,8 @@ preconditioner applications `aprod`, `minv`; the ‖Jδ‖² product per solve i
 evaluations of R), `restores` (re-evaluations of the linearisation state after a failed try), qualification
 (`qual_cg`, `qual_aprod`, `qual_minv`), the final stationarity diagnostic (`final_*`, zero when it reuses the stop
 check at the returned state) and seconds (`step_s`, `qual_s`, `final_s`, `total_s`); `rms_atol` > 0 accepts a start state with √(Φ₀/W) ≤ rms_atol as converged in zero steps. `mu` = cos θ
-(lt is τ along the line of sight) and `slant` = (t_x, t_y) of the inclined geometry ((0, 0): vertical columns).
+(lt is τ along the line of sight) and `slant` = (t_x, t_y) of the inclined geometry ((0, 0): vertical columns). `mass`: lt
+is log10 m along the line of sight, `logtau_cut` the cut on it; z0 is gauged by the caller (`gauge!` with `logtau_mass`).
 `on_step(s, u, z, info)` (diagnostics) is called after every accepted step with the state (z not yet gauged) and
 `info = (phi, pred, cg_its, cg_rel, alpha, seconds)`; `pred` is the step's predicted relative decrease δ·(−JᵀWR)/Φ.
 `stop = :gn` (design/tau/SOLVER_TIME_DESIGN.md D1) stops instead when `pred` < gn_tol on gn_consec consecutive
@@ -1139,11 +1192,11 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                    stop = :phi, gn_tol = 1e-3, gn_consec = 2, balance = :vertical, lm = :alpha, forcing = :fixed,
                    cg_cap = 200, eta_min = 0.005, eta_max = 0.1, precond = :fourier, klow = 8,
                    damping = :reg, cap_frac = 0.5, mlm_min = 0.01, weights = nothing, qualify = true, qual_tol = 1e-2,
-                   qual_maxit = 400, feas = true)
+                   qual_maxit = 400, feas = true, mass = false)
     nt, ny, nx = size(lT); NX = par.NX
     sw = precond == :switch; nsw = 0                 # nsw: the step after which :switch changed to column blocks
     pr, c = tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = logtau_cut, S = S, mu = mu, slant = slant,
-                     balance = balance, precond = sw ? :block : precond, klow = klow)
+                     balance = balance, precond = sw ? :block : precond, klow = klow, mass = mass)
     sw = sw && pr.prec == :block                     # tp_setup falls back to :fourier where blocks are not possible
     sw && (pr.prec = :fourier)
     kc, n1 = pr.kc, pr.n1
@@ -1167,11 +1220,12 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         Wtot = (2 * sum(pr.wc) + sum(pr.wf)) * ny * NX
     end
     wts = (wc = copy(pr.wc), wf = copy(pr.wf), ereg = copy(pr.ereg), kc = kc, n1 = n1, NX = NX, ny = ny)
-    k0 = argmin(abs.(lt))
+    k0 = argmin(abs.(lt .- (mass ? 1.5 : 0.0)))              # a level near τ = 1 (mass axis: τ is not on it; log10 m ≈ 1.5)
+    zlab = mass ? @sprintf("z(log m=%.2f)", lt[k0]) : "z(τ=1)"; axlab = mass ? "log10 m" : "log10 τ"
     zq() = gquantiles(par, pr.z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3
     Φ, _ = evaluate!(pr, u, c); Φ0 = Φ
-    logf(@sprintf("start: cut at log10 τ = %.2f (level %d, %d ln P levels + 1 height per column), Φ %.6e, RMS %.4e | %s | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km",
-                  lt[kc], kc, n1 - 1, Φ, sqrt(Φ / Wtot), bands(pr, lt, Hb, dzf), zq()...))
+    logf(@sprintf("start: cut at %s = %.2f (level %d, %d ln P levels + 1 height per column), Φ %.6e, RMS %.4e | %s | %s p1/p50/p99 %.1f / %.1f / %.1f km",
+                  axlab, lt[kc], kc, n1 - 1, Φ, sqrt(Φ / Wtot), bands(pr, lt, Hb, dzf), zlab, zq()...))
     reason = :max_steps
     Φfl = phi_floor(pr, u)
     if sqrt(Φ0 / Wtot) <= rms_atol || Φ0 == 0 || Φ0 <= Φfl
@@ -1268,8 +1322,8 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
         u .= ut; c .= ct; Φ = Φt; steps = s
         dzmax = α * gmax(par, maximum(abs, @view δ[1, :, :]))
         nsmall = dec < rtol ? nsmall + 1 : 0
-        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e; step %d its in %d solves, %d evaluations), α %.3g (cap scale %.3g, feasible %.3g), μ next %.3g, max|δc| %.1f km | z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
-                      s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, cg_s, tries_s, ev_s, α, sc, αf, μ, dzmax / 1e3, zq()..., time() - t0))
+        logf(@sprintf("step %2d: Φ/Φ₀ %.3e (ΔΦ/Φ %.2e, predicted %.2e, model %.2e, ρ %.2f), RMS %.4e | CG %d its (rel %.1e, tol %.1e; step %d its in %d solves, %d evaluations), α %.3g (cap scale %.3g, feasible %.3g), μ next %.3g, max|δc| %.1f km | %s p1/p50/p99 %.1f / %.1f / %.1f km | %.1f s",
+                      s, Φ / Φ0, dec, pred, model, ρg, sqrt(Φ / Wtot), its, rel, tol_k, cg_s, tries_s, ev_s, α, sc, αf, μ, dzmax / 1e3, zlab, zq()..., time() - t0))
         tsteps += time() - t0
         if sw && nsw == 0 && pr.prec == :fourier && pfl[] == :maxit       # the Fourier solve stopped at its limit
             nsw = s; pr.prec = :block

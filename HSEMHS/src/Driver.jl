@@ -19,18 +19,18 @@ function run_config(path::AbstractString)
             build_eos_table(cfg)
         elseif mode in ("column_hse", "column-hse-z")
             status = run_column_hse(cfg)
-        elseif mode == "column-hse-ltau"
+        elseif mode in ("column-hse-ltau", "column-hse-logm")
             status = run_column_hse_ltau(cfg)
         elseif mode == "mhs-poisson-z"
             status = run_mhs_poisson_z(cfg)
-        elseif mode == "mhs-poisson-ltau"
+        elseif mode in ("mhs-poisson-ltau", "mhs-poisson-logm")
             status = run_mhs_poisson_ltau(cfg)
         elseif mode == "full-mhs-z"
             invalid("run.mode = \"full-mhs-z\" runs through scripts/run.jl (the M5 driver), not run_config")
         elseif mode == "screening"
             status = run_screening(cfg)
         else
-            invalid("run.mode = \"$mode\" is not implemented (available: $(join(MODES[1:5], ", ")), gate0, eos_table, screening)")
+            invalid("run.mode = \"$mode\" is not implemented (available: $(join(MODES[1:7], ", ")), gate0, eos_table, screening)")
         end
     catch e
         e isa InvalidInput || rethrow()

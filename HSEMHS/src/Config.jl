@@ -8,7 +8,7 @@ const REQUIRED = :REQUIRED
 
 const CONFIG_SCHEMA = [
     "run" => [
-        "mode" => REQUIRED,          # column-hse-z | column-hse-ltau | mhs-poisson-z | mhs-poisson-ltau | full-mhs-z (+ gate0, eos_table, screening; column_hse = column-hse-z)
+        "mode" => REQUIRED,          # column-hse-z | column-hse-ltau | column-hse-logm | mhs-poisson-z | mhs-poisson-ltau | mhs-poisson-logm | full-mhs-z (+ gate0, eos_table, screening; column_hse = column-hse-z)
         "output" => REQUIRED,
         "overwrite" => false,
         "debug" => false,
@@ -58,7 +58,7 @@ const CONFIG_SCHEMA = [
     "view" => [                      # viewing angle (design/tau/VIEWING_ANGLE_DESIGN.md); not for full-mhs-z
         "mu" => 1.0,                   # cos θ of the line of sight, 0 < mu ≤ 1
         "azimuth_deg" => 0.0,          # φ, from +x toward +y (used by geometry = "inclined")
-        "geometry" => "plane_parallel",# plane_parallel | inclined (all four fixed-B modes; height modes: affects τ only)
+        "geometry" => "plane_parallel",# plane_parallel | inclined (all fixed-B modes; height modes: affects τ only)
     ],
     "mhs" => [
         "anchor_plane" => "bottom",
@@ -95,9 +95,10 @@ const CONFIG_SCHEMA = [
         "checkpoint_every" => 200,
         "restart_from" => "",
     ],
-    "poisson" => [                   # mhs-poisson-z and mhs-poisson-ltau
+    "poisson" => [                   # mhs-poisson-z, mhs-poisson-ltau and mhs-poisson-logm (as ltau, with logm_cut)
         "z_cut_m" => 1.0e6,            # z: solved region z ≤ z_cut, column HSE above
         "logtau_cut" => -4.0,          # ltau: solved levels log10 τ ≥ logtau_cut, τ-hydrostatic above
+        "logm_cut" => -1.5,            # logm: solved levels log10 m ≥ logm_cut [kg m⁻²], hydrostatic above
         "cut_frame" => "vertical",     # ltau: vertical (cut at vertical log10 τ = logtau_cut, LOS logtau_cut − log10 μ) | los
         "max_steps" => 0,              # Gauss–Newton steps; 0: mode default (ltau 25, z 100)
         "stop" => "gn",                # ltau: gn (predicted decrease < gn_tol on gn_consec steps) | phi; z: always phi
@@ -120,8 +121,8 @@ const CONFIG_SCHEMA = [
         "klow" => 8,
         "damping" => "reg",            # reg (horizontal regularisation) | marquardt (needs block or hybrid)
     ],
-    "tau_grid" => [                  # column-hse-ltau and mhs-poisson-ltau
-        "align" => "ptot",             # ptot: P + B²/2μ₀ equal at one height; none: z = 0 at log10 τ = 0 per column
+    "tau_grid" => [                  # column-hse-ltau, mhs-poisson-ltau and the logm modes
+        "align" => "ptot",             # ptot: P + B²/2μ₀ equal at one height; none: z = 0 at log10 τ (logm: log10 m) = 0 per column
     ],
     "full_mhs" => [                  # full-mhs-z (the M5 joint GN driver, scripts/m5_bifrost/m5h_fullres.jl); M5i defaults
         "run" => "run",                # run | smoke
@@ -161,7 +162,7 @@ const CONFIG_SCHEMA = [
     ],
 ]
 
-const MODES = ("column-hse-z", "column-hse-ltau", "mhs-poisson-z", "mhs-poisson-ltau", "full-mhs-z",
+const MODES = ("column-hse-z", "column-hse-ltau", "column-hse-logm", "mhs-poisson-z", "mhs-poisson-ltau", "mhs-poisson-logm", "full-mhs-z",
                "column_hse", "mhs", "gate0", "eos_table", "screening")
 
 """Parsed, validated configuration. Sections are NamedTuples: `cfg.parallel.px`."""
@@ -253,7 +254,7 @@ end
 load_config(path::AbstractString) = parse_config(read(path, String); path = path)
 
 """Keys added after configs were hashed: part of the hash only when set to a non-default value."""
-const HASH_IF_SET = Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping"])
+const HASH_IF_SET = Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping", "logm_cut"])
 
 """SHA-256 of the canonical parsed config, excluding keys irrelevant to restart identity."""
 function config_hash(cfg::Config)

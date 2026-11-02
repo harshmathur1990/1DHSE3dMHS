@@ -1,6 +1,7 @@
 # Usage: [mpiexec -n R] julia --project=. -t T scripts/run.jl config.toml
 #
-# run.mode: column-hse-z | column-hse-ltau | mhs-poisson-z | mhs-poisson-ltau | full-mhs-z (all MPI + threads),
+# run.mode: column-hse-z | column-hse-ltau | column-hse-logm | mhs-poisson-z | mhs-poisson-ltau | mhs-poisson-logm |
+# full-mhs-z (all MPI + threads),
 # plus gate0, eos_table, screening. full-mhs-z runs the M5 joint Gauss–Newton driver (scripts/m5_bifrost/m5h_fullres.jl)
 # with the [full_mhs] settings (defaults = the M5i run: uniform 5 G σ_B, no trust radius, Φ stop); run.output is its
 # output directory.

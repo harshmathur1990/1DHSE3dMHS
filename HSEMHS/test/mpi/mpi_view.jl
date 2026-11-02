@@ -56,7 +56,7 @@ gmaxv(x) = MPI.Allreduce(Float64(x), max, comm)
         @test e.hi == 1 && e.total == 1 && e.worst.x == NX && e.worst.y == 2 && e.worst.level == nt
         H.free_parallel!(par)
     end
-    @testset "inclined view, $R ranks vs one rank ($mode)" for mode in H.EMBEDDED_MODES
+    @testset "inclined view, $R ranks vs one rank ($mode)" for mode in filter(!H.mass_mode, H.EMBEDDED_MODES)
         tab = H.load_table(ETABLE)
         v = H.ViewOptions(mu = 0.6, azimuth_deg = 30.0, geometry = :inclined)
         full = load_fixture(mode, "11x12", Colon())
@@ -75,6 +75,26 @@ gmaxv(x) = MPI.Allreduce(Float64(x), max, comm)
         @test gmaxv(maximum(abs, r.lnP .- r1.lnP[:, :, ir])) < tol
         @test gmaxv(maximum(abs.(r.tau500 .- r1.tau500[:, :, ir]) ./ r1.tau500[:, :, ir])) < tol
         @test gmaxv(maximum(abs, r.z_tau1 .- r1.z_tau1[:, ir])) < (mode == :mhs_poisson_ltau ? 1.0 : 1e-6)
+    end
+    @testset "column-mass axis, inclined view, $R ranks vs one rank ($mode)" for mode in (:column_hse_logm, :mhs_poisson_logm)
+        tab = H.load_table(ETABLE)
+        v = H.ViewOptions(mu = 0.6, azimuth_deg = 30.0, geometry = :inclined)
+        full = load_tau_fixture("11x12", Colon()); NX = length(full.x)
+        lm = full.lt .+ 1.0
+        poi = mode == :mhs_poisson_logm ? H.PoissonMassOptions(logm_cut = -1.5, max_steps = 30, rtol = 1e-4, stop = :phi) : nothing
+        prep(c) = H.prepare_embedded(c, mode; axis = lm, x = full.x, y = full.y, eos = tab, g = 274.0, column = H.ColumnMassOptions(),
+                                     poisson = poi, view = v)
+        ws1 = prep(MPI.COMM_SELF)
+        r1 = H.snapshot(H.solve_embedded!(ws1, full.lnT, full.Bx, full.By, full.Bz)); H.free_embedded!(ws1)
+        ir = H.slab_range(NX, R, me)
+        fx = load_tau_fixture("11x12", ir)
+        ws = prep(comm)
+        r = H.snapshot(H.solve_embedded!(ws, fx.lnT, fx.Bx, fx.By, fx.Bz)); H.free_embedded!(ws)
+        @test r.status.valid && r1.status.valid
+        tol = mode == :mhs_poisson_logm ? 1e-5 : 1e-11
+        @test gmaxv(maximum(abs, r.lnP .- r1.lnP[:, :, ir])) < tol
+        @test gmaxv(maximum(abs.(r.tau500 .- r1.tau500[:, :, ir]) ./ r1.tau500[:, :, ir])) < tol
+        @test gmaxv(maximum(abs, r.z_tau1 .- r1.z_tau1[:, ir])) < (mode == :mhs_poisson_logm ? 1.0 : 1e-6)
     end
     # precond = :switch: every rank switches after the same step (the PCG flag is collective), the stop check uses the
     # column blocks on every rank, and the result agrees with one rank
