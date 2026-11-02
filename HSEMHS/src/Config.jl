@@ -58,7 +58,7 @@ const CONFIG_SCHEMA = [
     "view" => [                      # viewing angle (design/tau/VIEWING_ANGLE_DESIGN.md); not for full-mhs-z
         "mu" => 1.0,                   # cos θ of the line of sight, 0 < mu ≤ 1
         "azimuth_deg" => 0.0,          # φ, from +x toward +y (used by geometry = "inclined")
-        "geometry" => "plane_parallel",# plane_parallel | inclined (τ modes; height modes: plane_parallel only)
+        "geometry" => "plane_parallel",# plane_parallel | inclined (all four fixed-B modes; height modes: affects τ only)
     ],
     "mhs" => [
         "anchor_plane" => "bottom",

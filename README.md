@@ -7,8 +7,9 @@ inversion). The physics goes from independent hydrostatic columns to progressive
 approximations. The Julia package lives in `HSEMHS/`; this file is the entry point.
 
 **Status (2 Nov 2026, `main`, merged from `solver-time`).** All five modes below are
-implemented, run with MPI + threads and are documented; the two τ-grid modes take a viewing angle (μ, azimuth; see
-[Viewing angle](#viewing-angle-τ-grid-modes)). That is not the same as scientifically converged results: see
+implemented, run with MPI + threads and are documented. The four fixed-B modes take a viewing angle (μ, azimuth). The
+τ-grid modes read their input as already along that line of sight, and the height modes compute τ along it (see
+[Viewing angle](#viewing-angle)). That is not the same as scientifically converged results: see
 [Stopping, status and what "finished" means](#stopping-status-and-what-finished-means), the
 [release result table](#release-result-table-τ-grid-modes-29-oct-2026) and [Known limitations](#known-limitations).
 On the full Bifrost cube `mhs-poisson-ltau` returns valid atmospheres at every μ tested but **does not meet its stopping
@@ -74,14 +75,15 @@ thermodynamic atmosphere. Everything below applies to both unless named.
   T(τ_LOS) — the continuum intensity, limb darkening, line formation — is exactly what the input had. Setting `view.mu`
   does **not** turn a disk-centre cube into an off-centre view. It declares that the input *already is* one.
 * **Not valid with a mismatched μ.** `view.mu < 1` requires T and B on τ counted **along the line of sight at that μ**, on
-  deprojected footprints (see [Viewing angle](#viewing-angle-τ-grid-modes)). A vertical-τ (μ = 1) cube must run with
+  deprojected footprints (see [Viewing angle](#viewing-angle)). A vertical-τ (μ = 1) cube must run with
   μ = 1.
   * Measured on a vertical-τ cube run as μ = 0.5 inclined (2 Nov 2026,
     [`HSEMHS/reports/mu_mismatch_2026-11-02/`](HSEMHS/reports/mu_mismatch_2026-11-02/README.md)): column HSE barely
     changed (z(τ = 1) rms 5.7 km; P × 0.665).
   * `mhs-poisson-ltau` was badly wrong: 460× the initial force imbalance, a 3× rougher τ = 1 surface, a ±150 km
     large-scale pattern tied to the field layout along the tilt, and strong-field depressions turned into elevations.
-  * To model an off-centre view of a 3-D atmosphere, build a slanted-ray input from a height-grid cube first
+  * To model an off-centre view of a 3-D atmosphere there are two routes. Run a height mode with `[view]`, which
+    integrates τ along the slanted rays through the cube. Or build a slanted-ray τ input from the height-grid cube
     (`HSEMHS/scripts/viewing/make_slanted_tau.jl`).
 * **Not converged unless the status says so.** Callers must read `status`/`reason` (embedding API) or the exit code (2 =
   valid, not converged). An embedding caller that checks only `valid` will accept a `:max_steps` atmosphere silently.
@@ -251,10 +253,10 @@ sections or keys are rejected. Keys used per mode:
 
 | Mode | Honoured | Notes |
 |---|---|---|
-| `column-hse-z` | `[input]` (names, `crop_z_m`), `physics.g`, `[eos]`, `[column_hse]`, `[tau]`, `[parallel]`, `output.compression`, `run.overwrite` | |
-| `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed |
+| `column-hse-z` | `[input]` (names, `crop_z_m`), `physics.g`, `[eos]`, `[column_hse]`, `[tau]`, `[view]`, `[parallel]`, `output.compression`, `run.overwrite` | `[view]` changes τ only ([Viewing angle](#viewing-angle)) |
+| `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed; `[view]` changes τ only |
 | `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file}`, `tau_grid.align`, `[view]`, `run.overwrite` | other `[input]` keys ignored |
-| `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, cut_frame, max_steps, stop, gn_tol, gn_consec, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0, lm, forcing, cg_cap, eta_min, eta_max, precond, klow, damping}` and `[view]` | solver settings: [Viewing angle](#viewing-angle-τ-grid-modes) |
+| `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, cut_frame, max_steps, stop, gn_tol, gn_consec, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0, lm, forcing, cg_cap, eta_min, eta_max, precond, klow, damping}` and `[view]` | solver settings: [Viewing angle](#viewing-angle) |
 | `full-mhs-z` | `input.file`, `eos.table_file`, `run.output` (a **directory**), `full_mhs.*` | everything else is not forwarded: `physics.g`, `[column_hse]`, `[mhs]`, `[parallel]`, `[tau]`, `[output]`, `run.overwrite`, input dataset names; P_ref and g come from the file attributes |
 
 `full-mhs-z` runs the older M5 driver: `scripts/run.jl` validates the config, exports `MHS_INPUT`, `MHS_EOS_TABLE`,
@@ -263,12 +265,31 @@ sections or keys are rejected. Keys used per mode:
 `m5h_fullres.jl` has different defaults (5 % relative σ, trust region, height stop: the M5h configuration); the mode
 config defaults are the M5i choice (uniform 5 G, line search, Φ stop).
 
-## Viewing angle (τ-grid modes)
+## Viewing angle
 
 `[view]` (or `ViewOptions` in the embedding API) sets the line of sight: `mu` = cos θ (0 < μ ≤ 1), `azimuth_deg` = φ
-from +x toward +y, `geometry` = `plane_parallel` (default) or `inclined`. Design: `design/tau/VIEWING_ANGLE_DESIGN.md`.
+from +x toward +y, `geometry` = `plane_parallel` (default) or `inclined`. All four fixed-B modes take it. `full-mhs-z`
+rejects μ ≠ 1, because its τ is vertical (`TAU_MU = 1`). Design: `design/tau/VIEWING_ANGLE_DESIGN.md`.
 
-**Input contract (μ < 1).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
+**Height modes** (`column-hse-z`, `mhs-poisson-z`). On a height grid the atmosphere is already placed in the local solar
+frame, so the view changes **only the optical depth**: `tau500`/`logtau500` and z(τ = 1). P, ρ and χ₅₀₀ do not depend
+on it.
+* `plane_parallel`: τ_LOS = τ_vertical/μ in each column.
+* `inclined`: τ along the slanted rays through the cube (`src/ViewTau.jl`):
+  1. χ on each level is shifted to the footprint grid by periodic bilinear interpolation;
+  2. each footprint column is integrated with path length dz/μ and the same top closure;
+  3. τ is shifted back to the grid points.
+
+  z(τ = 1) is reported on the footprints, where each ray meets the footprint grid. Heights are those of the input grid,
+  not gauged.
+* There is no extra input contract. This is the route for an off-centre view of a simulation cube.
+* **Checked on the 504² × 177 Bifrost cube** (2 Nov 2026):
+  * P, ρ and χ₅₀₀ were bitwise identical for μ = 1, 0.5 plane-parallel and 0.5 inclined, in both modes.
+  * Plane-parallel τ was exactly 2 × the vertical τ.
+  * An independent re-implementation of the inclined method reproduced τ to 4e-13 and z(τ = 1) to 1e-10 m.
+  * z(τ = 1) median: 63.5 km (μ = 1), 103.1 km (0.5 plane-parallel), 103.3 km (0.5 inclined); std 37.6, 35.0, 31.3 km.
+
+**τ-grid input contract (μ < 1).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
 off-centre Stokes profiles returns), on a **regular, deprojected footprint grid** in the local solar frame (x, y in metres;
 dx, dy are footprint spacings: a sky pixel p becomes p perpendicular to the tilt and p/μ along it). B is B_x, B_y, B_z in
 the local frame (z vertical), already disambiguated. The footprint is where the ray meets the gauge surface mean
