@@ -1,0 +1,22 @@
+# filtered: solver lines, job markers and exit codes only (MPI/kill stack traces removed)
+[   21.9s] mhs-poisson-ltau: input /mn/stornext/d9/data/harshm/halpha_output/input-mhs-ltau.nc: 95 levels log10 τ500 -8.00 … 1.40, 504 × 504 columns, dx 47.61 km, g 274.00; ranks 37 (x slabs), threads 24
+[   21.9s] mhs-poisson-ltau: view: μ 0.5000 (θ 60.00°), azimuth 0.0°, geometry inclined; τ is along the line of sight
+[   39.8s] mhs-poisson-ltau: start: cut at log10 τ = -4.00 (level 41, 54 ln P levels + 1 height per column), Φ 1.439582e+13, RMS 5.3136e-05 | log τ [-9, -3): horiz 16.788, vert 7.807; log τ [-3, -2): horiz 6.274, vert 2.637; log τ [-2, -1): horiz 2.078, vert 0.872; log τ [-1, 0): horiz 1.298, vert 0.480; log τ [0, 9): horiz 0.990, vert 1.082 | z(τ=1) p1/p50/p99 -40.1 / -5.7 / 62.8 km
+[   68.8s] mhs-poisson-ltau: step  1: Φ/Φ₀ 1.920e-01 (ΔΦ/Φ 8.08e-01), RMS 2.3285e-05 | CG 80 its (rel 6.9e-03), α 0.684, μ next 0, max|δc| 300.0 km | z(τ=1) p1/p50/p99 -43.8 / -0.2 / 75.4 km | 28.5 s
+[   93.0s] mhs-poisson-ltau: step  2: Φ/Φ₀ 4.686e-02 (ΔΦ/Φ 7.56e-01), RMS 1.1502e-05 | CG 80 its (rel 1.3e-02), α 0.64, μ next 0, max|δc| 204.8 km | z(τ=1) p1/p50/p99 -48.5 / 4.4 / 97.6 km | 24.3 s
+[  116.7s] mhs-poisson-ltau: step  3: Φ/Φ₀ 3.046e-02 (ΔΦ/Φ 3.50e-01), RMS 9.2739e-06 | CG 80 its (rel 2.8e-02), α 0.24, μ next 0, max|δc| 80.5 km | z(τ=1) p1/p50/p99 -49.3 / 6.3 / 103.8 km | 23.6 s
+[  139.6s] mhs-poisson-ltau: step  4: Φ/Φ₀ 2.001e-02 (ΔΦ/Φ 3.43e-01), RMS 7.5169e-06 | CG 80 its (rel 3.5e-02), α 0.254, μ next 0, max|δc| 77.9 km | z(τ=1) p1/p50/p99 -49.9 / 8.2 / 109.1 km | 22.9 s
+[  163.5s] mhs-poisson-ltau: step  5: Φ/Φ₀ 1.310e-02 (ΔΦ/Φ 3.45e-01), RMS 6.0825e-06 | CG 80 its (rel 4.5e-02), α 0.283, μ next 0, max|δc| 77.2 km | z(τ=1) p1/p50/p99 -50.4 / 10.3 / 114.7 km | 23.9 s
+[  187.1s] mhs-poisson-ltau: step  6: Φ/Φ₀ 9.463e-03 (ΔΦ/Φ 2.78e-01), RMS 5.1689e-06 | CG 80 its (rel 7.2e-02), α 0.261, μ next 0, max|δc| 61.6 km | z(τ=1) p1/p50/p99 -50.3 / 12.2 / 119.1 km | 23.6 s
+[  210.9s] mhs-poisson-ltau: step  7: Φ/Φ₀ 7.835e-03 (ΔΦ/Φ 1.72e-01), RMS 4.7033e-06 | CG 80 its (rel 9.0e-02), α 0.166, μ next 0, max|δc| 42.2 km | z(τ=1) p1/p50/p99 -50.0 / 13.7 / 122.0 km | 23.8 s
+[  234.6s] mhs-poisson-ltau: step  8: Φ/Φ₀ 6.731e-03 (ΔΦ/Φ 1.41e-01), RMS 4.3594e-06 | CG 80 its (rel 1.2e-01), α 0.147, μ next 0, max|δc| 36.3 km | z(τ=1) p1/p50/p99 -49.3 / 14.9 / 124.0 km | 23.6 s
+[  258.4s] mhs-poisson-ltau: step  9: Φ/Φ₀ 5.960e-03 (ΔΦ/Φ 1.15e-01), RMS 4.1021e-06 | CG 80 its (rel 1.4e-01), α 0.125, μ next 0, max|δc| 32.6 km | z(τ=1) p1/p50/p99 -48.5 / 15.9 / 125.6 km | 23.8 s
+[  283.7s] mhs-poisson-ltau: step 10: Φ/Φ₀ 5.363e-03 (ΔΦ/Φ 1.00e-01), RMS 3.8915e-06 | CG 80 its (rel 2.1e-01), α 0.12, μ next 0, max|δc| 29.2 km | z(τ=1) p1/p50/p99 -47.8 / 16.8 / 126.9 km | 25.3 s
+[  307.3s] mhs-poisson-ltau: step 11: Φ/Φ₀ 4.905e-03 (ΔΦ/Φ 8.55e-02), RMS 3.7215e-06 | CG 80 its (rel 1.7e-01), α 0.109, μ next 0, max|δc| 25.5 km | z(τ=1) p1/p50/p99 -47.1 / 17.4 / 127.6 km | 23.6 s
+[  331.3s] mhs-poisson-ltau: step 12: Φ/Φ₀ 4.515e-03 (ΔΦ/Φ 7.94e-02), RMS 3.5706e-06 | CG 80 its (rel 1.9e-01), α 0.109, μ next 0, max|δc| 25.3 km | z(τ=1) p1/p50/p99 -46.5 / 18.1 / 128.3 km | 24.0 s
+[  355.0s] mhs-poisson-ltau: step 13: Φ/Φ₀ 4.209e-03 (ΔΦ/Φ 6.78e-02), RMS 3.4474e-06 | CG 80 its (rel 1.9e-01), α 0.102, μ next 0, max|δc| 21.2 km | z(τ=1) p1/p50/p99 -46.1 / 18.6 / 129.2 km | 23.7 s
+[  380.1s] mhs-poisson-ltau: step 14: Φ/Φ₀ 3.967e-03 (ΔΦ/Φ 5.76e-02), RMS 3.3466e-06 | CG 80 its (rel 2.5e-01), α 0.089, μ next 0, max|δc| 19.4 km | z(τ=1) p1/p50/p99 -45.8 / 19.0 / 129.9 km | 25.1 s
+[  404.0s] mhs-poisson-ltau: step 15: Φ/Φ₀ 3.750e-03 (ΔΦ/Φ 5.46e-02), RMS 3.2540e-06 | CG 80 its (rel 2.4e-01), α 0.0912, μ next 0, max|δc| 18.8 km | z(τ=1) p1/p50/p99 -45.5 / 19.4 / 130.6 km | 23.9 s
+===================================================================================
+===================================================================================
+# viewing-angle run stopped by hand (SIGTERM) after step 11 at 13:22 CET; solver-time run started instead

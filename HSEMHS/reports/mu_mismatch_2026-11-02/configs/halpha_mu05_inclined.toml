@@ -1,0 +1,28 @@
+# mhs-poisson-ltau on halpha_output/input-mhs-ltau.nc, mu = 0.5, inclined (3-D) geometry, azimuth 0; D2 benchmark solver settings
+[run]
+mode = "mhs-poisson-ltau"
+output = "out/modes/halpha_mu05_inclined.h5"
+overwrite = true
+
+[input]
+file = "/mn/stornext/d9/data/harshm/halpha_output/input-mhs-ltau.nc"
+
+[physics]
+g = 274.0
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[tau_grid]
+align = "ptot"
+
+[poisson]
+logtau_cut = -4.0
+lm = "gain"
+forcing = "ew"
+precond = "switch"
+
+[view]
+mu = 0.5
+azimuth_deg = 0.0
+geometry = "inclined"
