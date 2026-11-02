@@ -19,7 +19,7 @@
     @testset "validation" begin
         o = H.PoissonMassOptions(logm_cut = -1.0)
         @test isempty(H.option_errors(o, lm0))
-        @test occursin("logm_cut", only(H.option_errors(H.PoissonMassOptions(logm_cut = 9.0), lm0)))   # outside the axis
+        @test any(occursin("logm_cut = 9.0", e) for e in H.option_errors(H.PoissonMassOptions(logm_cut = 9.0), lm0))   # outside the axis
         @test_throws H.InvalidInput H.prepare_embedded(comm, :mhs_poisson_logm; axis = lm0, x = fx.x, y = fx.y, eos = tab, g = g,
                                                        column = H.ColumnMassOptions(), poisson = H.PoissonTauOptions())   # a τ cut
         @test_throws H.InvalidInput H.prepare_embedded(comm, :mhs_poisson_ltau; axis = fx.lt, x = fx.x, y = fx.y, eos = tab, g = g,
@@ -55,22 +55,26 @@
     end
 
     # One atmosphere on both axes: the τ-axis column gives m = P/g on its levels; the mass axis then has to give back its
-    # heights and its τ (the top levels agree by the common closure)
-    @testset "column HSE: τ axis and mass axis agree" begin
-        lT = uniform(fx.lnT); B0 = zero(lT)
-        ws = H.prepare_embedded(comm, :column_hse_ltau; axis = fx.lt, x = fx.x, y = fx.y, eos = tab, g = g,
-                                column = H.ColumnTauOptions(align = "none"))
-        a = solve(ws, lT, (B0, B0, B0))
-        lm = log10.(a.Pgas[:, 1, 1] ./ g)
-        ws = H.prepare_embedded(comm, :column_hse_logm; axis = lm, x = fx.x, y = fx.y, eos = tab, g = g,
-                                column = H.ColumnMassOptions(align = "none"))
-        b = solve(ws, lT, (B0, B0, B0))
-        @test b.status.valid
-        @test maximum(abs, b.lnP .- a.lnP) < 1e-10
-        @test abs(b.logtau500[1, 1, 1] - fx.lt[1]) < 1e-6
-        Hp = median(a.Pgas ./ (a.rho .* g))
-        @test maximum(abs, b.z[:, 1, 1] .- a.z[:, 1, 1]) < 0.3 * Hp     # the two trapezoids, 0.1 dex levels
-        @test maximum(abs, b.logtau500[:, 1, 1] .- fx.lt) < 0.1
+    # heights and its τ. They are different discretisations (T linear in log τ or in log m, opacity by a trapezoid), which
+    # differ where one τ level holds many decades of m (hot over cool), so the difference must vanish with refinement.
+    @testset "column HSE: τ axis and mass axis converge to one atmosphere" begin
+        errs = map((1, 4, 16, 64)) do N
+            nk = length(fx.lt)
+            l = range(fx.lt[1], fx.lt[end]; length = (nk - 1) * N + 1) |> collect
+            T1 = [H.PoissonTau.interp_lt(fx.lnT[:, 1, 1], fx.lt, v) for v in l]
+            xs = fx.x[1:4]; ys = fx.y[1:4]
+            lT = repeat(T1, 1, 4, 4); B0 = zero(lT)
+            run(m, ax, col) = solve(H.prepare_embedded(MPI.COMM_SELF, m; axis = ax, x = xs, y = ys, eos = tab, g = g, column = col), lT, (B0, B0, B0))
+            a = run(:column_hse_ltau, l, H.ColumnTauOptions(align = "none"))
+            b = run(:column_hse_logm, log10.(a.Pgas[:, 1, 1] ./ g), H.ColumnMassOptions(align = "none"))
+            @test b.status.valid
+            @test maximum(abs, b.lnP .- a.lnP) < 1e-9
+            k = 1:N:length(l)
+            (maximum(abs, (b.z .- a.z)[k, 1, 1]), maximum(abs, b.logtau500[k, 1, 1] .- l[k]))
+        end
+        @info "τ vs mass axis, max |Δz| [m], max |Δ log τ| for 1, 4, 16, 64 × the levels" errs
+        @test errs[4][1] < errs[1][1] / 10 && errs[4][2] < errs[1][2] / 10
+        @test errs[4][1] < 1e4 && errs[4][2] < 0.01
     end
 
     @testset "viewing angle ($mode)" for mode in (:column_hse_logm, :mhs_poisson_logm)
@@ -137,7 +141,8 @@
         a = H.snapshot(H.solve_embedded!(ws, fx.lnT, fx.Bx, fx.By, fx.Bz))
         b = H.snapshot(H.solve_embedded!(ws, fx.lnT, fx.Bx, fx.By, fx.Bz; start = :previous))
         H.free_embedded!(ws)
-        @test b.status.stats["start"] == "previous" && b.status.phi <= a.status.phi * (1 + 1e-6)
+        @test b.status.stats["start"] == "previous" && b.status.valid
+        @test b.status.phi0 < a.status.phi0 / 10            # (the weights of Φ differ: they come from each start)
     end
 
     @testset "input file and output ($units)" for (units, off) in (("kg m-2", 0.0), ("g cm-2", -1.0))
@@ -159,7 +164,8 @@
                 [eos]
                 table_file = "$ETABLE"
                 """)
-            @test H.run_config(cfgp) == 0
+            rc() = cd(() -> H.run_config(cfgp), joinpath(@__DIR__, ".."))
+            @test rc() == 0
             r = solve(mk(:column_hse_logm))
             h5open(out, "r") do f
                 @test read(f["mass_grid/log10m"]) ≈ lm0
@@ -171,12 +177,12 @@
             end
             # the wrong axis for the mode, and an unknown unit, are invalid input
             write(cfgp, replace(read(cfgp, String), "column-hse-logm" => "column-hse-ltau"))
-            @test H.run_config(cfgp) == 4
+            @test rc() == 4
             write(cfgp, replace(read(cfgp, String), "column-hse-ltau" => "column-hse-logm"))
             h5open(inp, "r+") do f
                 a = attributes(f["log10m"]); delete!(a, "units"); a["units"] = "erg"
             end
-            @test H.run_config(cfgp) == 4
+            @test rc() == 4
         end
     end
 end
