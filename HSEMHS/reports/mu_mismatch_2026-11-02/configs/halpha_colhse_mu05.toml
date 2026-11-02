@@ -1,0 +1,16 @@
+[run]
+mode = "column-hse-ltau"
+output = "out/modes/halpha_colhse_mu05.h5"
+overwrite = true
+[input]
+file = "/mn/stornext/d9/data/harshm/halpha_output/input-mhs-ltau.nc"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+align = "ptot"
+[view]
+mu = 0.5
+azimuth_deg = 0.0
+geometry = "inclined"

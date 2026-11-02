@@ -147,7 +147,7 @@ surfaces much more, with an x (tilt-direction) bias. Partly confirmed.**
 ## 7. Files
 
 In this folder:
-- `configs/`: the TOML of every run (`viewingangle_*` = the first try);
+- `configs/`: the TOML of every run (`viewingangle_*` = the first try; `halpha_colhse_mu05.toml` = the stalled run);
 - `logs/`: solver output, filtered to the solver lines;
 - `scripts/compare_mu.py`: the section 4 numbers and the comparison figure;
 - `scripts/plot_T_planes.py`: the plane T maps;
@@ -155,7 +155,7 @@ In this folder:
 
 Data (about 1.35 GB each) in `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/mu_mismatch_2026-11-02/` (moved there from
 `MHS_solvertime/HSEMHS/out/modes/` on 2 Nov 2026), with the full unfiltered run logs, launch scripts and host files in
-`logs/` and the run TOMLs in `configs/`. On the cluster, `data/` in this folder links to them (not in git):
+`logs/` (the stopped first try on `viewing-angle` in `logs/viewingangle_first_try/`) and the run TOMLs in `configs/`. On the cluster, `data/` in this folder links to them (not in git):
 
 | file | content |
 |---|---|
