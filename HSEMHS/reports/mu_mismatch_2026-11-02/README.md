@@ -141,8 +141,8 @@ surfaces much more, with an x (tilt-direction) bias. Partly confirmed.**
 - **hyades10** had no node-local Julia; `/tmp/julia-1.13.1` was rsynced from hyades4.
 - **hyades15** was swapped for hyades6 for the μ = 1 run because another user was on it.
 - **StorNext stall.** The first column-HSE μ = 0.5 run stalled in its cooperative HDF5 write: one rank sat in
-  uninterruptible I/O (state D) on hyades4. It was killed and rerun on hyades5 alone. Its partial file
-  `out/modes/halpha_colhse_mu05.h5` is **incomplete; do not use it**.
+  uninterruptible I/O (state D) on hyades4. It was killed and rerun on hyades5 alone. Its partial file is kept as
+  `invalid/halpha_colhse_mu05_partial.h5` and is **incomplete; do not use it**.
 
 ## 7. Files
 
@@ -153,7 +153,10 @@ In this folder:
 - `scripts/plot_T_planes.py`: the plane T maps;
 - `figs/`.
 
-Data (about 1.35 GB each) in `/mn/stornext/d9/data/harshm/MHS_solvertime/HSEMHS/out/modes/`:
+Data (about 1.35 GB each) in `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/mu_mismatch_2026-11-02/` (moved there from
+`MHS_solvertime/HSEMHS/out/modes/` on 2 Nov 2026), with the full unfiltered run logs, launch scripts and host files in
+`logs/` and the run TOMLs in `configs/`. The report copy in `/mn/stornext/d9/data/harshm/MHS/reports/` links to them
+from its `data/`:
 
 | file | content |
 |---|---|
@@ -161,7 +164,7 @@ Data (about 1.35 GB each) in `/mn/stornext/d9/data/harshm/MHS_solvertime/HSEMHS/
 | `halpha_mu05_inclined.h5` | MHS μ = 0.5 inclined (input mismatch) |
 | `halpha_colhse_mu1.h5` | column HSE μ = 1 |
 | `halpha_colhse_mu05b.h5` | column HSE μ = 0.5 inclined |
-| `halpha_colhse_mu05.h5` | incomplete (stalled write), ignore |
+| `invalid/halpha_colhse_mu05_partial.h5` | incomplete (stalled write), ignore |
 | `halpha_mu05_inclined_T_z0.h5` | T and log τ_LOS at z = 0 from the μ = 0.5 run |
 
 All `tau_grid` outputs: `/tau_grid/{logtau500, z_m, Pgas, rho, T, Bx, By, Bz, z_tau1_m}`, `/coords/{x_m, y_m}`; h5py

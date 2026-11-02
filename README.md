@@ -288,6 +288,8 @@ on it.
   * Plane-parallel τ was exactly 2 × the vertical τ.
   * An independent re-implementation of the inclined method reproduced τ to 4e-13 and z(τ = 1) to 1e-10 m.
   * z(τ = 1) median: 63.5 km (μ = 1), 103.1 km (0.5 plane-parallel), 103.3 km (0.5 inclined); std 37.6, 35.0, 31.3 km.
+  * Outputs, logs and configs: `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/viewing_z_2026-11-02/`; check script
+    `HSEMHS/scripts/viewing/check_zview.py`.
 
 **τ-grid input contract (μ < 1).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
 off-centre Stokes profiles returns), on a **regular, deprojected footprint grid** in the local solar frame (x, y in metres;
