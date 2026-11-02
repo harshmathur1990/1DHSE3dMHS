@@ -123,6 +123,6 @@ by L, or it is undecided.
   - `HSEMHS/src/PoissonTau.jl`: `qualify_stop`, `solve_tau` line search and work counters.
   - `HSEMHS/scripts/viewing/frozen_lab.jl`: `spectral_lab`, `coarse_lab`.
   - `HSEMHS/scripts/viewing/measure_steps.jl`.
-- Logs on the cluster worktree `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/solver/`:
+- Logs on the `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/solver/`:
   - `ref_*`, `diag_mu0.3v_blk`;
   - `lab/spec16_*.log`, `lab/scale*_*.log`.

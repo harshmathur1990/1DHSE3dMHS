@@ -7,7 +7,7 @@ per footprint at μ = 1, 0.866, 0.707, 0.5 (φ = 0°) and μ = 0.5 (φ = 45°), 
 `IO/input-mhs-ltau.nc`; input and truth from the same calculation. Runs: column-hse-ltau, mhs-poisson-ltau plane-parallel
 and inclined (cut −4, max_steps 100, rtol 1e-4), 3 ranks × 32 threads on hyades18/20. Analysis:
 `scripts/viewing/analyse_view.py` → `summary.txt`, `ztau1_vs_mu.png`, `profiles.png`, `maps_*.png`.
-Cluster run directory: `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/view/`.
+Cluster run directory: `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/view/`.
 
 | μ (φ) | z(τ_LOS=1) rms error: column HSE / plane-parallel / inclined | strong − quiet height, Bifrost: column HSE / pp / inclined |
 |---|---|---|

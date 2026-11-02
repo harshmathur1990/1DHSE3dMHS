@@ -14,7 +14,7 @@
 NAME=$1; MODE=$2; INPUT=$3; MU=$4; AZ=$5; NR=$6; NT=$7; HF=${8:--}; shift 8 || shift $#
 source ~/loadgcc.sh >/dev/null 2>&1
 export PATH=/tmp/julia-1.13.1/bin:$HOME/.julia/bin:$PATH
-cd /mn/stornext/d9/data/harshm/MHS_view/HSEMHS
+cd /mn/stornext/d9/data/harshm/MHS/HSEMHS
 mkdir -p out/delivery
 C=out/delivery/$NAME.toml
 GEOM=inclined; [ "$MU" = "1" ] || [ "$MU" = "1.0" ] && GEOM=plane_parallel

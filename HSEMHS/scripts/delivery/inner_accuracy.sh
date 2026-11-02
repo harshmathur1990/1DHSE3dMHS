@@ -13,7 +13,7 @@ NR=$1; NT=$2; ST=${3:-10}; shift 3 || shift $#
 IA_VARIANTS=${*:-base blk tight}
 source ~/loadgcc.sh >/dev/null 2>&1
 export PATH=/tmp/julia-1.13.1/bin:$HOME/.julia/bin:$PATH
-cd /mn/stornext/d9/data/harshm/MHS_view/HSEMHS
+cd /mn/stornext/d9/data/harshm/MHS/HSEMHS
 IN=out/view/input_mu0.3_az0.nc
 CUT=$(python3 -c "import math; print(-4 - math.log10(0.3))")       # vertical cut −4 on the line-of-sight axis
 COMMON="max_steps=$ST stop=gn gn_tol=1e-3 logtau_cut=$CUT balance=vertical lm=gain forcing=ew"

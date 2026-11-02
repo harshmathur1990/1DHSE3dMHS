@@ -174,6 +174,6 @@ assembly, and a setup cost now comparable to tens of block iterations.
   - `HSEMHS/src/PoissonZ.jl` `pcg!`.
   - `HSEMHS/scripts/viewing/ml_lab.jl`: `galerkin`, `galerkin_analytic`, `jac_RP!`, `twolevel`, `ml_apply!`.
   - `HSEMHS/scripts/viewing/make_mhs_control.jl`.
-- Logs on the cluster, `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/`:
+- Logs on the cluster, `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/`:
   - `frozen/*.lab*.log`, which also holds the frozen systems;
   - `control/rot_*`, `df_*`, `ro_*`.

@@ -205,6 +205,6 @@ The bound-aware step is not proposed: no control or Bifrost run since the round-
   - `HSEMHS/src/PoissonTau.jl` `feas_scale`, `phi_parts`, `solve_tau`;
   - `HSEMHS/scripts/viewing/`: `make_mhs_control.jl`, `measure_steps.jl` (`boundary=`), `control_summary.py`,
     `control_refine.py`, `error_maps.py`.
-- Logs on the cluster, `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/`:
+- Logs on the cluster, `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/`:
   - `control/` (`gs_*`, `ff_*`, `sw_*`, `dr_*`);
   - `solver/bt_*`.

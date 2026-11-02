@@ -6,7 +6,7 @@
 # usage: scaling.sh MU AZ INPUT "NODE1 NODE2 ..." "NNODES:RANKS_PER_NODE:THREADS ..." [STEPS] [CGIT] [PRECOND]
 #   e.g. scaling.sh 0.3 0 out/view/input_mu0.3_az0.nc "hyades8 hyades12 hyades15 hyades16" "1:1:32 2:1:32 4:1:32"
 MU=$1; AZ=$2; IN=$3; NODES=($4); LAYOUTS=$5; ST=${6:-3}; CG=${7:-100}; PC=${8:-fourier}
-cd /mn/stornext/d9/data/harshm/MHS_view/HSEMHS
+cd /mn/stornext/d9/data/harshm/MHS/HSEMHS
 for L in $LAYOUTS; do
   IFS=: read NN RPN NT <<< "$L"
   NAME=scale_mu${MU}_${PC}_${NN}n${RPN}r${NT}t

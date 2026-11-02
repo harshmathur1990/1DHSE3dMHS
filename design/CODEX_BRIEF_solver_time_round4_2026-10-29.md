@@ -204,7 +204,7 @@ from analytic fields on a fine height grid (dz 250 m).
   - `HSEMHS/scripts/viewing/`: `truth_consistency.jl`, `measure_steps.jl` (start=truth, perturbations),
     `make_mhs_control.jl` (draft).
 - **Design:** `design/tau/SOLVER_TIME_DESIGN.md` §6.5–6.10. It has not yet been updated with §2–4 of this brief.
-- **Logs** on the cluster, `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/solver/`:
+- **Logs** on the cluster, `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/solver/`:
   - `truth_mu1`, `truth_mu0.3v`, `truth_mu0.3r`, `truthraw_mu0.3v`, `truthpert_mu0.3v`;
   - `ref_*`;
   - `lab/spec16_*.log`.

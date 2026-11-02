@@ -432,7 +432,7 @@ round-off acceptance, `switch`) and `test_warm.jl`; multi-rank by `test/mpi/mpi_
 ## Measured performance
 
 Not fresh validation: timings of single runs, with their code state. Logs are on hyades in
-`/mn/stornext/d9/data/harshm/MHS_modes/HSEMHS/out/modes/` (`<mode>.log`, `run_all.sh`) and
+`/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/modes/` (`<mode>.log`, `run_all.sh`) and
 `…/out/modes_test/`. Multi-node runs used 4 nodes (hyades4, 5, 15, 21), 8 ranks × 32 threads.
 
 | Date / commit | Mode | Input | Layout | Wall | Termination |
@@ -452,7 +452,7 @@ The table above predates the viewing angle and the qualified stop rule; current 
 Branch `solver-time`; full Bifrost cube 504² × 95 (`out/view/input_mu*_az*.nc`), vertical-depth cut −4, vertical
 balance, 25 steps, gn_tol 1e-3, D2 benchmark settings; production CLI; one hyades node, 3 ranks × 32 threads; time =
 process wall time; memory = peak per rank. Details: `design/tau/SOLVER_TIME_DESIGN.md` §6.14; scripts
-`HSEMHS/scripts/delivery/`; logs on hyades in `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/delivery/`.
+`HSEMHS/scripts/delivery/`; logs on hyades in `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/delivery/`.
 
 | case | precond | status (stop) | Φ/Φ₀ | time | memory |
 |---|---|---|---|---|---|

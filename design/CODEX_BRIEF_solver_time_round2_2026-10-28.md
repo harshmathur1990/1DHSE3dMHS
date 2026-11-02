@@ -86,7 +86,7 @@ hyades20 with 1 rank. All nodes were free before launch.
 | crop16_mu1, crop16_mu0.3v | 1 and 0.3 | as above | | 16² × 95 | 12 800 |
 
 In every case the frozen state is the one after 15 D2 steps with the `:fourier` preconditioner, `lm = :gain` and
-`forcing = :ew`. Logs are in `out/solver/lab/*.log` on the cluster worktree `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS`.
+`forcing = :ew`. Logs are in `out/solver/lab/*.log` on the cluster in `/mn/stornext/d9/data/harshm/MHS/HSEMHS`.
 
 ## 3. Results
 

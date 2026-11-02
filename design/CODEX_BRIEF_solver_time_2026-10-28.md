@@ -193,5 +193,5 @@ cold reference itself is not converged, so the warm numbers there say nothing.
   - `step_lab.jl` (step size, pred and |δu| per damping);
   - `stop_rules.py`.
 - Tests: `HSEMHS/test/test_block.jl` (exact blocks, block solve, solves), `test_warm.jl`.
-- Run outputs (cluster): `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/solver/{d2,d3,d3c,d3h,d4}_*/` (`steps.txt`,
+- Run outputs (cluster): `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/solver/{d2,d3,d3c,d3h,d4}_*/` (`steps.txt`,
   `run.log`), `out/solver/lab/`.

@@ -159,5 +159,5 @@ memory is the peak per rank.
 - `HSEMHS/src/RunModes.jl` (CLI attributes).
 - `HSEMHS/src/Config.jl` (`HASH_IF_SET`).
 - `HSEMHS/scripts/delivery/`: `run_case.sh`, `scaling.sh`, `inner_accuracy.sh`, `embed_seq.jl`.
-- Logs on the cluster: `/mn/stornext/d9/data/harshm/MHS_view/HSEMHS/out/delivery/` (`mhs_*`, `sw_*`, `col_*`, `scale_*`,
+- Logs on the cluster: `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/delivery/` (`mhs_*`, `sw_*`, `col_*`, `scale_*`,
   `inner_*`, `embed_mu0.3.*`) and `out/frozen/*.labadd.log`.

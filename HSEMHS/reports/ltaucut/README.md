@@ -4,7 +4,7 @@ Input `IO/input-mhs-ltau.nc` (504², 95 levels, log τ −8 … 1.4; x, y added 
 truth = Bifrost en024048 snapshot 385 mapped onto the τ grid (`scripts/ltaucut/truth_on_tau.jl`, τ500 from Bifrost T, P
 with our EOS table; input T agrees to 0.1–1 % median at log τ −4.5 … −0.5). Force balance from one geometric formula for
 all states (`scripts/ltaucut/force_diag.jl`); comparison `scripts/ltaucut/analyse.py` → `summary.txt`, figures here.
-Runs: cluster worktree `MHS_ltaucut/HSEMHS/out/ltaucut/` (configs `cut*.toml`, logs, outputs).
+Runs: `MHS/HSEMHS/out/ltaucut/` (configs `cut*.toml`, logs, outputs).
 
 | run | steps / stop | Φ/Φ₀ | wall | z(τ=1) err rms | corr | Wilson (strong − quiet) |
 |---|---|---|---|---|---|---|
