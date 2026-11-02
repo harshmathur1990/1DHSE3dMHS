@@ -18,5 +18,5 @@ table_file = "cache/eos_table_fullz.h5"
 align = "ptot"
 
 [poisson]
-logm_cut = -1.5                   # log10 m [kg m⁻²]; vertical column mass of the cut (cut_frame = "vertical")
+logm_cut = -0.5                   # log10 m [kg m⁻²]; vertical column mass of the cut (cut_frame = "vertical")
 # other [poisson] and [view] settings: as config/modes/mhs-poisson-ltau.toml

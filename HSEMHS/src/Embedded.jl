@@ -96,7 +96,7 @@ log10 m_LOS = `logm_cut` − log10 μ on the line-of-sight axis. A separate type
 struct PoissonMassOptions
     opts::PoissonTauOptions
 end
-PoissonMassOptions(; logm_cut::Real = -1.5, kw...) = PoissonMassOptions(PoissonTauOptions(; logtau_cut = Float64(logm_cut), kw...))
+PoissonMassOptions(; logm_cut::Real = -0.5, kw...) = PoissonMassOptions(PoissonTauOptions(; logtau_cut = Float64(logm_cut), kw...))
 
 """Column HSE on the log10 m axis (`[tau_grid]`): P = μ g m needs no anchor; the alignment is that of the τ axis."""
 const ColumnMassOptions = ColumnTauOptions

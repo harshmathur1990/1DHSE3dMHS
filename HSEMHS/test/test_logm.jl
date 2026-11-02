@@ -180,7 +180,7 @@
             @test rc() == 4
             write(cfgp, replace(read(cfgp, String), "column-hse-ltau" => "column-hse-logm"))
             h5open(inp, "r+") do f
-                a = attributes(f["log10m"]); delete!(a, "units"); a["units"] = "erg"
+                HDF5.delete_attribute(f["log10m"], "units"); attributes(f["log10m"])["units"] = "erg"
             end
             @test rc() == 4
         end
