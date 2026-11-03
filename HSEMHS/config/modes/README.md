@@ -8,8 +8,10 @@ One entry point for every mode, MPI + threads in all of them:
 |---|---|---|---|
 | `column-hse-z` | height | hydrostatic columns, anchor P_ref (`column_hse` is an alias) | 2-D (x, y) blocks |
 | `column-hse-ltau` | log10 τ500 | hydrostatic columns in τ: P(τ), z(τ), ρ(τ); aligned on P + B²/2μ₀ | x slabs |
+| `column-hse-logm` | log10 column mass | hydrostatic columns in m: P = g m, z(m), τ(m); aligned on P + B²/2μ₀ | x slabs |
 | `mhs-poisson-z` | height | column HSE, then the Poisson-type pressure step below `poisson.z_cut_m` (T, B fixed) | x slabs |
 | `mhs-poisson-ltau` | log10 τ500 | column HSE in τ, then one Gauss–Newton solve on the τ grid for ln P(τ) and the column heights | x slabs |
+| `mhs-poisson-logm` | log10 column mass | column HSE in m, then the solver of `mhs-poisson-ltau` on the mass grid, below `poisson.logm_cut` | x slabs |
 | `full-mhs-z` | height | full staggered MHS joint GN solve of P and B (the M5 driver; defaults = the M5i run) | 2-D (x, y) blocks |
 
 Quantiles and medians are exact global order statistics and the Poisson preconditioners use a distributed FFT (rfft in
@@ -24,6 +26,8 @@ written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks th
   `/coords/{x_m, y_m, z_m}`; Julia (x, y, z), h5py (z, y, x).
 * `column-hse-ltau`, `mhs-poisson-ltau`: `/tau_grid/{logtau500, z_m, Pgas, rho, T, Bx, By, Bz, z_tau1_m}`,
   `/coords/{x_m, y_m}`; Julia (x, y, τ), h5py (τ, y, x); z gauged to mean z(τ = 1) = 0.
+* `column-hse-logm`, `mhs-poisson-logm`: `/mass_grid/{log10m, z_m, Pgas, rho, T, Bx, By, Bz, logtau500, z_tau1_m}`,
+  `/coords/{x_m, y_m}`; h5py (m, y, x); z gauged to mean z(τ = 1) = 0.
 * `full-mhs-z`: `run.output` is a directory: `history.csv`, `candidates.csv`, `init.h5`, checkpoints
   `atmosphere_A/B.h5`, `atmosphere_final.h5`, `ztau1/`; restart with `full_mhs.restart`.
 
@@ -32,6 +36,11 @@ written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks th
 `IO/input-mhs-ltau.nc` layout: `log10tau500` (nt, increasing, top level first), `x` (NX), `y` (NY), `temperature`,
 `B_x`, `B_y`, `B_z` as h5py (x, y, τ), SI (a `units` attribute on x, y is honoured). Without a `gravity_m_s2` file
 attribute set a numeric `physics.g`.
+
+## Column-mass inputs
+
+`IO/input-mhs-logm.nc` (from `make_input_mhs_logm.py`): the τ-grid layout with `log10m` in place of `log10tau500`, m in
+kg m⁻² or `log10m` with `units = "g cm-2"`. With view μ < 1, m counts along the line of sight.
 
 ## Multi-node on hyades
 

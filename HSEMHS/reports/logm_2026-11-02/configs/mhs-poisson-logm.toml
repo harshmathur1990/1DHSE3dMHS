@@ -1,0 +1,22 @@
+# mhs-poisson-logm: column HSE in m, then one Gauss–Newton (Levenberg–Marquardt) solve on the log10 m grid for ln P(m) below
+# log10 m = logm_cut and one height per column (heights from z = c + Σ −m/ρ d ln m). The solver of mhs-poisson-ltau.
+[run]
+mode = "mhs-poisson-logm"
+output = "out/logm_2026-11-02/mhs-poisson-logm.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-logm.nc"
+
+[physics]
+g = 274.0
+
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+
+[tau_grid]
+align = "ptot"
+
+[poisson]
+logm_cut = -0.5                   # log10 m [kg m⁻²]; vertical column mass of the cut (cut_frame = "vertical")
+# other [poisson] and [view] settings: as config/modes/mhs-poisson-ltau.toml

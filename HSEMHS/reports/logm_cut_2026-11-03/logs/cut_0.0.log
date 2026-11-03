@@ -1,0 +1,15 @@
+[    8.4s] mhs-poisson-logm: input ../IO/input-mhs-logm.nc: 76 levels log10 m -4.90 … 2.60, 504 × 504 columns, dx 47.62 km, g 274.00; ranks 1 (x slabs), threads 64
+[   27.8s] mhs-poisson-logm: start: cut at log10 m = 0.00 (level 50, 26 ln P levels + 1 height per column), Φ 1.004115e+11, RMS 1.8497e-06 | log m [0, 1): horiz 1.014, vert 0.179; log m [1, 2): horiz 0.582, vert 0.045; log m [2, 9): horiz 0.272, vert 0.016 | z(log m=1.50) p1/p50/p99 -103.9 / 72.2 / 139.8 km
+[   63.6s] mhs-poisson-logm: step  1: Φ/Φ₀ 1.383e-01 (ΔΦ/Φ 8.62e-01, predicted 9.80e-01, model 8.87e-01, ρ 0.97), RMS 6.8798e-07 | CG 80 its (rel 4.5e-03, tol 1.0e-03; step 80 its in 1 solves, 1 evaluations), α 0.692 (cap scale 0.692, feasible 25), μ next 0, max|δc| 300.0 km | z(log m=1.50) p1/p50/p99 -10.9 / 63.8 / 95.0 km | 34.9 s
+[   91.2s] mhs-poisson-logm: step  2: Φ/Φ₀ 1.713e-02 (ΔΦ/Φ 8.76e-01, predicted 8.85e-01, model 8.85e-01, ρ 0.99), RMS 2.4212e-07 | CG 80 its (rel 2.8e-03, tol 1.0e-03; step 80 its in 1 solves, 1 evaluations), α 1 (cap scale 1, feasible 37), μ next 0, max|δc| 204.3 km | z(log m=1.50) p1/p50/p99 8.8 / 61.8 / 81.5 km | 27.6 s
+[  116.5s] mhs-poisson-logm: step  3: Φ/Φ₀ 1.571e-02 (ΔΦ/Φ 8.30e-02, predicted 8.32e-02, model 8.32e-02, ρ 1.00), RMS 2.3186e-07 | CG 80 its (rel 1.0e-02, tol 1.0e-03; step 80 its in 1 solves, 1 evaluations), α 1 (cap scale 1, feasible 78.9), μ next 0, max|δc| 36.3 km | z(log m=1.50) p1/p50/p99 10.5 / 61.9 / 81.7 km | 25.3 s
+[  141.0s] mhs-poisson-logm: step  4: Φ/Φ₀ 1.570e-02 (ΔΦ/Φ 5.22e-04, predicted 5.18e-04, model 5.18e-04, ρ 1.01), RMS 2.3180e-07 | CG 80 its (rel 2.6e-02, tol 1.0e-03; step 80 its in 1 solves, 1 evaluations), α 1 (cap scale 1, feasible 367), μ next 0, max|δc| 4.1 km | z(log m=1.50) p1/p50/p99 10.6 / 61.9 / 81.7 km | 24.5 s
+[  163.2s] mhs-poisson-logm: step  5: Φ/Φ₀ 1.570e-02 (ΔΦ/Φ 2.61e-06, predicted 2.99e-06, model 2.99e-06, ρ 0.87), RMS 2.3180e-07 | CG 80 its (rel 4.5e-02, tol 1.0e-03; step 80 its in 1 solves, 1 evaluations), α 1 (cap scale 1, feasible 1.73e+03), μ next 0, max|δc| 0.3 km | z(log m=1.50) p1/p50/p99 10.6 / 61.9 / 81.7 km | 22.2 s
+[  176.8s] mhs-poisson-logm: stop check (step 5): qualified, regularised decrement in [1.81e-07, 7.36e-05] (tol 1e-03) | pred 1.81e-07, model 1.81e-07, ereg part 1.01e-12 | CG 46 its, true rel 9.5e-03
+[  176.8s] mhs-poisson-logm: converged: decrement < 1e-03 qualified (last max|δc| 325.4 m)
+[  176.8s] mhs-poisson-logm: end: log m [0, 1): horiz 0.040, vert 0.029; log m [1, 2): horiz 0.053, vert 0.060; log m [2, 9): horiz 0.048, vert 0.067
+[  176.8s] mhs-poisson-logm: stationarity: from the stop check at step 5, decrement in [1.808e-07, 7.357e-05]
+[  176.8s] mhs-poisson-logm: work: steps 400 CG its in 5 solves (400 A, 405 M⁻¹ applications), 7 evaluations + 0 restorations, 135.2 s; qualification 46 CG (47 A, 46 M⁻¹), 13.6 s; final diagnostic 0 CG (0 A), 0.0 s (reused the stop check); total 153.4 s
+[  177.6s] mhs-poisson-logm: solve done in 5 steps, Φ/Φ₀ 1.570e-02; gauge shift 5.7 km
+[  180.3s] mhs-poisson-logm: z(τ=1) p1/p50/p99 -41.0 / -0.9 / 37.8 km; wrote out/logm_cut_2026-11-03/cut_0.0.h5
+exit 0

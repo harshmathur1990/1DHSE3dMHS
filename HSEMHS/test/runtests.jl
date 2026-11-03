@@ -40,6 +40,7 @@ include("test_embedded.jl")
 include("test_view.jl")
 include("test_block.jl")
 include("test_warm.jl")
+include("test_logm.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks
 @testset "MPI ranks" begin

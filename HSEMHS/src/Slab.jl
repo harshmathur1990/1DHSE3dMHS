@@ -1,4 +1,4 @@
-# Slab decomposition for the Poisson-type modes (mhs-poisson-z, mhs-poisson-ltau) and the τ-grid column HSE.
+# Slab decomposition for the Poisson-type modes (mhs-poisson-z, -ltau, -logm) and the τ- and mass-grid column HSE.
 #
 # Arrays are (k, j, i) = (vertical, y, x) with the vertical index first (contiguous columns); the ranks own slabs in x
 # (process grid px = ranks, py = 1, from `init_parallel`), y is complete on every rank. All MPI calls are on the main

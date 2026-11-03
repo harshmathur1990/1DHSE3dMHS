@@ -1,0 +1,21 @@
+truth P/(g m): log m -2.0 p1/p50/p99 0.351/0.885/1.952; log m 0.0 p1/p50/p99 0.861/1.072/1.494; log m 1.0 p1/p50/p99 0.916/1.043/1.346; log m 2.0 p1/p50/p99 0.733/0.972/1.075
+
+column-hse-logm: {}
+  median log τ at log m = 1.5: -0.43; z(τ=1) p1/p50/p99 -167.1 / 15.0 / 104.9 km
+  log m [-5, -1): rms Δ ln P 0.536, median Δ ln P +0.142, rms Δz  1068.3 km
+  log m [-1,  0): rms Δ ln P 0.155, median Δ ln P -0.045, rms Δz    79.6 km
+  log m [ 0,  1): rms Δ ln P 0.106, median Δ ln P -0.063, rms Δz    65.7 km
+  log m [ 1,  2): rms Δ ln P 0.085, median Δ ln P -0.004, rms Δz    58.7 km
+  log m [ 2,  3): rms Δ ln P 0.097, median Δ ln P +0.005, rms Δz    40.4 km
+
+mhs-poisson-logm: {'gn_decrement': np.float64(4.619976279027996e-07), 'phi_end': np.float64(1693250269.4460008), 'phi_start': np.float64(155251761836.57693), 'solve_seconds': np.float64(175.6056830883026), 'status': np.bytes_(b'converged'), 'steps': np.int64(5), 'stop_reason': np.bytes_(b'converged')}
+  median log τ at log m = 1.5: -0.43; z(τ=1) p1/p50/p99 -41.6 / -1.0 / 40.0 km
+  log m [-5, -1): rms Δ ln P 0.536, median Δ ln P +0.142, rms Δz  1064.5 km
+  log m [-1,  0): rms Δ ln P 0.148, median Δ ln P -0.044, rms Δz    42.1 km
+  log m [ 0,  1): rms Δ ln P 0.072, median Δ ln P -0.052, rms Δz    24.1 km
+  log m [ 1,  2): rms Δ ln P 0.071, median Δ ln P +0.013, rms Δz    19.1 km
+  log m [ 2,  3): rms Δ ln P 0.071, median Δ ln P +0.037, rms Δz    27.7 km
+
+z(τ=1) against the Bifrost truth (out/ltaucut/truth.h5), std truth 30.6 km:
+  column-hse-logm: rms 56.5 km, corr 0.575, std 68.3 km
+  mhs-poisson-logm: rms 19.3 km, corr 0.778, std 21.8 km

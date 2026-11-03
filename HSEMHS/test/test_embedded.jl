@@ -7,7 +7,7 @@ include("embedded_helpers.jl")
     tab = H.load_table(ETABLE)
     blas0 = BLAS.get_num_threads()
 
-    @testset "interface parity with the standalone driver ($mode, $tag)" for mode in H.EMBEDDED_MODES, tag in ("24x18", "11x12")
+    @testset "interface parity with the standalone driver ($mode, $tag)" for mode in filter(!H.mass_mode, H.EMBEDDED_MODES), tag in ("24x18", "11x12")
         fx = load_fixture(mode, tag, :)
         o = ref_options(mode, fx)
         ws = H.prepare_embedded(comm, mode; axis = o.axis, x = o.x, y = o.y, eos = tab, g = o.g, column = o.column,
@@ -241,7 +241,7 @@ include("embedded_helpers.jl")
         ab = Dict(:column_hse_z => (1.1, 0.14), :column_hse_ltau => (4.5, 0.01), :mhs_poisson_z => (620.0, 90.0),
                   :mhs_poisson_ltau => (17300.0, 520.0))
         budgets = Dict(m => 1.5 * (a + b * Threads.nthreads()) for (m, (a, b)) in ab)
-        for mode in H.EMBEDDED_MODES
+        for mode in filter(!H.mass_mode, H.EMBEDDED_MODES)
             fx = load_fixture(mode, "24x18", :)
             o = ref_options(mode, fx)
             ws = H.prepare_embedded(comm, mode; axis = o.axis, x = o.x, y = o.y, eos = tab, g = o.g, column = o.column,

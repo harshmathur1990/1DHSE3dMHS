@@ -1,0 +1,4 @@
+[    9.1s] column-hse-logm: input ../IO/input-mhs-logm.nc: 76 levels log10 m -4.90 … 2.60, 504 × 504 columns, dx 47.62 km, g 274.00; ranks 1 (x slabs), threads 64
+[   11.7s] column-hse-logm: columns: aligned on P + B²/2μ₀ = 1.0909e+05 Pa (127008 columns extrapolated)
+[   14.4s] column-hse-logm: z(τ=1) p1/p50/p99 -167.1 / 15.0 / 104.9 km; wrote out/logm_2026-11-02/column-hse-logm.h5
+exit 0

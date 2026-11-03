@@ -6,8 +6,8 @@ geometric-height grid (a simulation snapshot such as Bifrost) or on an optical-d
 inversion). The physics goes from independent hydrostatic columns to progressively more coupled magnetohydrostatic (MHS)
 approximations. The Julia package lives in `HSEMHS/`; this file is the entry point.
 
-**Status (2 Nov 2026, `main`, merged from `solver-time`).** All five modes below are
-implemented, run with MPI + threads and are documented. The four fixed-B modes take a viewing angle (μ, azimuth). The
+**Status (2 Nov 2026, `main`, merged from `solver-time`).** All seven modes below are
+implemented, run with MPI + threads and are documented. The six fixed-B modes take a viewing angle (μ, azimuth). The
 τ-grid modes read their input as already along that line of sight, and the height modes compute τ along it (see
 [Viewing angle](#viewing-angle)). That is not the same as scientifically converged results: see
 [Stopping, status and what "finished" means](#stopping-status-and-what-finished-means), the
@@ -26,7 +26,7 @@ decreasing, and `full-mhs-z` has not reached its stopping rule in any production
   `τ₅₀₀ = 1` is the photosphere seen in the continuum. Spectral lines form over ranges of optical depth (their contribution
   functions), so `τ₅₀₀ = 1` is a reference surface, not the formation height of every diagnostic.
 
-## The five modes
+## The seven modes
 
 The basic equation is the static force balance
 
@@ -38,8 +38,10 @@ The modes differ in what is held fixed and what is solved:
 |---|---|---|---|---|
 | `column-hse-z` | T (on z) | P in each column independently (dP/dz = −ρg), anchored at one level | `src/RunColumnHSE.jl`, `src/ColumnHSE.jl` | 2-D x/y blocks, complete z columns |
 | `column-hse-ltau` | T, B (on τ) | P(τ) and heights z(τ) per column from the opacity; optional total-pressure alignment | `src/RunModes.jl`, `src/PoissonTau.jl` (`column_hse_tau`) | x slabs |
+| `column-hse-logm` | T, B (on log₁₀ m) | P = g m and heights z(m) per column from ρ; τ₅₀₀(m) computed; optional total-pressure alignment | `src/RunModes.jl`, `src/PoissonTau.jl` (`column_hse_tau`, `mass = true`) | x slabs |
 | `mhs-poisson-z` | T, B (on z) | P by weighted least squares of the force residual below `z_cut`; HSE above | `src/RunModes.jl`, `src/PoissonZ.jl` | x slabs |
 | `mhs-poisson-ltau` | T, B (on τ) | P(τ) and the column geometry jointly below the τ cut; τ-HSE above | `src/RunModes.jl`, `src/PoissonTau.jl` (`solve_tau`) | x slabs |
+| `mhs-poisson-logm` | T, B (on log₁₀ m) | P(m) and the column geometry jointly below the mass cut; HSE above: the solver of `mhs-poisson-ltau` | `src/RunModes.jl`, `src/PoissonTau.jl` (`solve_tau`, `mass = true`) | x slabs |
 | `full-mhs-z` | T (on z) | P and a divergence-free face field B jointly (staggered vector potential) | `scripts/run.jl` → `scripts/m5_bifrost/m5h_fullres.jl`, `src/MHSStaggered.jl`, `src/MHSJointGN.jl` | 2-D x/y blocks |
 
 The `mhs-poisson` modes keep **B fixed**: they can reduce, but in general not remove, the force imbalance (a fixed field
@@ -114,7 +116,13 @@ and timings: [`docs/technical/`](docs/technical).
   aligned by equal `P + B²/2μ₀` at one height (an approximation: magnetic tension neglected), then a global gauge sets
   the mean height of τ = 1 to zero. No externally supplied reference pressure is needed, but the top closure and the
   alignment are modelling choices, and absolute heights are relative to the gauge, not measured.
-* **Pressure-only Poisson-type solvers** (`mhs-poisson-z`, `mhs-poisson-ltau`): minimise a weighted sum of squares of
+* **Column-mass HSE** (`column-hse-logm`): dm = ρ dz has the form of dτ = χ dz, so the τ equations hold with τ → m, χ → ρ:
+  `dz/d ln m = −m/ρ` and `d ln P/d ln m = g m/P`, whose solution with the top closure `P_top = g m_top` is `P = g m`, with no
+  opacity in it. τ₅₀₀ is then an output, `dτ = (χ/ρ) m d ln m` with `τ_top = (χ/ρ) m_top`, the closure of the τ axis. Same
+  alignment and gauge (mean z(τ = 1) = 0). On one atmosphere the τ and mass axes agree only as the levels are refined, at
+  second order (`test_logm.jl`): T is linear in a different coordinate, which matters where one level holds many decades of
+  the other axis.
+* **Pressure-only Poisson-type solvers** (`mhs-poisson-z`, `mhs-poisson-ltau`, `mhs-poisson-logm`): minimise a weighted sum of squares of
   the relative force residual `R = F/P` (weights from the start state, fixed), in the region below the cut; matrix-free
   Gauss–Newton with PCG, a backtracking line search (z) or Levenberg–Marquardt with whole-step scaling (τ), and
   preconditioners built per horizontal Fourier mode (a distributed FFT). They minimise a residual; they do not guarantee
@@ -161,6 +169,7 @@ a cluster directory; after a fresh clone you must supply the input cubes and bui
 | `input-mhs-hse.nc` | 504 × 504 × 177, −0.49 … 2.98 Mm | `column-hse-z`, `mhs-poisson-z` | `make_input_mhs_hse.py` (default crop) |
 | `input-mhs-hse-fullz.nc` | 504 × 504 × 496 | `full-mhs-z` | `make_input_mhs_hse.py` over all levels (`crop_source_levels` 0–495) |
 | `input-mhs-ltau.nc` | 504 × 504 × 95, log τ −8 … 1.4 | τ modes | supplied by the user (no script in the repository) |
+| `input-mhs-logm.nc` | 504 × 504 × 76, log₁₀ m −4.9 … 2.6 (m in kg m⁻²) | logm modes | `make_input_mhs_logm.py`: m from the snapshot's ρ and top P, T and B interpolated in log₁₀ m |
 
 `make_input_mhs_hse.py` (repository root) has hard-coded default paths (`--src`, `--out`) from the original machine and
 a default crop `--zmin -0.5e6 --zmax 3e6`; it writes `x, y, z` (m), `temperature` (K), `B_x, B_y, B_z` (T) with units and
@@ -187,6 +196,11 @@ julia --project=. -t 32 scripts/run.jl config/eos_table_bifrost385_fullz.toml   
   conversion**, and their dataset names are fixed (`input.temperature`, `input.bx` … are not used by these modes).
   The code checks that log τ is non-decreasing and takes dx, dy from the first spacing; it assumes but does not verify
   strictly increasing, uniform coordinates. The file has no attributes, so set a numeric `physics.g`.
+* **Column-mass grid** (logm modes): the τ-grid layout with `log10m` (n_m, increasing, top first) in place of
+  `log10tau500`, spacing free. m is in kg m⁻² unless `log10m` has a `units` attribute `"g cm-2"` (+1 dex; 1 g cm⁻² =
+  10 kg m⁻²; any other unit is refused). **A cgs axis without that attribute scales every pressure by 10 and is not
+  detectable.** `gravity_m_s2` (file attribute) or a numeric `physics.g`. With μ < 1 the axis is m along the line of sight,
+  m_LOS = m_vertical/μ, as τ in the τ modes; so P = μ g m_LOS = g m_vertical.
 * **Full MHS** (`full-mhs-z`): the height-grid contract plus the attributes `P_ref_Pa`, `period_x_m`, `period_y_m`,
   `gravity_m_s2`; `full_mhs.run = "run"` requires the 504 × 504 horizontal grid of the production cube.
 
@@ -203,8 +217,8 @@ julia --project=. -t 32 scripts/run.jl config/modes/mhs-poisson-ltau.toml       
 ~/.julia/bin/mpiexecjl --project=. -n 4 julia --project=. -t 16 scripts/run.jl config/modes/column-hse-ltau.toml  # hybrid
 ```
 
-Configs for all five modes: [`HSEMHS/config/modes/`](HSEMHS/config/modes) (`column-hse-z.toml`, `column-hse-ltau.toml`,
-`mhs-poisson-z.toml`, `mhs-poisson-ltau.toml`, `full-mhs-z.toml`). `mpiexecjl` uses the MPI library MPI.jl was built
+Configs for all seven modes: [`HSEMHS/config/modes/`](HSEMHS/config/modes) (`column-hse-z.toml`, `column-hse-ltau.toml`,
+`column-hse-logm.toml`, `mhs-poisson-z.toml`, `mhs-poisson-ltau.toml`, `mhs-poisson-logm.toml`, `full-mhs-z.toml`). `mpiexecjl` uses the MPI library MPI.jl was built
 with; a system `mpiexec` is safe only if MPI.jl is configured for that same MPI (`MPIPreferences`).
 
 **Ranks and threads.** `-n R` ranks, `-t T` Julia threads **per rank**; keep R × T at or below the cores you have on each
@@ -257,6 +271,8 @@ sections or keys are rejected. Keys used per mode:
 | `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed; `[view]` changes τ only |
 | `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file}`, `tau_grid.align`, `[view]`, `run.overwrite` | other `[input]` keys ignored |
 | `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, cut_frame, max_steps, stop, gn_tol, gn_consec, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0, lm, forcing, cg_cap, eta_min, eta_max, precond, klow, damping}` and `[view]` | solver settings: [Viewing angle](#viewing-angle) |
+| `column-hse-logm` | as `column-hse-ltau` | `align = "none"`: z = 0 at log₁₀ m = 0 per column before the gauge |
+| `mhs-poisson-logm` | as `mhs-poisson-ltau`, with `poisson.logm_cut` (default −0.5, the Bifrost median m at log τ = −4) in place of `logtau_cut` | `cut_frame = "vertical"`: log₁₀ m_LOS = `logm_cut` − log₁₀ μ |
 | `full-mhs-z` | `input.file`, `eos.table_file`, `run.output` (a **directory**), `full_mhs.*` | everything else is not forwarded: `physics.g`, `[column_hse]`, `[mhs]`, `[parallel]`, `[tau]`, `[output]`, `run.overwrite`, input dataset names; P_ref and g come from the file attributes |
 
 `full-mhs-z` runs the older M5 driver: `scripts/run.jl` validates the config, exports `MHS_INPUT`, `MHS_EOS_TABLE`,
@@ -268,7 +284,7 @@ config defaults are the M5i choice (uniform 5 G, line search, Φ stop).
 ## Viewing angle
 
 `[view]` (or `ViewOptions` in the embedding API) sets the line of sight: `mu` = cos θ (0 < μ ≤ 1), `azimuth_deg` = φ
-from +x toward +y, `geometry` = `plane_parallel` (default) or `inclined`. All four fixed-B modes take it. `full-mhs-z`
+from +x toward +y, `geometry` = `plane_parallel` (default) or `inclined`. All six fixed-B modes take it. `full-mhs-z`
 rejects μ ≠ 1, because its τ is vertical (`TAU_MU = 1`). Design: `design/tau/VIEWING_ANGLE_DESIGN.md`.
 
 **Height modes** (`column-hse-z`, `mhs-poisson-z`). On a height grid the atmosphere is already placed in the local solar
@@ -408,6 +424,7 @@ existing directory regardless of `run.overwrite`; use a fresh directory per run.
 | `column-hse-z` | `/input` (copies), `/output/{Pgas, rho, ne, Pe, nH_total, mu_bar, colmass, colmass_trap, chi500, tau500, logtau500}`, `/diagnostics/{R_x, R_y, R_z, eos_status, column_status, tau_top_method, rk_max_substeps, z_tau500_1, layer tables, z}`, `/meta` | h5py (x, y, z), as the input |
 | `mhs-poisson-z` | `/atmosphere/{Pgas, rho, T, tau500, Bx_centre, By_centre, Bz_centre, Pgas_column_hse, z_tau1_m}`, `/coords/{x_m, y_m, z_m}` | h5py (z, y, x) |
 | `column-hse-ltau`, `mhs-poisson-ltau` | `/tau_grid/{logtau500, z_m, Pgas, rho, T, Bx, By, Bz, z_tau1_m}`, `/coords/{x_m, y_m}` | h5py (τ, y, x) |
+| `column-hse-logm`, `mhs-poisson-logm` | `/mass_grid/{log10m, z_m, Pgas, rho, T, Bx, By, Bz, logtau500, z_tau1_m}`, `/coords/{x_m, y_m}`; `log10m` is the axis in kg m⁻² (also for a cgs input), `logtau500` a field | h5py (m, y, x) |
 | `full-mhs-z` | checkpoints and final file: `/atmosphere/{Pgas, T, rho, Bx_xface, By_yface, Bz_zface, Bx_centre, By_centre, Bz_centre, tau500, z_tau1_m, z_tau1_flag}`, `/solver/{x1…x5, ulo}` (restart state), run attributes | h5py (z, y, x) |
 
 ## Tests
@@ -421,7 +438,9 @@ The Python oracle (`oracles/python/`, needs `numpy`, `h5py`) generates fixtures;
 interpreter. The suite covers units/config, operators, parallel infrastructure, the reader and writer, the EOS (Gates 1–2,
 including bitwise thread/rank invariance of column HSE), staggered MHS gradients and invariance, Gate C synthetic tests
 and the M5 solver tests, and runs `test/mpi/mpi_tests.jl` on 2, 4 and 6 ranks via `MPI.mpiexec`.
-`HSEMHS_SKIP_MPI=1` skips the multi-rank part (reduced coverage, not MPI validation). The four fixed-B modes are tested
+`HSEMHS_SKIP_MPI=1` skips the multi-rank part (reduced coverage, not MPI validation). The column-mass modes are tested by
+`test_logm.jl` (P = μ g m, ∫ρ dz = Δm, isothermal scale height, convergence to the τ axis, viewing angle, Jacobian, solve,
+file input and units) and `mpi_view.jl`. The other fixed-B modes are tested
 through the embedding API (`test_embedded.jl`: interface parity with the standalone drivers, validation, status, CLI exit
 codes in process and as a subprocess, invalid reruns, allocations), the τ-grid solver and viewing angle by `test_view.jl` (μ = 1 bitwise, plane-parallel shift,
 inclined Jacobians, column HSE at angles), `test_block.jl` (preconditioners, PCG outcomes, stop qualification,

@@ -53,7 +53,7 @@ asserted(mode, tag) = !(H.poisson_mode(mode) && tag == "24x18")
 ts = @testset "embedded MPI n=$R" begin
     tab = H.load_table(ETABLE)
 
-    @testset "rank-count independence ($mode, $tag)" for mode in H.EMBEDDED_MODES, tag in ("24x18", "11x12")
+    @testset "rank-count independence ($mode, $tag)" for mode in filter(!H.mass_mode, H.EMBEDDED_MODES), tag in ("24x18", "11x12")
         res, ir = solve_on(comm, mode, tag, tab)
         err = gmaxv(ref_error(res, load_ref(ref_name(mode), tag, ir)))
         allvalid = MPI.Allreduce(res.status.valid ? 1 : 0, min, comm) == 1

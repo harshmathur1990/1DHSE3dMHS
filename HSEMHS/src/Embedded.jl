@@ -1,4 +1,4 @@
-# In-memory API for the four fixed-B modes (column-hse-z, column-hse-ltau, mhs-poisson-z, mhs-poisson-ltau), for callers
+# In-memory API for the fixed-B modes (column-hse-z, -ltau, -logm; mhs-poisson-z, -ltau, -logm), for callers
 # that embed HSEMHS in their own MPI program (FFNOInversion). The caller owns MPI and threading: nothing here initialises
 # or finalises MPI, touches COMM_WORLD, sets BLAS/FFTW threads, reads or writes files (except loading an EOS table when
 # given a path) or prints (logging goes to a caller-supplied `logf`).
@@ -7,8 +7,8 @@
 #     res = solve_embedded!(ws, lnT, Bx, By, Bz)                                # collective, every evaluation
 #     free_embedded!(ws)                                                        # collective, releases communicators
 #
-# Arrays are rank-local x slabs in (vertical, y, x) order, vertical index 1 = top: z decreasing [m] or log10 τ500
-# increasing. Ranks own contiguous x ranges given by `block_range` (rank r of `comm` owns slab r) and all of y.
+# Arrays are rank-local x slabs in (vertical, y, x) order, vertical index 1 = top: z decreasing [m], log10 τ500 increasing or
+# log10 m increasing (m the column mass [kg m⁻²]). Ranks own contiguous x ranges given by `block_range` (rank r of `comm` owns slab r) and all of y.
 #
 # Collective safety: every prepare and solve first runs its local checks (shapes, finiteness, options, files) inside
 # `try`, agrees on the outcome over an already valid communicator, and only then enters collective construction or a
@@ -19,7 +19,7 @@
 using .Slab
 import .PoissonZ, .PoissonTau
 
-const EMBEDDED_MODES = (:column_hse_z, :column_hse_ltau, :mhs_poisson_z, :mhs_poisson_ltau)
+const EMBEDDED_MODES = (:column_hse_z, :column_hse_ltau, :mhs_poisson_z, :mhs_poisson_ltau, :column_hse_logm, :mhs_poisson_logm)
 
 # ---------------------------------------------------------------------------------------------------------------------
 # options (names, defaults and meaning as in the standalone [column_hse], [tau], [tau_grid] and [poisson] config sections)
@@ -89,10 +89,23 @@ Base.@kwdef struct PoissonTauOptions
 end
 
 """
+Gauss–Newton solve on the log10 m axis: the options of `PoissonTauOptions` (same solver, same meaning) with the cut given
+as `logm_cut`, log10 of the column mass [kg m⁻²]; `cut_frame = :vertical` places it at the vertical column mass, which is
+log10 m_LOS = `logm_cut` − log10 μ on the line-of-sight axis. A separate type, so that a τ cut cannot reach a mass axis.
+"""
+struct PoissonMassOptions
+    opts::PoissonTauOptions
+end
+PoissonMassOptions(; logm_cut::Real = -0.5, kw...) = PoissonMassOptions(PoissonTauOptions(; logtau_cut = Float64(logm_cut), kw...))
+
+"""Column HSE on the log10 m axis (`[tau_grid]`): P = μ g m needs no anchor; the alignment is that of the τ axis."""
+const ColumnMassOptions = ColumnTauOptions
+
+"""
 Viewing angle (design/tau/VIEWING_ANGLE_DESIGN.md): `mu` = cos θ of the line of sight, `azimuth_deg` = φ from +x toward
 +y, `geometry` :plane_parallel (vertical columns, τ along the line of sight = τ_vertical/μ) or :inclined (slanted rays
 x = ξ + t_x z, y = η + t_y z through each footprint (ξ, η), t = tan θ (cos φ, sin φ)). τ-mode inputs then hold one line
-of sight per footprint on a common log10 τ_LOS axis. The defaults (μ = 1) are the vertical view.
+of sight per footprint on a common log10 τ_LOS axis, column-mass inputs on a common log10 m_LOS axis. The defaults (μ = 1) are the vertical view.
 """
 Base.@kwdef struct ViewOptions
     mu::Float64 = 1.0
@@ -194,11 +207,13 @@ function option_errors(o::PoissonZOptions, z::AbstractVector)
     return e
 end
 
-function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0)
+option_errors(o::PoissonMassOptions, lm::AbstractVector, mu = 1.0) = option_errors(o.opts, lm, mu; cutname = "logm_cut", axname = "log10 m_LOS")
+
+function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0; cutname = "logtau_cut", axname = "log10 τ_LOS")
     e = solver_errors(String[], o)
     push_if!(e, o.cut_frame in (:vertical, :los), "poisson cut_frame must be :vertical or :los, got :$(o.cut_frame)")
     o.cut_frame in (:vertical, :los) || return e
-    c = los_cut(o, mu); at = o.logtau_cut == c ? "logtau_cut = $c" : "logtau_cut = $(o.logtau_cut) (log10 τ_LOS = $(round(c; digits = 3)) at μ = $mu)"
+    c = los_cut(o, mu); at = o.logtau_cut == c ? "$cutname = $c" : "$cutname = $(o.logtau_cut) ($axname = $(round(c; digits = 3)) at μ = $mu)"
     push_if!(e, o.dc_cap_m > 0 && o.du_cap > 0, "poisson dc_cap_m and du_cap must be positive")
     push_if!(e, o.stop in (:gn, :phi), "poisson stop must be :gn or :phi, got :$(o.stop)")
     push_if!(e, 0 < o.gn_tol < 1, "poisson gn_tol must be in (0, 1)")
@@ -341,7 +356,7 @@ snapshot(r::EquilibriumResult) = deepcopy(r)
 mutable struct EmbeddedWorkspace
     mode::Symbol
     par::ParCtx
-    axis::Vector{Float64}             # z [m] top first, or log10 τ500 increasing
+    axis::Vector{Float64}             # z [m] top first, or log10 τ500 or log10 m [kg m⁻²] increasing
     x::Vector{Float64}
     y::Vector{Float64}
     dx::Float64
@@ -355,11 +370,14 @@ mutable struct EmbeddedWorkspace
     logf::Any
     progress::Bool
     view::ViewOptions
-    warm::Any                         # mhs-poisson-ltau: (ln P on levels k_c…, cut heights) of the last valid solve and of its column HSE, or nothing
+    warm::Any                         # mhs-poisson-ltau, -logm: (ln P on levels k_c…, cut heights) of the last valid solve and of its column HSE, or nothing
 end
 
 height_mode(mode) = mode in (:column_hse_z, :mhs_poisson_z)
-poisson_mode(mode) = mode in (:mhs_poisson_z, :mhs_poisson_ltau)
+poisson_mode(mode) = mode in (:mhs_poisson_z, :mhs_poisson_ltau, :mhs_poisson_logm)
+mass_mode(mode) = mode in (:column_hse_logm, :mhs_poisson_logm)
+"""The Gauss–Newton solve on the τ or the mass axis (PoissonTau)."""
+gn_mode(mode) = mode in (:mhs_poisson_ltau, :mhs_poisson_logm)
 
 """Owned global x indices of this workspace's slab."""
 owned_columns(ws::EmbeddedWorkspace) = owned_x(ws.par)
@@ -380,9 +398,11 @@ end
                      view=ViewOptions()) -> EmbeddedWorkspace
 
 Collective over `comm`. `mode` ∈ $(EMBEDDED_MODES). `axis` is the height axis z [m] (top first, decreasing) for the
-height modes or the log10 τ500 axis (increasing) for the τ modes; `x`, `y` are the global, uniform, increasing horizontal
+height modes, the log10 τ500 axis (increasing) for the τ modes or the log10 m axis (increasing; m [kg m⁻²] along the line of
+sight) for the column-mass modes; `x`, `y` are the global, uniform, increasing horizontal
 axes [m]; `eos` an EOSTable or the path of one (loaded once per rank); `g` [m s⁻²]; `column` a ColumnZOptions (height
-modes) or ColumnTauOptions (τ modes); `poisson` a PoissonZOptions / PoissonTauOptions for the Poisson modes. The slab
+modes) or ColumnTauOptions (τ and column-mass modes); `poisson` a PoissonZOptions / PoissonTauOptions / PoissonMassOptions for
+the Poisson modes. The slab
 context duplicates `comm`; release it with `free_embedded!`. `progress = true` (typically on one rank) shows a
 progress bar over this rank's columns during column HSE. `view` (a ViewOptions) is the viewing angle, fixed for the
 workspace: in the τ modes the axis is then τ along the line of sight (plane-parallel or inclined geometry); in the height
@@ -400,8 +420,8 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
             all(<(0), diff(ax)) || invalid("height axis must be strictly decreasing (top first) [m]")
             column isa ColumnZOptions || invalid("height modes take column::ColumnZOptions")
         else
-            all(>(0), diff(ax)) || invalid("log10 τ500 axis must be strictly increasing (top first)")
-            column isa ColumnTauOptions || invalid("τ modes take column::ColumnTauOptions")
+            all(>(0), diff(ax)) || invalid("$(mass_mode(mode) ? "log10 m" : "log10 τ500") axis must be strictly increasing (top first)")
+            column isa ColumnTauOptions || invalid("τ and column-mass modes take column::ColumnTauOptions")
         end
         dx = uniform_spacing("x", xs); dy = uniform_spacing("y", ys)
         isfinite(g) && g > 0 || invalid("gravity g must be finite and positive, got $g")
@@ -410,7 +430,7 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         col = height_mode(mode) && column isa ColumnZOptions ? column_with_view(column, view) : column
         errs = option_errors(col, ax)
         if poisson_mode(mode)
-            want = height_mode(mode) ? PoissonZOptions : PoissonTauOptions
+            want = height_mode(mode) ? PoissonZOptions : mass_mode(mode) ? PoissonMassOptions : PoissonTauOptions
             poisson isa want || invalid("mode :$mode takes poisson::$want")
             append!(errs, height_mode(mode) ? option_errors(poisson, ax) : option_errors(poisson, ax, view.mu))
         else
@@ -424,6 +444,7 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         (ax, xs, ys, dx, dy, tab, col)
     end
     ax, xs, ys, dx, dy, tab, col = local_state
+    poisson isa PoissonMassOptions && (poisson = poisson.opts)   # checked: from here the solver options of both axes
     # stage 2: collective construction (all ranks reach this point together)
     par = slab_par(comm, length(xs), length(ys), length(ax))
     b = par.block
@@ -444,6 +465,8 @@ prepare_column_hse_z(comm; kw...) = prepare_embedded(comm, :column_hse_z; kw...)
 prepare_column_hse_ltau(comm; kw...) = prepare_embedded(comm, :column_hse_ltau; kw...)
 prepare_mhs_poisson_z(comm; kw...) = prepare_embedded(comm, :mhs_poisson_z; kw...)
 prepare_mhs_poisson_ltau(comm; kw...) = prepare_embedded(comm, :mhs_poisson_ltau; kw...)
+prepare_column_hse_logm(comm; kw...) = prepare_embedded(comm, :column_hse_logm; kw...)
+prepare_mhs_poisson_logm(comm; kw...) = prepare_embedded(comm, :mhs_poisson_logm; kw...)
 
 # ---------------------------------------------------------------------------------------------------------------------
 # solve
@@ -453,9 +476,9 @@ prepare_mhs_poisson_ltau(comm; kw...) = prepare_embedded(comm, :mhs_poisson_ltau
     solve_embedded!(ws, lnT, Bx=nothing, By=nothing, Bz=nothing) -> EquilibriumResult
 
 Collective. `lnT` = ln(T/K) and the cell-centred field [T] on this rank's slab, (vertical, y, x). B is required for the
-Poisson modes and for column-hse-ltau with align = "ptot"; `nothing` means zero otherwise. T and B are not modified.
+Poisson modes and for column-hse-ltau, -logm with align = "ptot"; `nothing` means zero otherwise. T and B are not modified.
 Returns `ws.res` (buffers reused by the next solve; see `snapshot`).
-`start` (mhs-poisson-ltau): `:column_hse` (default) starts the solved region from the column HSE; `:previous` from the
+`start` (mhs-poisson-ltau, -logm): `:column_hse` (default) starts the solved region from the column HSE; `:previous` from the
 last valid solution of this workspace, corrected by the change of the column HSE (warm start for inversion loops,
 design/tau/SOLVER_TIME_DESIGN.md D4b), or from the column HSE when there is none. `status.stats["start"]` records which was used.
 """
@@ -463,15 +486,16 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
                          start::Symbol = :column_hse)
     t0 = time()
     par = ws.par; b = par.block; shp = (length(ws.axis), b.ny, b.nx)
-    needB = poisson_mode(ws.mode) || (ws.mode == :column_hse_ltau && ws.column.align == "ptot")
+    colt = ws.mode in (:column_hse_ltau, :column_hse_logm)
+    needB = poisson_mode(ws.mode) || (colt && ws.column.align == "ptot")
     inputs = agree(par.comm, "solve_embedded!($(ws.mode)) input") do
         start in (:column_hse, :previous) || invalid("start must be :column_hse or :previous, got :$start")
-        start == :column_hse || ws.mode == :mhs_poisson_ltau || invalid("start = :$start applies to mhs-poisson-ltau only")
+        start == :column_hse || gn_mode(ws.mode) || invalid("start = :$start applies to mhs-poisson-ltau and -logm only")
         size(lnT) == shp || invalid("lnT has size $(size(lnT)); this rank's slab is $shp (vertical, y, x)")
         all(isfinite, lnT) || invalid("lnT has non-finite values")
         Bs = (Bx, By, Bz)
         if all(isnothing, Bs)
-            needB && invalid("mode :$(ws.mode)$(ws.mode == :column_hse_ltau ? " with align = \"ptot\"" : "") needs Bx, By, Bz")
+            needB && invalid("mode :$(ws.mode)$(colt ? " with align = \"ptot\"" : "") needs Bx, By, Bz")
             Bs = (zeros(shp), zeros(shp), zeros(shp))
         else
             any(isnothing, Bs) && invalid("give all of Bx, By, Bz or none")
@@ -492,7 +516,7 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
         column_z!(ws, lT, st)
         res.Pgas_start .= res.Pgas
         st.valid && poisson_z!(ws, lT, bx, by, bz, st)
-    elseif ws.mode == :column_hse_ltau
+    elseif colt
         column_ltau!(ws, lT, bx, by, bz, st)
         res.Pgas_start .= res.Pgas
     else
@@ -503,7 +527,7 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
         st.valid && poisson_ltau!(ws, lT, bx, by, bz, st; warm = start == :previous ? ws.warm : nothing)
     end
     st.valid && check_fields!(ws, st)
-    if ws.mode == :mhs_poisson_ltau && st.valid                       # an invalid solve keeps the earlier warm start
+    if gn_mode(ws.mode) && st.valid                                   # an invalid solve keeps the earlier warm start
         ws.warm = (res.lnP[kc:end, :, :], res.z[kc, :, :], col...)
     end
     st.stats["view_mu"] = ws.view.mu; st.stats["view_azimuth_deg"] = ws.view.azimuth_deg
@@ -632,28 +656,32 @@ function poisson_z!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     return st
 end
 
-"""ρ, nₑ, χ₅₀₀ and EOS flags on the τ grid; τ and log τ are the native axis; z(τ = 1) by interpolation in log τ."""
+"""ρ, nₑ, χ₅₀₀ and EOS flags on the τ grid; τ and log τ are the native axis (mass axis: computed from the state);
+z(τ = 1) by interpolation in log τ."""
 function tau_state!(ws::EmbeddedWorkspace, lT)
     res = ws.res; lt = ws.axis
     nk, ny, nx = size(lT)
+    lτ = mass_mode(ws.mode) ? PoissonTau.logtau_mass(lT, res.lnP, lt, ws.eos) : nothing
     Threads.@threads for i in 1:nx
         @inbounds for j in 1:ny
             for k in 1:nk
                 r, n, c, s = state(ws.eos, lT[k, j, i], res.lnP[k, j, i])
                 res.rho[k, j, i] = exp(r); res.ne[k, j, i] = exp(n); res.chi500[k, j, i] = exp(c)
                 res.eos_flags[k, j, i] = s
-                res.logtau500[k, j, i] = lt[k]; res.tau500[k, j, i] = exp10(lt[k])
+                l = lτ === nothing ? lt[k] : lτ[k, j, i]
+                res.logtau500[k, j, i] = l; res.tau500[k, j, i] = exp10(l)
             end
-            res.z_tau1[j, i] = PoissonTau.interp_lt(@view(res.z[:, j, i]), lt, 0.0)
+            res.z_tau1[j, i] = PoissonTau.interp_lt(@view(res.z[:, j, i]), lτ === nothing ? lt : @view(lτ[:, j, i]), 0.0)
         end
     end
 end
 
-"""Column HSE on the τ grid (aligned on P + B²/2μ₀ if requested, gauged to mean z(τ = 1) = 0)."""
+"""Column HSE on the τ or mass grid (aligned on P + B²/2μ₀ if requested, gauged to mean z(τ = 1) = 0)."""
 function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     res = ws.res; o = ws.column
     lnP, z, nfailed, Pt, nb, nbad = PoissonTau.column_hse_tau(ws.par, ws.axis, lT, bx, by, bz, ws.eos, ws.g;
-                                                              align = o.align, progress = ws.progress, mu = ws.view.mu)
+                                                              align = o.align, progress = ws.progress, mu = ws.view.mu,
+                                                              mass = mass_mode(ws.mode))
     res.lnP .= lnP; res.z .= z; res.Pgas .= exp.(lnP)
     st.stats["columns_failed"] = nfailed
     st.stats["align_total_pressure_Pa"] = Pt
@@ -661,13 +689,13 @@ function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     if nbad > 0
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
         return fail!(st, :eos_out_of_envelope, nfailed,
-                     "column HSE in τ left the EOS table in $nfailed columns ($nbad levels)")
+                     "column HSE in $(mass_mode(ws.mode) ? "m" : "τ") left the EOS table in $nfailed columns ($nbad levels)")
     end
     poisson_mode(ws.mode) || tau_state!(ws, lT)
     return st
 end
 
-"""Gauss–Newton solve on the τ grid from the column-HSE start in ws.res (or a warm start on top of it: `warm` =
+"""Gauss–Newton solve on the τ or mass grid from the column-HSE start in ws.res (or a warm start on top of it: `warm` =
 (ln P on levels k_c…, cut heights) of a previous solution and of its column HSE, PoissonTau.warm_start!); gauged
 afterwards (mean z(τ = 1) = 0)."""
 function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing)
@@ -686,12 +714,13 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
                                                         lm_mu0 = o.lm_mu0, logf = ws.logf, S = ws.fft,
                                                         rms_atol = o.rms_atol, mu = ws.view.mu, slant = slant(ws.view),
                                                         lm = o.lm, forcing = o.forcing, cg_cap = o.cg_cap, eta_min = o.eta_min,
-                                                        eta_max = o.eta_max, precond = o.precond, klow = o.klow, damping = o.damping)
+                                                        eta_max = o.eta_max, precond = o.precond, klow = o.klow, damping = o.damping,
+                                                        mass = mass_mode(ws.mode))
     if info.reason == :eos_out_of_envelope
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
-        return fail!(st, :eos_out_of_envelope, 1, "the τ-grid Poisson start state lies outside the EOS table")
+        return fail!(st, :eos_out_of_envelope, 1, "the Poisson start state on the $(mass_mode(ws.mode) ? "mass" : "τ") grid lies outside the EOS table")
     end
-    st.stats["gauge_shift_m"] = PoissonTau.gauge!(par, z, lt)
+    st.stats["gauge_shift_m"] = PoissonTau.gauge!(par, z, lt, mass_mode(ws.mode) ? PoissonTau.logtau_mass(lT, u, lt, ws.eos) : nothing)
     res.lnP .= u; res.z .= z; res.Pgas .= exp.(u)
     st.reason = info.reason; st.steps = steps; st.phi0 = Φ0; st.phi = Φ; st.rms0 = info.rms0; st.rms = info.rms
     st.phi0_zero = info.phi0_zero; st.gn_decrement = info.gn_decrement; st.grad_norm = info.grad_norm

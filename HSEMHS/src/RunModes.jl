@@ -1,4 +1,4 @@
-# Drivers of run.mode = "column-hse-ltau", "mhs-poisson-z" and "mhs-poisson-ltau" (MPI slabs in x + threads; Slab.jl).
+# Drivers of run.mode = "column-hse-ltau", "column-hse-logm", "mhs-poisson-z", "mhs-poisson-ltau" and "mhs-poisson-logm" (MPI slabs in x + threads; Slab.jl).
 # "column-hse-z" is run_column_hse (RunColumnHSE.jl); "full-mhs-z" runs through scripts/run.jl (M5 driver).
 
 using .Slab
@@ -18,7 +18,7 @@ end
 attrs_dict(f) = Dict(k => read(attributes(f)[k]) for k in keys(attributes(f)))
 
 """
-τ-grid input through the embedded API: coordinates from the file, the slab workspace from `prepare_embedded` on
+τ-grid or column-mass input through the embedded API: coordinates from the file, the slab workspace from `prepare_embedded` on
 COMM_WORLD (so the file drivers run exactly the embedded numerics), then this rank's slab of T and B.
 """
 function tau_setup(cfg, tag, mode::Symbol)
@@ -27,20 +27,22 @@ function tau_setup(cfg, tag, mode::Symbol)
     isfile(path) || invalid("input file $path does not exist")
     ensure_mpi()
     NX, NY, nt = PoissonTau.tau_input_size(path)
-    lt, x, y = h5open(f -> tau_coords(f, path, cfg.input.x, cfg.input.y), path)
+    mass = mass_mode(mode); axname = mass ? "log10 m" : "log10 τ500"
+    lt, x, y = h5open(f -> tau_coords(f, path, cfg.input.x, cfg.input.y; mass = mass), path)
     dx, dy = x[2] - x[1], y[2] - y[1]
     (dx > 0 && dy > 0) || invalid("$path: x and y must increase")
-    issorted(lt) || invalid("log10 τ500 must increase (top level first) in $path")
+    issorted(lt) || invalid("$axname must increase (top level first) in $path")
     g = tau_gravity(cfg, path)
     tab = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)
     G = cfg.tau_grid; P = cfg.poisson
     column = ColumnTauOptions(align = G.align)
-    poisson = mode == :mhs_poisson_ltau ?
-              PoissonTauOptions(logtau_cut = P.logtau_cut, cut_frame = Symbol(P.cut_frame), max_steps = P.max_steps == 0 ? 25 : P.max_steps, rtol = P.rtol,
+    gn = !gn_mode(mode) ? nothing :
+              PoissonTauOptions(logtau_cut = mass ? P.logm_cut : P.logtau_cut, cut_frame = Symbol(P.cut_frame), max_steps = P.max_steps == 0 ? 25 : P.max_steps, rtol = P.rtol,
                                 n_consec = P.n_consec, stop = Symbol(P.stop), gn_tol = P.gn_tol, gn_consec = P.gn_consec,
                                 cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0,
                                 lm = Symbol(P.lm), forcing = Symbol(P.forcing), cg_cap = P.cg_cap, eta_min = P.eta_min,
-                                eta_max = P.eta_max, precond = Symbol(P.precond), klow = P.klow, damping = Symbol(P.damping)) : nothing
+                                eta_max = P.eta_max, precond = Symbol(P.precond), klow = P.klow, damping = Symbol(P.damping))
+    poisson = mass && gn !== nothing ? PoissonMassOptions(gn) : gn
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] %s: %s", time() - t0, tag, s)); flush(stdout))
     vw = config_view(cfg)
     cfg.tau.mu == 1.0 || invalid("tau.mu applies to the height modes only; τ modes take view.mu")
@@ -49,44 +51,54 @@ function tau_setup(cfg, tag, mode::Symbol)
     par = ws.par
     logm(s) = rprint(par, @sprintf("[%7.1fs] %s: %s", time() - t0, tag, s))
     _, _, _, T, Bx, By, Bz = PoissonTau.read_tau_input(par, path; xname = cfg.input.x, yname = cfg.input.y)
-    logm(@sprintf("input %s: %d levels log10 τ500 %.2f … %.2f, %d × %d columns, dx %.2f km, g %.2f; ranks %d (x slabs), threads %d",
-                  path, nt, lt[1], lt[end], NX, NY, dx / 1e3, g, par.nranks, Threads.nthreads()))
-    vw.mu == 1.0 || logm(@sprintf("view: μ %.4f (θ %.2f°), azimuth %.1f°, geometry %s; τ is along the line of sight",
-                                    vw.mu, acosd(vw.mu), vw.azimuth_deg, vw.geometry))
-    return (; ws, par, logm, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = cfg.eos.table_file, view = vw)
+    logm(@sprintf("input %s: %d levels %s %.2f … %.2f, %d × %d columns, dx %.2f km, g %.2f; ranks %d (x slabs), threads %d",
+                  path, nt, axname, lt[1], lt[end], NX, NY, dx / 1e3, g, par.nranks, Threads.nthreads()))
+    vw.mu == 1.0 || logm(@sprintf("view: μ %.4f (θ %.2f°), azimuth %.1f°, geometry %s; %s is along the line of sight",
+                                    vw.mu, acosd(vw.mu), vw.azimuth_deg, vw.geometry, mass ? "m" : "τ"))
+    return (; ws, par, logm, mass, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = cfg.eos.table_file, view = vw)
 end
 
-"""log10 τ500, x and y [m] of a τ-grid input (both layouts of `PoissonTau.read_tau_input`)."""
-function tau_coords(f, path, xname, yname)
-    if haskey(f, "log10tau500")
+"""log10 τ500 (`mass`: log10 m [kg m⁻²]), x and y [m] of a τ-grid or column-mass input (`PoissonTau.read_tau_input`)."""
+function tau_coords(f, path, xname, yname; mass = false)
+    mass ? haskey(f, "log10m") || invalid("$path has no dataset \"log10m\", which the column-mass (logm) modes read") :
+           haskey(f, "log10tau500") || haskey(f, "logtau500") ||
+           invalid("$path has no log10 τ500 axis" * (haskey(f, "log10m") ? " (it has log10m: use a logm mode)" : ""))
+    if mass || haskey(f, "log10tau500")
         for nm in (xname, yname)
             haskey(f, nm) || invalid("$path has no dataset \"$nm\" (τ-grid inputs carry x and y like the height-grid input)")
         end
         ax(nm) = (a = attributes(f[nm]); fac = haskey(a, "units") ? UNIT_FACTORS[:length][attr_string(read(a["units"]))] : 1.0;
                   Float64.(read(f[nm])) .* fac)
-        return read(f["log10tau500"]), ax(xname), ax(yname)
+        return mass ? PoissonTau.read_log10m(f) : read(f["log10tau500"]), ax(xname), ax(yname)
     end
     return read(f["logtau500"]), Float64.(read(f["x_m"])), Float64.(read(f["y_m"]))
 end
 
-function write_tau_grid(s, out, lt, z, lnP, attrs)
+"""
+Output of the τ and column-mass modes: /tau_grid (axis logtau500), or /mass_grid (axis log10m [kg m⁻²], with logtau500 a
+field: `logtau`), and /coords. `zt1m` (ny, nx): z(τ = 1) of a mass axis, on which τ = 1 is not a level.
+"""
+function write_tau_grid(s, out, lt, z, lnP, attrs; logtau = nothing, zt1m = nothing)
+    grp = s.mass ? "mass_grid" : "tau_grid"
     rho = similar(lnP)
     Threads.@threads for idx in eachindex(lnP)
         r, _, _ = lnrho_dY(s.tab, log(s.T[idx]), lnP[idx]); rho[idx] = exp(r)
     end
-    k0 = argmin(abs.(lt))
-    zt1 = [PoissonTau.interp_lt(@view(z[:, j, i]), lt, 0.0) for i in 1:size(z, 3), j in 1:size(z, 2)]   # (x, y)
-    slabs = ["tau_grid/z_m" => xyz_of(z), "tau_grid/Pgas" => xyz_of(exp.(lnP)), "tau_grid/rho" => xyz_of(rho),
-             "tau_grid/T" => xyz_of(s.T), "tau_grid/Bx" => xyz_of(s.Bx), "tau_grid/By" => xyz_of(s.By),
-             "tau_grid/Bz" => xyz_of(s.Bz), "tau_grid/z_tau1_m" => zt1]
-    small = ["tau_grid/logtau500" => lt, "coords/x_m" => s.x, "coords/y_m" => s.y]
+    zt1 = s.mass ? permutedims(zt1m, (2, 1)) :
+          [PoissonTau.interp_lt(@view(z[:, j, i]), lt, 0.0) for i in 1:size(z, 3), j in 1:size(z, 2)]   # (x, y)
+    slabs = ["$grp/z_m" => xyz_of(z), "$grp/Pgas" => xyz_of(exp.(lnP)), "$grp/rho" => xyz_of(rho),
+             "$grp/T" => xyz_of(s.T), "$grp/Bx" => xyz_of(s.Bx), "$grp/By" => xyz_of(s.By),
+             "$grp/Bz" => xyz_of(s.Bz), "$grp/z_tau1_m" => zt1]
+    s.mass && push!(slabs, "$grp/logtau500" => xyz_of(logtau))
+    small = ["$grp/$(s.mass ? "log10m" : "logtau500")" => lt, "coords/x_m" => s.x, "coords/y_m" => s.y]
     a = Dict{String,Any}("input" => abspath(s.path), "eos_table" => abspath(s.table_file),
                          "g" => s.g, "mpi_ranks" => s.par.nranks, "threads" => Threads.nthreads(),
-                         "units" => "SI: z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, τ), h5py (τ, y, x)")
+                         "units" => s.mass ? "SI: log10m of m in kg m-2, z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, m), h5py (m, y, x)" :
+                                    "SI: z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, τ), h5py (τ, y, x)")
     merge!(a, attrs)
     merge!(a, view_attrs(s.view))
     coop_write(s.par, out, slabs, small, a)
-    zq = gquantiles(s.par, z[k0, :, :], [0.01, 0.5, 0.99]) ./ 1e3
+    zq = gquantiles(s.par, s.mass ? zt1m : z[argmin(abs.(lt)), :, :], [0.01, 0.5, 0.99]) ./ 1e3
     s.logm(@sprintf("z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km; wrote %s", zq..., out))
 end
 
@@ -125,10 +137,11 @@ failure_record(out) = out * ".failed.txt"
 """Remove a failure record left at this output path by an earlier invalid run (rank 0, after a valid write)."""
 clear_failure_record(par, out) = (rank0(par) && isfile(failure_record(out)) && rm(failure_record(out)); nothing)
 
-"""run.mode = "column-hse-ltau": hydrostatic columns in τ (P(τ), z(τ), ρ(τ)), aligned on P + B²/2μ₀."""
+"""run.mode = "column-hse-ltau", "column-hse-logm": hydrostatic columns in τ or m (P, z, ρ on the axis), aligned on P + B²/2μ₀."""
 function run_column_hse_ltau(cfg::Config)
     status = invalid_input                              # until the solve has returned
-    s = tau_setup(cfg, "column-hse-ltau", :column_hse_ltau)
+    name = cfg.run.mode
+    s = tau_setup(cfg, name, Symbol(replace(name, "-" => "_")))
     try
         out = check_output(s.par, cfg)
         G = cfg.tau_grid
@@ -137,7 +150,8 @@ function run_column_hse_ltau(cfg::Config)
         invalid_result(s.logm, st, s.par, out, cfg) && return status
         s.logm(@sprintf("columns: aligned on P + B²/2μ₀ = %.4e Pa (%d columns extrapolated)",
                         st.stats["align_total_pressure_Pa"], st.stats["align_extrapolated_columns"]))
-        write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "column-hse-ltau", "align" => G.align))
+        write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => name, "align" => G.align);
+                       logtau = res.logtau500, zt1m = res.z_tau1)
         clear_failure_record(s.par, out)
     finally
         free_embedded!(s.ws)
@@ -145,10 +159,11 @@ function run_column_hse_ltau(cfg::Config)
     return status
 end
 
-"""run.mode = "mhs-poisson-ltau": column HSE in τ, then the direct Poisson solve on the τ grid."""
+"""run.mode = "mhs-poisson-ltau", "mhs-poisson-logm": column HSE in τ or m, then the direct Poisson solve on that grid."""
 function run_mhs_poisson_ltau(cfg::Config)
     status = invalid_input                              # until the solve has returned
-    s = tau_setup(cfg, "mhs-poisson-ltau", :mhs_poisson_ltau)
+    name = cfg.run.mode
+    s = tau_setup(cfg, name, Symbol(replace(name, "-" => "_")))
     try
         out = check_output(s.par, cfg)
         G = cfg.tau_grid; P = cfg.poisson
@@ -162,8 +177,9 @@ function run_mhs_poisson_ltau(cfg::Config)
         invalid_result(s.logm, st, s.par, out, cfg) && return status
         s.logm(@sprintf("solve done in %d steps, Φ/Φ₀ %.3e; gauge shift %.1f km", st.steps, st.phi / st.phi0,
                         st.stats["gauge_shift_m"] / 1e3))
-        write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => "mhs-poisson-ltau",
-                       "logtau_cut" => s.lt[st.stats["cut_level"]], "logtau_cut_frame" => String(s.ws.poisson.cut_frame),
+        write_tau_grid(s, out, s.lt, res.z, res.lnP, Dict{String,Any}("mode" => name,
+                       (s.mass ? "logm_cut" : "logtau_cut") => s.lt[st.stats["cut_level"]],
+                       (s.mass ? "logm_cut_frame" : "logtau_cut_frame") => String(s.ws.poisson.cut_frame),
                        "phi_start" => st.phi0, "phi_end" => st.phi,
                        "steps" => st.steps, "align" => G.align,
                        "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement, "status" => string(st.status),
@@ -173,7 +189,8 @@ function run_mhs_poisson_ltau(cfg::Config)
                        "qual_lower" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["lower"] : NaN,
                        "qual_upper" => haskey(st.stats, "stop_check") ? st.stats["stop_check"]["upper"] : NaN,
                        ("work_" * k => Float64(v) for (k, v) in st.stats["work"])...,
-                       "solve_seconds" => st.seconds, "ranks" => s.par.nranks, "threads" => Threads.nthreads()))
+                       "solve_seconds" => st.seconds, "ranks" => s.par.nranks, "threads" => Threads.nthreads());
+                       logtau = res.logtau500, zt1m = res.z_tau1)
         clear_failure_record(s.par, out)
     finally
         free_embedded!(s.ws)
