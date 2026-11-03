@@ -1,0 +1,11 @@
+strong 1.0 %, quiet 93.0 %; truth z(τ=1) std 30.6 km, Wilson (strong − quiet) -77.9 km
+
+run         levels steps status     stop       Φ/Φ0     upper    wall |  z(τ=1) rms  corr   std  Wilson | fixed band rms ΔlnP  Δz km | solved rms ΔlnP
+col HSE        0     - -          -               nan      nan    nan |     56.5  0.575   68.3   -61.7 |          0.091    54.7 |      nan
+cut -3.0      57    25 max_iter   none       5.96e-03      nan   1356 |     33.7  0.535   38.0  -119.8 |          0.070    35.9 |    0.187
+cut -2.0      47    11 converged  qualified  7.54e-03  5.6e-04    597 |     19.6  0.769   22.6   -81.6 |          0.070    22.8 |    0.139
+cut -1.5      42     7 converged  qualified  7.83e-03  3.3e-04    290 |     19.2  0.781   22.3   -81.1 |          0.069    22.4 |    0.112
+cut -1.0      37     6 converged  qualified  8.73e-03  2.9e-04    231 |     19.2  0.781   22.1   -81.8 |          0.069    22.4 |    0.091
+cut -0.5      32     5 converged  qualified  1.09e-02  4.2e-04    167 |     19.3  0.778   21.8   -82.5 |          0.069    22.6 |    0.080
+cut +0.0      27     5 converged  qualified  1.57e-02  7.4e-05    169 |     19.5  0.776   21.3   -82.8 |          0.070    22.8 |    0.076
+cut +0.5      22     5 converged  qualified  2.56e-02  2.3e-05    147 |     19.5  0.776   20.9   -82.9 |          0.074    23.2 |    0.074

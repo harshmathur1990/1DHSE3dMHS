@@ -10,7 +10,7 @@
 qualified). Results and limits: `HSEMHS/reports/logm_2026-11-02/README.md`.
 
 **Uncertain.** (1) 5 qualified steps against `max_iter` at 25 on the τ axis, not a controlled comparison: this input's m uses
-the snapshot's true ρ and P. (2) Line-of-sight m for μ < 1 is a choice; m is usually quoted vertically. (3) The top closure
+the snapshot's true ρ and P. (2) m is along the line of sight for μ < 1: the user's decision (3 Nov 2026), since an inversion knows only T and B per ray; no full-cube test at μ < 1 yet. (3) The top closure
 P = g m₁ ignores what lies above the axis; above the cut P/(g m) in Bifrost spans 0.35–1.95 at log m = −2. (4) τ on the
 mass axis is one trapezoid per level with no substeps, so coarse levels through hot-over-cool intervals are less accurate
 than the heights of column HSE. (5) `eos_cells` reports ln of the axis; its log text changed from "log τ" to "ln axis" (it
@@ -18,3 +18,5 @@ was already ln τ under that label).
 
 **Please review.** The `mass` branches in `evaluate!` and the probes; `logtau_mass` and its closure; the gauge after the
 solve; whether a separate `PoissonMassOptions` type is the right guard; `check_fields!` on the computed τ.
+
+**Cut (3 Nov 2026).** `logm_cut` from −3 to +0.5 on the cube: `HSEMHS/reports/logm_cut_2026-11-03/README.md`. Default −0.5 kept.
