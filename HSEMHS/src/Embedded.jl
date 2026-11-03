@@ -478,21 +478,29 @@ prepare_mhs_poisson_logm(comm; kw...) = prepare_embedded(comm, :mhs_poisson_logm
 Collective. `lnT` = ln(T/K) and the cell-centred field [T] on this rank's slab, (vertical, y, x). B is required for the
 Poisson modes and for column-hse-ltau, -logm with align = "ptot"; `nothing` means zero otherwise. T and B are not modified.
 Returns `ws.res` (buffers reused by the next solve; see `snapshot`).
+`lnne` = ln(nₑ/m⁻³) on the slab, column modes on the height or τ grid only: the electron density is taken as given and P and ρ
+follow from (T, nₑ) through the EOS at every level, with no hydrostatic integration (B and the alignment are not used).
+`res.ne` is then exactly the given nₑ; on the τ grid the heights are ∫ μ dτ/χ₅₀₀, gauged as usual.
 `start` (mhs-poisson-ltau, -logm): `:column_hse` (default) starts the solved region from the column HSE; `:previous` from the
 last valid solution of this workspace, corrected by the change of the column HSE (warm start for inversion loops,
 design/tau/SOLVER_TIME_DESIGN.md D4b), or from the column HSE when there is none. `status.stats["start"]` records which was used.
 """
 function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx = nothing, By = nothing, Bz = nothing;
-                         start::Symbol = :column_hse)
+                         start::Symbol = :column_hse, lnne = nothing)
     t0 = time()
     par = ws.par; b = par.block; shp = (length(ws.axis), b.ny, b.nx)
     colt = ws.mode in (:column_hse_ltau, :column_hse_logm)
-    needB = poisson_mode(ws.mode) || (colt && ws.column.align == "ptot")
+    needB = lnne === nothing && (poisson_mode(ws.mode) || (colt && ws.column.align == "ptot"))
     inputs = agree(par.comm, "solve_embedded!($(ws.mode)) input") do
         start in (:column_hse, :previous) || invalid("start must be :column_hse or :previous, got :$start")
         start == :column_hse || gn_mode(ws.mode) || invalid("start = :$start applies to mhs-poisson-ltau and -logm only")
         size(lnT) == shp || invalid("lnT has size $(size(lnT)); this rank's slab is $shp (vertical, y, x)")
         all(isfinite, lnT) || invalid("lnT has non-finite values")
+        if lnne !== nothing
+            ws.mode in (:column_hse_z, :column_hse_ltau) || invalid("lnne applies to column-hse-z and column-hse-ltau, not :$(ws.mode)")
+            size(lnne) == shp || invalid("lnne has size $(size(lnne)); this rank's slab is $shp (vertical, y, x)")
+            all(isfinite, lnne) || invalid("lnne has non-finite values")
+        end
         Bs = (Bx, By, Bz)
         if all(isnothing, Bs)
             needB && invalid("mode :$(ws.mode)$(colt ? " with align = \"ptot\"" : "") needs Bx, By, Bz")
@@ -509,7 +517,11 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
     lT, (bx, by, bz) = inputs
     st = EquilibriumStatus()
     res = ws.res
-    if ws.mode == :column_hse_z
+    st.stats["ne_given"] = lnne !== nothing
+    if lnne !== nothing
+        ne_given!(ws, lT, Float64.(lnne), st)
+        res.Pgas_start .= res.Pgas
+    elseif ws.mode == :column_hse_z
         column_z!(ws, lT, st)
         res.Pgas_start .= res.Pgas
     elseif ws.mode == :mhs_poisson_z
@@ -547,6 +559,75 @@ function fail!(st::EquilibriumStatus, reason::Symbol, n::Int, msg::AbstractStrin
         st.valid = false
         st.reason = reason
     end
+    return st
+end
+
+"""
+ln P at which the EOS gives ln nₑ = `lnne` at `X` = ln T; NaN if no state in the EOS has that nₑ. nₑ grows with P at fixed T, so a
+bracket is grown from the ideal-gas guess and closed by regula falsi (Illinois), tolerance `tol` in ln nₑ.
+"""
+function lnP_from_lnne(eos, X::Float64, lnne::Float64; tol::Float64 = 1e-11)
+    f(Y) = state(eos, X, Y)[2] - lnne
+    a = b = lnne + X + log(K_B); fa = fb = f(a); step = 0.5
+    for _ in 1:60
+        (isfinite(fa) && fa <= 0 && isfinite(fb) && fb >= 0) && break
+        (isfinite(fa) && fa <= 0) || (a -= step; fa = f(a))
+        (isfinite(fb) && fb >= 0) || (b += step; fb = f(b))
+        step *= 1.3
+    end
+    (isfinite(fa) && fa <= 0 && isfinite(fb) && fb >= 0) || return NaN
+    fa == 0 && return a
+    fb == 0 && return b
+    for _ in 1:200
+        c = (a * fb - b * fa) / (fb - fa); fc = f(c)
+        isfinite(fc) || (c = (a + b) / 2; fc = f(c))
+        isfinite(fc) || return NaN
+        (abs(fc) < tol || b - a < tol) && return c
+        if fc < 0
+            a = c; fa = fc; fb /= 2
+        else
+            b = c; fb = fc; fa /= 2
+        end
+    end
+    return (a + b) / 2
+end
+
+"""Column modes with a given nₑ: P from (T, nₑ) through the EOS at every level, no hydrostatic integration. Fills lnP, Pgas, ρ, nₑ, χ,
+τ and z: heights are the axis on the height grid (τ integrated on them); on the τ grid z = ∫ μ dτ/χ₅₀₀, gauged to mean z(τ = 1) = 0."""
+function ne_given!(ws::EmbeddedWorkspace, lT, lnne, st)
+    par = ws.par; res = ws.res; nk, ny, nx = size(lT)
+    Threads.@threads for i in 1:nx
+        @inbounds for j in 1:ny, k in 1:nk
+            lp = lnP_from_lnne(ws.eos, lT[k, j, i], lnne[k, j, i])
+            res.lnP[k, j, i] = lp; res.Pgas[k, j, i] = exp(lp)
+        end
+    end
+    nbad = gcount(par, count(!isfinite, res.lnP))
+    if nbad > 0
+        fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
+        return fail!(st, :eos_out_of_envelope, nbad, "$nbad levels have a given electron density no EOS state reaches")
+    end
+    if ws.mode == :column_hse_z
+        @inbounds for i in 1:nx, j in 1:ny, k in 1:nk
+            res.z[k, j, i] = ws.axis[k]
+        end
+        height_state!(ws, lT)
+    else
+        τ = exp10.(ws.axis); mu = ws.view.mu
+        Threads.@threads for i in 1:nx
+            @inbounds for j in 1:ny
+                res.z[1, j, i] = 0.0
+                g0 = τ[1] / exp(state(ws.eos, lT[1, j, i], res.lnP[1, j, i])[3])
+                for k in 1:nk-1
+                    g1 = τ[k+1] / exp(state(ws.eos, lT[k+1, j, i], res.lnP[k+1, j, i])[3])
+                    res.z[k+1, j, i] = res.z[k, j, i] - mu * 0.5 * (g0 + g1) * (log(τ[k+1]) - log(τ[k])); g0 = g1
+                end
+            end
+        end
+        PoissonTau.gauge!(par, res.z, ws.axis)
+        tau_state!(ws, lT)
+    end
+    res.ne .= exp.(lnne)
     return st
 end
 

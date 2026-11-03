@@ -379,6 +379,10 @@ start (`:previous`) restarts the preconditioner policy (with `switch` it can cha
 and takes the objective's weights from its own start, so warm and cold solves of the same cube minimise slightly
 different objectives. On the Bifrost cube the warm start gave no saving (table below).
 
+## A given electron density
+
+Column modes on the height and τ grids, embedded only: `solve_embedded!(ws, lnT, ...; lnne)` takes nₑ as the truth. At every level P is the pressure at which the EOS gives that nₑ at that T (`lnP_from_lnne`), and ρ and χ₅₀₀ follow; there is no hydrostatic integration and B and the alignment are not used. On the height grid τ₅₀₀ is integrated as usual. On the τ grid z = ∫ μ dτ/χ₅₀₀, gauged to mean z(τ = 1) = 0, so the τ axis must fit that nₑ. `res.ne` is the given nₑ, `status.stats["ne_given"]` records the choice, and a level no EOS state reaches fails as `:eos_out_of_envelope`. The EOS is LTE: where nₑ is far from LTE, the derived P and ρ differ from the atmosphere's true values.
+
 ## Stopping, status and what "finished" means
 
 **Stopping policy: relative change of the objective Φ only.** Heights (z(τ=1), column offsets) are computed and logged as
