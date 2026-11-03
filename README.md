@@ -7,8 +7,9 @@ inversion). The physics goes from independent hydrostatic columns to progressive
 approximations. The Julia package lives in `HSEMHS/`; this file is the entry point.
 
 **Status (2 Nov 2026, `main`, merged from `solver-time`).** All seven modes below are
-implemented, run with MPI + threads and are documented. The six fixed-B modes take a viewing angle (μ, azimuth). The
-τ-grid modes read their input as already along that line of sight, and the height modes compute τ along it (see
+implemented and run with MPI + threads. All are documented here, and all but the two column-mass (logm) modes also have
+derivation PDFs ([Documentation](#documentation)). The six fixed-B modes take a viewing angle (μ, azimuth). The
+τ-grid and column-mass modes read their input as already along that line of sight, and the height modes compute τ along it (see
 [Viewing angle](#viewing-angle)). That is not the same as scientifically converged results: see
 [Stopping, status and what "finished" means](#stopping-status-and-what-finished-means), the
 [release result table](#release-result-table-τ-grid-modes-29-oct-2026) and [Known limitations](#known-limitations).
@@ -98,6 +99,24 @@ thermodynamic atmosphere. Everything below applies to both unless named.
 Other `run.mode` values: `column_hse` (alias of `column-hse-z`), and the auxiliary modes `gate0` (input audit and EOS
 envelope), `eos_table` (builds the EOS/opacity table) and `screening`. The schema also lists a legacy `mhs`, which has no
 implementation in `run_config`; it is not a sixth solver.
+
+### The column-mass modes
+
+`column-hse-logm` and `mhs-poisson-logm` take T and B on a log₁₀ m axis and find P, ρ, χ₅₀₀, τ₅₀₀ and z. They use the τ-grid
+machinery ([Methods in brief](#methods-in-brief)) with one physical difference: P = g m needs no opacity, so the top closure and
+column pressures do not depend on it, and τ₅₀₀ becomes an output.
+
+* **The axis is m along the line of sight, as τ in the τ modes.** An inversion knows only T and B per ray, not ρ, z, P or χ₅₀₀, so
+  it cannot resample a ray onto vertical columns. Each pixel is one ray on a common log₁₀ m_LOS axis. The input contract is the
+  [τ-grid one](#viewing-angle): T and B must be on m along the line of sight at the μ of the run.
+* **`poisson.logm_cut = −0.5`** (default; m in kg m⁻²) is the equivalent of `logtau_cut = −4`: on the Bifrost snapshot, log τ = −4
+  has median log₁₀(P/g) = −0.49 (p1 −0.95, p99 −0.30), and log₁₀ m = −0.5 has median log τ = −3.98 (p1 −4.24, p99 −3.34). The two
+  surfaces match in the median only, since the opacity varies with T. In the snapshot the cut lies about 544 km above the median
+  τ = 1 surface, at median T 4300 K and P 91 Pa: the temperature minimum, the base of the chromosphere.
+* **The chromosphere is not force-balanced.** Everything above the cut (nearly all the chromosphere, the transition region and the
+  corona) keeps P = g m. On the snapshot that gives rms Δ ln P 0.54 and rms Δz about 1065 km at log₁₀ m < −1.
+* **Results on the cube are in [Measured performance](#column-mass-modes-on-the-bifrost-cube-23-nov-2026).** They are for an input
+  whose m comes from the snapshot's true ρ and P, which an inversion does not have.
 
 ## Methods in brief
 
@@ -307,7 +326,7 @@ on it.
   * Report: `HSEMHS/reports/viewing_z_2026-11-02/`; outputs in
     `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/viewing_z_2026-11-02/`; check script `HSEMHS/scripts/viewing/check_zview.py`.
 
-**τ-grid input contract (μ < 1).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
+**τ-grid input contract (μ < 1; the column-mass modes the same, with log₁₀ m_LOS).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
 off-centre Stokes profiles returns), on a **regular, deprojected footprint grid** in the local solar frame (x, y in metres;
 dx, dy are footprint spacings: a sky pixel p becomes p perpendicular to the tilt and p/μ along it). B is B_x, B_y, B_z in
 the local frame (z vertical), already disambiguated. The footprint is where the ray meets the gauge surface mean
@@ -500,6 +519,30 @@ hyades4 EPYC 7742): Fourier 1 node × 1 rank × 32 threads 164 s, 1 × 3 × 32 1
 4 × 1 × 32 116 s; column blocks 164 / 123 / 87 s on 1 / 2 / 4 nodes × 1 × 32. Two ranks of 16 threads beat one of 32 per
 node.
 
+### Column-mass modes on the Bifrost cube (2–3 Nov 2026)
+
+`IO/input-mhs-logm.nc`, 76 levels, μ = 1, one rank × 64 threads per run (`column-hse-logm`: 2 Nov, one node), against the snapshot
+on the mass axis and z(τ = 1) of `out/ltaucut/truth.h5` (truth: std 30.6 km, Wilson depression −77.9 km). The Δ columns cover
+log₁₀ m in [0.5, 2.6], which every cut solves, with heights after removing the mean difference at log₁₀ m = 1.5. Reports:
+[`logm_2026-11-02`](HSEMHS/reports/logm_2026-11-02/README.md), [`logm_cut_2026-11-03`](HSEMHS/reports/logm_cut_2026-11-03/README.md).
+
+| Run | Steps | Status | Time | z(τ=1) rms | Corr. | Wilson depression | rms Δ ln P | rms Δz |
+|---|---|---|---|---|---|---|---|---|
+| `column-hse-logm` | – | – | 14 s | 56.5 km | 0.575 | −61.7 km | 0.091 | 54.7 km |
+| `logm_cut` −3.0 | 25 | `max_iter` | 1356 s | 33.7 km | 0.535 | −119.8 km | 0.070 | 35.9 km |
+| −2.0 | 11 | converged | 597 s | 19.6 km | 0.769 | −81.6 km | 0.070 | 22.8 km |
+| −1.5 | 7 | converged | 290 s | 19.2 km | 0.781 | −81.1 km | 0.069 | 22.4 km |
+| −1.0 | 6 | converged | 231 s | 19.2 km | 0.781 | −81.8 km | 0.069 | 22.4 km |
+| **−0.5** (default) | 5 | converged | 167 s | 19.3 km | 0.778 | −82.5 km | 0.069 | 22.6 km |
+| 0.0 | 5 | converged | 169 s | 19.5 km | 0.776 | −82.8 km | 0.070 | 22.8 km |
+| +0.5 | 5 | converged | 147 s | 19.5 km | 0.776 | −82.9 km | 0.074 | 23.2 km |
+
+Converged is the qualified stop; time is `solve_seconds` for the cuts, wall for the column run. From −2 to +0.5 z(τ = 1) barely
+moves, so this data does not pick a best cut in that range: −0.5 is kept as the equivalent of log τ = −4 and for its cost. At −3,
+89 % of the cube has β < 1, and the run neither converges nor improves. These rows do not compare with the τ-mode tables:
+the input's m is from the true ρ and P, and the grids, settings and code versions differ. Errors within the chromosphere
+were not compared across cuts.
+
 ## Known limitations
 
 * `mhs-poisson-z` converges slowly (Gauss–Newton on a large residual that a fixed field cannot remove); low-β layers
@@ -520,6 +563,10 @@ node.
   reference; solver correctness is covered by the Jacobian, direct-system and known-equilibrium tests.
 * The multilevel (two-level, branch-aware) preconditioner of `scripts/viewing/ml_lab.jl` is experimental and not on the
   supported path (its per-step setup costs more than a loose solve; serial coarse solve).
+* Column-mass modes: tested on the full cube only at μ = 1, on one rank, on one snapshot, with m from the snapshot's true ρ and P;
+  μ < 1 and multiple ranks only on the test fixture, and no full-cube slanted-ray input exists yet. A cgs axis without
+  `units = "g cm-2"` scales every pressure by 10 and cannot be detected. τ₅₀₀ on the mass axis is one trapezoid per level
+  (no substeps), so it is less accurate across coarse hot-over-cool levels. No derivation PDFs yet.
 * `full-mhs-z`: no production run has met its stopping rule; a run on the full cube takes more than a day on 4 nodes.
 
 **Code follow-ups:** propagate the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping
@@ -539,6 +586,9 @@ fixed-B modes now exist through the embedded API.)
 | `full-mhs-z` | [PDF](docs/physics/full-mhs-z.pdf) · [TeX](docs/physics/full-mhs-z.tex) | [PDF](docs/technical/full-mhs-z.pdf) · [TeX](docs/technical/full-mhs-z.tex) |
 
 Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.log/.out`).
+
+The column-mass modes have no PDFs yet: see [The column-mass modes](#the-column-mass-modes) and
+[Methods in brief](#methods-in-brief).
 
 ## Repository map
 
