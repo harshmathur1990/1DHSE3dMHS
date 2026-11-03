@@ -36,7 +36,7 @@ strong = B > 0.05; quiet = B < 0.01
 band = (lm >= 0.5) & (lm <= 2.6)
 p(f"strong {strong.mean() * 100:.1f} %, quiet {quiet.mean() * 100:.1f} %; truth z(τ=1) std {z1t.std() / 1e3:.1f} km, Wilson (strong − quiet) {(z1t[strong].mean() - z1t[quiet].mean()) / 1e3:.1f} km\n")
 p("run         levels steps status     stop       Φ/Φ0     upper    wall |  z(τ=1) rms  corr   std  Wilson | fixed band rms ΔlnP  Δz km | solved rms ΔlnP")
-files = sorted(glob.glob(f"{D}/cut_*.h5"), key=lambda s: float(re.search(r"cut_(.*)\.h5", s)[1]))
+files = sorted(glob.glob(f"{D}/cut_*.h5"), key=lambda s: float(re.search(r"/cut_([^/]*)\.h5$", s)[1]))
 for fn in [f"{D}/column-hse-logm.h5"] + files:
     with h5py.File(fn) as f:
         g = f["mass_grid"]
