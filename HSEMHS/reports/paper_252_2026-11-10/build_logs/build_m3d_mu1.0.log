@@ -1,0 +1,9 @@
+registration: swap false, offsets (1, 2), flips (false, true)
+grid 252 × 252 × 467, dx 95.24 km, dy 95.24 km; μ 1.0000 (θ 0.00°), φ 0.0°, t = (0.0000, 0.0000), max shift 0.0 cells; τ from multi3d; axis -8.00 … 1.40 (95)
+χ500 outside the table at 0 points
+sheared
+log10 τ at the top of the rays: p50 -10.00, p99 -10.00, max -10.00; 0 rays above the axis minimum -8.0 (top extrapolated)
+rays not reaching the bottom of the τ axis: 0 of 63504
+z(τ=1) not found: MULTI3D 0, eos 0 columns
+z(τ=1) MULTI3D − eos over 63504 columns: median -2.94 km, rms about the median 1.12 km, corr 0.9996
+wrote ../IO/tau252/input_m3d_mu1.0.nc and ../IO/tau252/truth_m3d_mu1.0.h5

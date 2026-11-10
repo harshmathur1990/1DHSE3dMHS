@@ -1,0 +1,7 @@
+registration: swap false, offsets (1, 2), flips (false, true)
+grid 252 × 252 × 467, dx 95.24 km, dy 95.24 km; μ 0.7070 (θ 45.01°), φ 0.0°, t = (1.0003, 0.0000), max shift 150.9 cells; τ from eos; axis -8.00 … 1.40 (95)
+χ500 outside the table at 0 points
+sheared
+log10 τ at the top of the rays: p50 -9.25, p99 -7.25, max -7.12; 15137 rays above the axis minimum -8.0 (top extrapolated)
+rays not reaching the bottom of the τ axis: 0 of 63504
+wrote ../IO/tau252/input_eos_mu0.707_az0.nc and ../IO/tau252/truth_eos_mu0.707_az0.h5

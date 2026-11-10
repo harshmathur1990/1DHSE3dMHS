@@ -1,0 +1,25 @@
+[run]
+mode = "mhs-poisson-ltau"
+output = "out/paper_252_2026-11-10/cut5_eos_mu1.0.h5"
+overwrite = true
+[input]
+file = "../IO/tau252/input_eos_mu1.0.nc"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+align = "ptot"
+[view]
+mu = 1.0
+azimuth_deg = 0
+geometry = "plane_parallel"
+[poisson]
+stop = "gn"
+lm = "gain"
+forcing = "ew"
+precond = "switch"
+cg_cap = 200
+gn_tol = 1.0e-3
+max_steps = 100
+logtau_cut = -5.0

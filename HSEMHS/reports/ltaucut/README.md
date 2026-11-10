@@ -1,5 +1,9 @@
 # mhs-poisson-ltau: choice of the τ cut (26 Oct 2026)
 
+> **Invalid (10 Nov 2026).** The input of this study, `IO/input-mhs-ltau.nc`, was interpolated on an x/y-swapped MULTI3D τ500
+> (18 % rms error of T at τ = 1); the input, the truth and every run here have been deleted. The cut study was redone on
+> consistent inputs in [`../paper_252_2026-11-10`](../paper_252_2026-11-10/README.md).
+
 Input `IO/input-mhs-ltau.nc` (504², 95 levels, log τ −8 … 1.4; x, y added from the Bifrost cube, dx = 47.62 km),
 truth = Bifrost en024048 snapshot 385 mapped onto the τ grid (`scripts/ltaucut/truth_on_tau.jl`, τ500 from Bifrost T, P
 with our EOS table; input T agrees to 0.1–1 % median at log τ −4.5 … −0.5). Force balance from one geometric formula for

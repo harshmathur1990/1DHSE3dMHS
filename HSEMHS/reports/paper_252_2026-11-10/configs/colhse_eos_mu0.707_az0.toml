@@ -1,0 +1,16 @@
+[run]
+mode = "column-hse-ltau"
+output = "out/paper_252_2026-11-10/colhse_eos_mu0.707_az0.h5"
+overwrite = true
+[input]
+file = "../IO/tau252/input_eos_mu0.707_az0.nc"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+align = "ptot"
+[view]
+mu = 0.707
+azimuth_deg = 0
+geometry = "inclined"

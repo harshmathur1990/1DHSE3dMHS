@@ -1,5 +1,5 @@
 # column-hse-logm: hydrostatic columns on a log10 column-mass grid: P = μ g m, z(m) from dz = −dm/ρ, τ₅₀₀(m) computed;
-# aligned so that P + B²/2μ₀ is equal at one height, mean z(τ = 1) = 0. Input as input-mhs-ltau.nc with log10m in place of
+# aligned so that P + B²/2μ₀ is equal at one height, mean z(τ = 1) = 0. Input as the tau-grid inputs with log10m in place of
 # log10tau500 (m in kg m⁻², or a units attribute "g cm-2").
 [run]
 mode = "column-hse-logm"
@@ -7,7 +7,7 @@ output = "out/modes/column-hse-logm.h5"
 overwrite = true
 
 [input]
-file = "../IO/input-mhs-logm.nc"
+file = "../IO/tau252/input_logm_mu1.0.nc"
 
 [physics]
 g = 274.0
