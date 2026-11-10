@@ -1,0 +1,15 @@
+== eos_mu1.0: quiet (<100 G) 57873 columns
+  strong >  300 G: 1331 columns | truth  -52.6  colhse  -38.8 (  74 %)  mhs  -45.3 (  86 %)
+  strong >  500 G:  689 columns | truth  -76.7  colhse  -56.8 (  74 %)  mhs  -71.2 (  93 %)
+  strong > 1000 G:  305 columns | truth -120.8  colhse  -91.0 (  75 %)  mhs -115.9 (  96 %)
+  500 G block bootstrap std (km): truth 5.8, colhse 5.5, mhs 8.2 | recovered fraction 16–84 %: colhse 71–77 %, mhs 87–97 %
+== eos_mu0.707_az0: quiet (<100 G) 58374 columns
+  strong >  300 G: 1265 columns | truth  -40.8  colhse  -22.7 (  56 %)  mhs  -35.5 (  87 %)
+  strong >  500 G:  578 columns | truth  -58.7  colhse  -31.9 (  54 %)  mhs  -53.5 (  91 %)
+  strong > 1000 G:  182 columns | truth -100.4  colhse  -51.7 (  52 %)  mhs  -90.7 (  90 %)
+  500 G block bootstrap std (km): truth 5.8, colhse 3.4, mhs 6.4 | recovered fraction 16–84 %: colhse 52–57 %, mhs 86–95 %
+== eos_mu0.5_az0: quiet (<100 G) 58785 columns
+  strong >  300 G: 1140 columns | truth  -34.4  colhse  -12.9 (  37 %)  mhs  -34.3 ( 100 %)
+  strong >  500 G:  533 columns | truth  -49.3  colhse  -15.4 (  31 %)  mhs  -50.4 ( 102 %)
+  strong > 1000 G:  144 columns | truth  -85.8  colhse  -21.9 (  26 %)  mhs  -87.5 ( 102 %)
+  500 G block bootstrap std (km): truth 5.2, colhse 1.7, mhs 6.8 | recovered fraction 16–84 %: colhse 28–35 %, mhs 89–115 %

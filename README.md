@@ -87,7 +87,7 @@ thermodynamic atmosphere. Everything below applies to both unless named.
     large-scale pattern tied to the field layout along the tilt, and strong-field depressions turned into elevations.
   * To model an off-centre view of a 3-D atmosphere there are two routes. Run a height mode with `[view]`, which
     integrates τ along the slanted rays through the cube. Or build a slanted-ray τ input from the height-grid cube
-    (`HSEMHS/scripts/viewing/make_slanted_tau.jl`).
+    (`HSEMHS/scripts/inputs/make_tau_input.jl`).
 * **Not converged unless the status says so.** Callers must read `status`/`reason` (embedding API) or the exit code (2 =
   valid, not converged). An embedding caller that checks only `valid` will accept a `:max_steps` atmosphere silently.
 * **Not absolute heights, and not reliable at the top.** Heights depend on the gauge, the top closure and the alignment.
@@ -185,12 +185,23 @@ a cluster directory; after a fresh clone you must supply the input cubes and bui
 | File (in `IO/`) | Grid | Used by | Origin |
 |---|---|---|---|
 | `BIFROST_en024048_hion_0_504_0_504.nc` | 504 × 504 × 496, −2.44 … 14.37 Mm | `gate0` | Bifrost en024048_hion snapshot 385 |
-| `input-mhs-hse.nc` | 504 × 504 × 177, −0.49 … 2.98 Mm | `column-hse-z`, `mhs-poisson-z` | `make_input_mhs_hse.py` (default crop) |
-| `input-mhs-hse-fullz.nc` | 504 × 504 × 496 | `full-mhs-z` | `make_input_mhs_hse.py` over all levels (`crop_source_levels` 0–495) |
-| `input-mhs-ltau.nc` | 504 × 504 × 95, log τ −8 … 1.4 | τ modes | supplied by the user (no script in the repository) |
-| `input-mhs-logm.nc` | 504 × 504 × 76, log₁₀ m −4.9 … 2.6 (m in kg m⁻²) | logm modes | `make_input_mhs_logm.py`: m from the snapshot's ρ and top P, T and B interpolated in log₁₀ m |
+| `input-mhs-hse.nc` | 504 × 504 × 177, −0.49 … 2.98 Mm | `column-hse-z`, `mhs-poisson-z` | `HSEMHS/scripts/inputs/make_hse_input.py` (default crop) |
+| `input-mhs-hse-fullz.nc` | 504 × 504 × 496 | `full-mhs-z` | `make_hse_input.py` over all levels (`crop_source_levels` 0–495) |
+| `tau252/input_m3d_mu1.0.nc` | 252 × 252 × 95, log τ −8 … 1.4 | τ modes (default config) | `HSEMHS/scripts/inputs/make_tau_input.jl tau=multi3d`: T and B on MULTI3D's own vertical τ₅₀₀ |
+| `tau252/input_eos_mu{1.0, 0.707_az0, 0.5_az0}.nc` | 252 × 252 × 95 | τ modes, μ = 1 and inclined | `make_tau_input.jl tau=eos`: τ₅₀₀ integrated along the rays with the EOS-table opacity |
+| `tau252/input_logm_mu1.0.nc` | 252 × 252 × 76, log₁₀ m −4.9 … 2.6 (m in kg m⁻²) | logm modes (default config) | `HSEMHS/scripts/inputs/make_logm_input.py --multi3d`: m from the snapshot's ρ and top P |
+| `input-mhs-logm.nc` | 504 × 504 × 76 | logm modes (earlier runs) | `make_logm_input.py` without `--multi3d` |
 
-`make_input_mhs_hse.py` (repository root) has hard-coded default paths (`--src`, `--out`) from the original machine and
+**τ-grid inputs** (10 Nov 2026). Every τ input is built by `make_tau_input.jl` together with its truth (`tau252/truth_*.h5`:
+the snapshot's z, ln P, ln ρ, T on the same levels and rays), on the 252² columns and top 467 levels of the MULTI3D run
+`/mn/stornext/d9/data/harshm/bifrost_data/en024048_hion/385` (`mesh`, `atm3d`; `H/tau500`). The run's columns are registered
+against the netCDF by matching T (exactly one 2-fold subsampling, with flips or a swap, must agree to 1e-5; found: run
+column (i, j) = netCDF (x = 2i, y = 2(251 − j) + 1)), and B, P, ρ are taken from the netCDF there. The former
+`input-mhs-ltau.nc` was interpolated on an x/y-swapped MULTI3D τ (18 % rms error of T at τ = 1) and has been deleted, with
+every result built on it (`reports/ltaucut`, the `out/modes` τ runs). Builds and results:
+[`HSEMHS/reports/paper_252_2026-11-10`](HSEMHS/reports/paper_252_2026-11-10/README.md).
+
+`make_hse_input.py` has hard-coded default paths (`--src`, `--out`) from the original machine and
 a default crop `--zmin -0.5e6 --zmax 3e6`; it writes `x, y, z` (m), `temperature` (K), `B_x, B_y, B_z` (T) with units and
 dimension scales, and the attributes `P_ref_Pa`, `gravity_m_s2`, `period_x_m`, `period_y_m`.
 

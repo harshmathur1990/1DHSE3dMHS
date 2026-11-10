@@ -6,7 +6,7 @@ output = "out/modes/column-hse-ltau.h5"
 overwrite = true
 
 [input]
-file = "../IO/input-mhs-ltau.nc"
+file = "../IO/tau252/input_m3d_mu1.0.nc"
 
 [physics]
 g = 274.0

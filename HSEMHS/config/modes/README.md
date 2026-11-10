@@ -33,13 +33,13 @@ written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks th
 
 ## τ-grid inputs
 
-`IO/input-mhs-ltau.nc` layout: `log10tau500` (nt, increasing, top level first), `x` (NX), `y` (NY), `temperature`,
+`IO/tau252/input_*.nc` layout (`scripts/inputs/make_tau_input.jl`): `log10tau500` (nt, increasing, top level first), `x` (NX), `y` (NY), `temperature`,
 `B_x`, `B_y`, `B_z` as h5py (x, y, τ), SI (a `units` attribute on x, y is honoured). Without a `gravity_m_s2` file
 attribute set a numeric `physics.g`.
 
 ## Column-mass inputs
 
-`IO/input-mhs-logm.nc` (from `make_input_mhs_logm.py`): the τ-grid layout with `log10m` in place of `log10tau500`, m in
+`IO/tau252/input_logm_mu1.0.nc` (from `scripts/inputs/make_logm_input.py --multi3d`): the τ-grid layout with `log10m` in place of `log10tau500`, m in
 kg m⁻² or `log10m` with `units = "g cm-2"`. With view μ < 1, m counts along the line of sight.
 
 ## Multi-node on hyades

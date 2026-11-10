@@ -1,0 +1,5 @@
+registration: swap False, offsets (0, 1), flips (False, True)
+grid 252 x 252 x 467, dx 95.24 km
+log10 m: top -5.550 .. -4.931, bottom 2.980 .. 3.257; axis -4.90 .. 2.60, 76 levels
+wrote IO/tau252/input_logm_mu1.0.nc
+wrote IO/tau252/truth_logm_mu1.0.h5

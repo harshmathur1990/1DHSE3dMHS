@@ -1,0 +1,20 @@
+truth depression -76.7 km; mask from the unperturbed input (689 strong, 57873 quiet)
+run                      status     steps | z1 rms  corr    dep  frac |  ΔlnP |    F_h    F_z
+colhse none              -              0 |   20.7 0.743  -56.8   74% | 0.080 |  0.072  0.001
+colhse small s1          -              0 |   23.8 0.680  -56.8   74% | 0.090 |  0.086  0.001
+colhse small s2          -              0 |   23.5 0.685  -55.2   72% | 0.091 |  0.085  0.001
+colhse small s3          -              0 |   23.5 0.682  -57.6   75% | 0.091 |  0.084  0.001
+  colhse small mean±std: z1 rms 23.6±0.1, corr 0.682±0.002, dep -56.5±1.0 (74 %), ΔlnP 0.090±0.000
+colhse large s1          -              0 |   35.5 0.498  -66.2   86% | 0.133 |  0.125  0.001
+colhse large s2          -              0 |   36.2 0.473  -54.0   70% | 0.131 |  0.123  0.001
+colhse large s3          -              0 |   36.0 0.478  -57.8   75% | 0.130 |  0.124  0.001
+  colhse large mean±std: z1 rms 35.9±0.3, corr 0.483±0.011, dep -59.3±5.1 (77 %), ΔlnP 0.131±0.001
+mhs none                 converged     16 |   22.6 0.687  -71.2   93% | 0.073 |  0.018  0.014
+mhs small s1             converged     17 |   23.5 0.645  -71.7   93% | 0.084 |  0.018  0.015
+mhs small s2             converged     17 |   23.1 0.663  -72.1   94% | 0.084 |  0.019  0.015
+mhs small s3             converged     19 |   23.2 0.658  -72.5   95% | 0.083 |  0.018  0.015
+  mhs small mean±std: z1 rms 23.2±0.2, corr 0.655±0.007, dep -72.1±0.3 (94 %), ΔlnP 0.084±0.000
+mhs large s1             converged     37 |   26.3 0.527  -70.7   92% | 0.126 |  0.023  0.021
+mhs large s2             converged     16 |   27.3 0.493  -70.0   91% | 0.124 |  0.023  0.021
+mhs large s3             converged     28 |   27.1 0.497  -66.0   86% | 0.124 |  0.023  0.021
+  mhs large mean±std: z1 rms 26.9±0.5, corr 0.506±0.015, dep -68.9±2.0 (90 %), ΔlnP 0.124±0.001
