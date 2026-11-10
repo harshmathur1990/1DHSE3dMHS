@@ -53,3 +53,22 @@ photospheric median |F_h|/ρg 0.64 and 2.24, against 0.018 for −4, 0.072 colum
 Follow-ups: the embedded-API test fixture `test/fixtures/embedded/ltau_*.h5` was cropped from the deleted input (it is a
 numerical-regression fixture and still valid as such, but `oracles/python/make_embedded_fixtures.py` now points at a missing
 file); column HSE on column mass places τ = 1 much worse than on τ (57 vs 21 km), not yet explained.
+
+## Input-error test and mask sensitivity (added after the Codex review of 10 Nov 2026)
+
+`make_perturbed_inputs.py` → `IO/tau252/perturbed/input_{small,large}_s{1,2,3}.nc` from `input_eos_mu1.0`: T·exp(σ_T ε),
+B_i·(1 + σ_B ε_i), ε unit-variance fields Gaussian-correlated over 2 pixels and 0.5 dex; small σ_T 0.02, σ_B 0.10; large
+0.05, 0.25; azimuth ambiguity assumed resolved. Column HSE and MHS (release settings) on each; `diag_pert.sh` force
+diagnostics; `perturbed_metrics.py` → `perturbed_metrics.txt` (mask from the unperturbed field):
+
+| errors | column HSE z(τ=1) rms / depression | MHS z(τ=1) rms / depression | MHS status |
+|---|---|---|---|
+| none | 20.7 km / −56.8 km (74 %) | 22.6 km / −71.2 km (93 %) | converged, 16 steps |
+| small | 23.6 ± 0.1 / −56.5 ± 1.0 (74 %) | 23.2 ± 0.2 / −72.1 ± 0.3 (94 %) | converged, 17–19 |
+| large | 35.9 ± 0.3 / −59.3 ± 5.1 (77 %) | 26.9 ± 0.5 / −68.9 ± 2.0 (90 %) | converged, 16–37 |
+
+`depression_sensitivity.py` → `depression_sensitivity.txt`: strong thresholds 300 / 500 / 1000 G give MHS 86 / 93 / 96 %
+(μ 1), 87 / 91 / 90 % (0.707), 100 / 102 / 102 % (0.5) against column HSE 74–75, 52–56, 26–37 %; 6 × 6 block bootstrap
+(16–84 %): MHS 87–97, 86–95, 89–115 %; column HSE 71–77, 52–57, 28–35 %.
+
+Force diagnostic (log τ −3 … 0, μ = 1): column HSE |F_h|, |F_z| = 0.072, 0.001 ρg; MHS 0.018, 0.014 ρg; Bifrost 0.058, 0.058.
