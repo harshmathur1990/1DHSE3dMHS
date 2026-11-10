@@ -66,7 +66,7 @@ with h5py.File(f"{IO}/truth_logm_mu1.0.h5") as f:
               z=f["z_m"][:].transpose(2, 1, 0) - T1["off"])
 
 # Fig. 1: z(τ=1) at μ = 1 (own τ): reference, column HSE, MHS on τ and on m; differences
-fig, ax = plt.subplots(2, 4, figsize=(W2, 3.9), sharex=True, sharey=True, constrained_layout=True)
+fig, ax = plt.subplots(2, 4, figsize=(W2, 3.4), sharex=True, sharey=True, constrained_layout=True)
 ext = [x[0], x[-1], x[0], x[-1]]
 kw = dict(origin="lower", extent=ext, cmap="RdBu_r", interpolation="nearest", vmin=-100, vmax=100)
 im = ax[0, 0].imshow(T1["z1"] / 1e3, **kw); ax[0, 0].set_title("Bifrost")
@@ -91,7 +91,7 @@ fig.colorbar(imb, ax=ax[1, 0], location="left", shrink=0.85, label=r"$|B|$ (G)")
 fig.savefig(f"{OUT}/ztau1.pdf"); plt.close(fig)
 
 # Fig. 2: rms errors per level (μ = 1): own τ and column mass (at the median log τ500 of each m level), photosphere
-fig, ax = plt.subplots(3, 1, figsize=(W1, 4.9), sharex=True, constrained_layout=True)
+fig, ax = plt.subplots(3, 1, figsize=(W1, 3.7), sharex=True, constrained_layout=True)
 sets = [(col, T1, None, "col", "-", r"column HSE, $\tau$"), (mhs, T1, None, "mhs", "-", r"MHS, $\tau$"),
         (mcol, TM, mcol["lt"], "mcol", "--", "column HSE, $m$"), (mmhs, TM, mmhs["lt"], "mmhs", "--", "MHS, $m$")]
 for d, T, xl, c, ls, lab in sets:
@@ -110,7 +110,7 @@ ax[0].legend(ncol=2, fontsize=6)
 fig.savefig(f"{OUT}/profiles.pdf"); plt.close(fig)
 
 # Fig. 3: horizontal and vertical force imbalance (μ = 1, own τ) and β
-fig, ax = plt.subplots(3, 1, figsize=(W1, 5.0), sharex=True, constrained_layout=True, height_ratios=[1.6, 1.6, 1])
+fig, ax = plt.subplots(3, 1, figsize=(W1, 3.9), sharex=True, constrained_layout=True, height_ratios=[1.6, 1.6, 1])
 ph = (T1["lt"] >= -3) & (T1["lt"] <= 0)
 for fn, c, lab in [("diag_truth_eos_mu1.0", "truth", "Bifrost"), ("diag_colhse_eos_mu1.0", "col", "column HSE"),
                    ("diag_mhs_eos_mu1.0", "mhs", "cut $-4$"), ("diag_cut6_eos_mu1.0", "cut6", "cut $-6$"),
@@ -139,7 +139,7 @@ fig.savefig(f"{OUT}/force.pdf"); plt.close(fig)
 
 # Fig. 4: convergence of the τ-grid solve (μ = 1, own τ)
 h = np.genfromtxt(f"{RD}/ms_eos_mu1.0/history.csv", delimiter=",", names=True)
-fig, ax = plt.subplots(3, 1, figsize=(W1, 4.6), sharex=True, constrained_layout=True)
+fig, ax = plt.subplots(3, 1, figsize=(W1, 3.5), sharex=True, constrained_layout=True)
 ax[0].semilogy(h["step"], h["phi_rel"], color="k", label=r"$\Phi/\Phi_0$")
 ax[0].semilogy(h["step"], h["pred"], color="C0", label="predicted relative decrease of the accepted step")
 ax[0].axhline(1e-3, color="C0", ls=":", lw=0.8); ax[0].legend(fontsize=6); ax[0].grid(alpha=0.3)
@@ -160,7 +160,7 @@ for m, cs in zip(mus, cases):
     res["Tdep"].append(dep(T["z1"], s, q)); res["cdep"].append(dep(c["z1"], s, q)); res["mdep"].append(dep(d["z1"], s, q))
     res["cerr"].append(rms(c["z1"] - T["z1"]) / 1e3); res["merr"].append(rms(d["z1"] - T["z1"]) / 1e3)
 T5 = truth("eos_mu0.5_az0"); _, s5, q5, _ = masks("eos_mu0.5_az0"); pp = run("mhspp_eos_mu0.5_az0")
-fig, ax = plt.subplots(2, 1, figsize=(W1, 3.6), sharex=True, constrained_layout=True)
+fig, ax = plt.subplots(2, 1, figsize=(W1, 2.9), sharex=True, constrained_layout=True)
 ax[0].plot(mus, res["Tdep"], "ko", ms=4, label="Bifrost")
 ax[0].plot(mus, res["cdep"], "s", color=C["col"], ms=4, label="column HSE")
 ax[0].plot(mus[:2], res["mdep"][:2], "o", color=C["mhs"], ms=4, label="MHS, inclined")
