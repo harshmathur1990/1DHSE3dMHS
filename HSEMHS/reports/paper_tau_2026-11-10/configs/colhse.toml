@@ -1,0 +1,12 @@
+[run]
+mode = "column-hse-ltau"
+output = "out/paper_tau_2026-11-10/colhse.h5"
+overwrite = true
+[input]
+file = "out/paper_tau_2026-11-10/input-ltau-xy.nc"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+align = "ptot"

@@ -1,0 +1,21 @@
+[run]
+mode = "mhs-poisson-ltau"
+output = "out/paper_tau_2026-11-10/cut5.h5"
+overwrite = true
+[input]
+file = "out/paper_tau_2026-11-10/input-ltau-xy.nc"
+[physics]
+g = 274.0
+[eos]
+table_file = "cache/eos_table_fullz.h5"
+[tau_grid]
+align = "ptot"
+[poisson]
+stop = "gn"
+lm = "gain"
+forcing = "ew"
+precond = "switch"
+cg_cap = 200
+gn_tol = 1.0e-3
+max_steps = 100
+logtau_cut = -5.0
