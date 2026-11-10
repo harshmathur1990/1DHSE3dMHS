@@ -103,8 +103,18 @@ for xi in xis:
 a.axhline(0, color="0.5", lw=0.4, ls=":")
 a.text(0.35, -0.25, r"footprints $\xi$ at $z=0$", fontsize=6, color="C3", va="top", bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
 a.fill_between(xs, surf(2.7, 0.32, xs), ZT, color="C1", alpha=0.08, lw=0)
-a.text(0.35, 3.35, "hydrostatic,\nrigid with $c_{ij}$", fontsize=6, color="C1", bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
-a.text(0.35, 1.95, r"unknowns: $\ln P$, $z$" + "\n" + r"$dz/d\ln\tau=-\mu\tau/\chi$", fontsize=6, bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
+a.text(6.6, 3.2, "hydrostatic,\nrigid with $c_{ij}$", fontsize=6, color="C1", bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
+a.text(6.6, 1.25, r"unknowns: $\ln P$, $z$" + "\n" + r"$dz/d\ln\tau=-\mu\tau/\chi$", fontsize=6, bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
+# one pixel (i, j) of the input: its levels k lie along one ray and drift sideways with height
+XI = xis[2]
+a.plot(XI + T * np.array([ZB, ZT]), [ZB, ZT], color="C3", lw=1.6, zorder=2)
+nk = [node(z0, dep, XI) for z0, dep, _ in lv]
+for k, (x, z) in enumerate(nk):
+    a.plot(x, z, "o", ms=4, mfc="C3" if lv[k][0] <= 2.7 else "white", mec="k", mew=0.7, zorder=4)
+a.plot([XI, XI], [0, nk[3][1]], color="k", lw=0.6, ls=":", zorder=3)
+a.annotate("", xy=(nk[3][0], nk[3][1]), xytext=(XI, nk[3][1]), arrowprops=dict(arrowstyle="->", lw=0.7), zorder=3)
+a.text((XI + nk[3][0]) / 2, nk[3][1] + 0.08, r"$t\,z_k$", fontsize=6.5, ha="center", va="bottom", bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
+a.text(0.3, 1.25, "pixel $(i,j)$: its levels $k$\nlie along one ray", fontsize=6, color="C3", bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
 a.text(7.0, 0.45, "lines of sight\n" + r"$x=\xi+t\,z$, $\mu=0.707$", fontsize=6.5, color="C3", bbox=dict(fc="white", ec="none", alpha=0.85, pad=0.5))
 frame(a, r"(b) optical depth $\tau_{500}$ along the rays")
 
