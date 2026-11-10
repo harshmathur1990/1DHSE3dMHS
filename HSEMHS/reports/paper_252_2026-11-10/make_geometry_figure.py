@@ -77,6 +77,15 @@ frame(a, "(a) geometric height $z$")
 # (b) optical depth, (c) column mass, along the rays
 rays(ax[1], [(0.0, 0.6, False), (1.0, 0.45, False), (2.0, 0.35, False), (2.9, 0.28, True), (3.8, 0.22, False)], "C0")
 frame(ax[1], r"(b) optical depth $\log\tau_{500}$")
+# a vertical line at fixed (x, y) crosses a different ray (pixel) at every height
+XV = 7.0
+ax[1].plot([XV, XV], [ZB, ZT], color="k", lw=0.9, ls="--", zorder=4)
+for xi in XIS:
+    z = (XV - xi) / T
+    if ZB < z < ZT:
+        ax[1].plot(XV, z, "o", ms=4.5, mfc="white", mec="k", mew=0.8, zorder=5)
+ax[1].text(XV + 0.15, ZB + 0.12, "fixed $(x,y)$", fontsize=7, va="bottom",
+           bbox=dict(fc="white", ec="none", alpha=0.9, pad=0.5))
 rays(ax[2], [(-0.5, 0.45, False), (0.5, 0.38, False), (1.5, 0.3, False), (2.9, 0.22, True), (3.8, 0.18, False)], "C2")
 ax[2].plot(xs, surf(0.0, 0.6, xs), color="C0", lw=1.0, ls=":")
 ax[2].text(XR - 0.15, -0.15, r"$\tau_{500}=1$", color="C0", ha="right", va="top", fontsize=7)
