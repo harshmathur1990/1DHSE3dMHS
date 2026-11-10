@@ -1,18 +1,13 @@
-== colhse_eos_mu1.0: stored z1 rms 20.7, recomputed 20.7 km; bottom axis 1.40
-  align at median Ptot of level -1.00: z1 rms  26.5 km, corr 0.513, cols 63504
-  align at median Ptot of level +0.00: z1 rms  23.8 km, corr 0.654, cols 63504
-  align at median Ptot of level +0.50: z1 rms  23.5 km, corr 0.605, cols 53040
-  align at median Ptot of level +1.00: z1 rms  28.2 km, corr 0.471, cols 38641
-  align at median Ptot of level +1.40: z1 rms  31.4 km, corr 0.411, cols 31752
-== colhse_logm_mu1.0: stored z1 rms 56.6, recomputed 56.6 km; bottom axis 2.60
-  align at median Ptot of level +1.00: z1 rms  26.6 km, corr 0.547, cols 63504
-  align at median Ptot of level +1.40: z1 rms  24.2 km, corr 0.613, cols 63504
-  align at median Ptot of level +1.70: z1 rms  22.1 km, corr 0.713, cols 63504
-  align at median Ptot of level +1.90: z1 rms  21.5 km, corr 0.750, cols 63504
-  align at median Ptot of level +2.20: z1 rms  39.0 km, corr 0.670, cols 63504
-  align at median Ptot of level +2.60: z1 rms  61.0 km, corr 0.506, cols 31752
-  oracle shift (truth height of log m +2.60): z1 rms 39.4 km
-  oracle shift (truth height of log m +1.70): z1 rms 3.1 km
-  oracle shift (truth height of log m +1.00): z1 rms 14.9 km
-  oracle shift (truth height of log m -0.50): z1 rms 37.2 km
-truth z of bottom τ level: median -83 km; of bottom m level: median -581 km
+== colhse_eos_mu1.0 (axis bottom +1.40)
+  reference P_tot = median at level +1.40 (truth median z    -83 km): z(τ=1) rms  20.7 km, corr 0.743; extrapolated columns 31752
+  reference P_tot = median at level +1.00 (truth median z    -67 km): z(τ=1) rms  20.7 km, corr 0.736; extrapolated columns 24863
+  reference P_tot = median at level +0.50 (truth median z    -44 km): z(τ=1) rms  21.5 km, corr 0.715; extrapolated columns 10464
+  reference P_tot = median at level +0.00 (truth median z     +2 km): z(τ=1) rms  23.8 km, corr 0.654; extrapolated columns 0
+  reference P_tot = median at level -1.00 (truth median z   +150 km): z(τ=1) rms  26.5 km, corr 0.513; extrapolated columns 0
+== colhse_logm_mu1.0 (axis bottom +2.60)
+  reference P_tot = median at level +2.60 (truth median z   -581 km): z(τ=1) rms  56.6 km, corr 0.574; extrapolated columns 31752
+  reference P_tot = median at level +2.20 (truth median z   -287 km): z(τ=1) rms  39.0 km, corr 0.670; extrapolated columns 0
+  reference P_tot = median at level +1.90 (truth median z    -97 km): z(τ=1) rms  21.5 km, corr 0.750; extrapolated columns 0
+  reference P_tot = median at level +1.70 (truth median z     -2 km): z(τ=1) rms  22.1 km, corr 0.713; extrapolated columns 0
+  reference P_tot = median at level +1.40 (truth median z    +93 km): z(τ=1) rms  24.2 km, corr 0.613; extrapolated columns 0
+  reference P_tot = median at level +1.00 (truth median z   +199 km): z(τ=1) rms  26.6 km, corr 0.547; extrapolated columns 0

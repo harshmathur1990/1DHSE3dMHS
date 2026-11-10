@@ -1,6 +1,6 @@
-colhse small: response rms(z1_pert − z1_unpert)  11.4 km (σ>4px part  4.8, <4px  8.7); err vs truth 23.6; seeds 11.6, 11.3, 11.3
-colhse large: response rms(z1_pert − z1_unpert)  29.4 km (σ>4px part 12.2, <4px 22.3); err vs truth 35.9; seeds 29.0, 29.4, 29.7
-mhs    small: response rms(z1_pert − z1_unpert)   5.2 km (σ>4px part  2.8, <4px  3.8); err vs truth 23.2; seeds 5.6, 5.1, 5.1
-mhs    large: response rms(z1_pert − z1_unpert)  14.0 km (σ>4px part  7.7, <4px  9.9); err vs truth 26.9; seeds 12.6, 15.2, 14.2
+colhse small: response rms(z1_pert − z1_unpert)  11.4 km (Gaussian-smoothed σ 4 px  4.8, residual  8.7); err vs truth 23.6; seeds 11.6, 11.3, 11.3
+colhse large: response rms(z1_pert − z1_unpert)  29.4 km (Gaussian-smoothed σ 4 px 12.2, residual 22.3); err vs truth 35.9; seeds 29.0, 29.4, 29.7
+mhs    small: response rms(z1_pert − z1_unpert)   5.2 km (Gaussian-smoothed σ 4 px  2.8, residual  3.8); err vs truth 23.2; seeds 5.6, 5.1, 5.1
+mhs    large: response rms(z1_pert − z1_unpert)  14.0 km (Gaussian-smoothed σ 4 px  7.7, residual  9.9); err vs truth 26.9; seeds 12.6, 15.2, 14.2
 small: rms dlnT 0.020; rms d|B|/|B| (|B|>500G) 0.092; horizontal ACF 1/e at 4 px
 large: rms dlnT 0.050; rms d|B|/|B| (|B|>500G) 0.227; horizontal ACF 1/e at 4 px

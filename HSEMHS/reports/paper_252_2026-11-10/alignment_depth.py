@@ -1,58 +1,68 @@
 """Why column HSE on column mass has a larger z(τ=1) error than on τ (round-2 review Q2). No new runs: the stored
 column-HSE states are re-aligned offline.
 
-usage: python alignment_depth.py   (paths below; prints the table kept in alignment_depth.txt)
-The production alignment shifts each column so that P + B²/2μ₀ equals the median total pressure of the bottom level of
-the axis (log τ 1.4, truth median z ≈ −83 km; log m 2.6, ≈ −581 km). Here each column is instead aligned at the median
-total pressure of other levels (columns whose range does not contain the reference are left out, unlike production,
-which extrapolates hydrostatically), then gauged; and, as an oracle, shifted to the truth height of one mass level.
+usage: python alignment_depth.py RUNDIR IODIR   (output kept in alignment_depth.txt)
+The production alignment (PoissonTau.align_ptot!) shifts each column so that P + B²/2μ₀ equals the median total pressure
+of the bottom level of the axis, interpolated in the column, or extrapolated hydrostatically below the bottom level
+(z = z_bottom − Δln P_tot/(g ρ/P)) for columns whose bottom total pressure is lower. The same policy is applied here with
+the reference total pressure taken at other levels (median over columns), so every column is kept at every depth; the
+bottom-level row reproduces the stored state. Then gauge mean z(τ=1) = 0 and compare with the truth (rms error, corr).
 """
-import h5py, numpy as np
-RD="/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/paper_252_2026-11-10"; IO="/mn/stornext/d9/data/harshm/MHS/IO/tau252"
-MU0=4e-7*np.pi
-rms=lambda a: np.sqrt(np.nanmean(a**2))
+import sys
+
+import h5py
+import numpy as np
+
+RD, IO = sys.argv[1:3]
+MU0 = 4e-7 * np.pi; G = 274.0
+rms = lambda a: np.sqrt(np.nanmean(a ** 2))
 with h5py.File(f"{IO}/truth_eos_mu1.0.h5") as f:
-    z1T=f["truth/z_tau1_m"][:]; zTt=f["truth/z_m"][:]; uTt=f["truth/lnP"][:]; ltT=f["logtau500"][:]
-off=z1T.mean(); z1T=z1T-off
+    z1T = f["truth/z_tau1_m"][:]; zT = f["truth/z_m"][:]
+off = z1T.mean(); z1T = z1T - off
+with h5py.File(f"{IO}/truth_logm_mu1.0.h5") as t:
+    zM = t["z_m"][:].transpose(2, 1, 0) - off
+
+
 def load(run, grid):
     with h5py.File(f"{RD}/{run}.h5") as f:
-        g=f[grid]; z=g["z_m"][:]; P=g["Pgas"][:]; B2=g["Bx"][:]**2+g["By"][:]**2+g["Bz"][:]**2
-        lt=g["logtau500"][:] if "logtau500" in g and g["logtau500"].ndim==3 else None
-        ax=g["log10m"][:] if grid=="mass_grid" else g["logtau500"][:]
-        z1=g["z_tau1_m"][:]
-    return z, np.log(P+B2/(2*MU0)), lt, ax, z1
+        g = f[grid]; z = g["z_m"][:]; P = g["Pgas"][:]; rho = g["rho"][:]
+        B2 = g["Bx"][:] ** 2 + g["By"][:] ** 2 + g["Bz"][:] ** 2
+        ax = g["log10m"][:] if grid == "mass_grid" else g["logtau500"][:]
+        lt = g["logtau500"][:] if grid == "mass_grid" else None
+    return z, np.log(P + B2 / (2 * MU0)), rho / P, lt, ax
+
+
 def z1of(z, lt, ax):
-    nt,ny,nx=z.shape; out=np.empty((ny,nx))
+    nt, ny, nx = z.shape; out = np.empty((ny, nx))
     for j in range(ny):
         for i in range(nx):
-            l=lt[:,j,i] if lt is not None else ax
-            out[j,i]=np.interp(0.0,l,z[:,j,i])
+            out[j, i] = np.interp(0.0, lt[:, j, i] if lt is not None else ax, z[:, j, i])
     return out
-def realign(z, lpt, ref):
-    # height where lpt == ref per column (lpt increases with depth/index); columns not reaching: skip (NaN)
-    nt,ny,nx=z.shape; zr=np.full((ny,nx),np.nan)
+
+
+def zref(z, lpt, q, ref):
+    nt, ny, nx = z.shape; zr = np.empty((ny, nx)); nex = 0
     for j in range(ny):
         for i in range(nx):
-            v=lpt[:,j,i]
-            if v[-1]>=ref and v[0]<=ref: zr[j,i]=np.interp(ref,v,z[:,j,i])
-    return zr
-for run,grid in (("colhse_eos_mu1.0","tau_grid"),("colhse_logm_mu1.0","mass_grid")):
-    z,lpt,lt,ax,z1o=load(run,grid)
-    z1=z1of(z,lt,ax); e=z1-z1.mean()
-    print(f"== {run}: stored z1 rms {rms((z1o-z1o.mean())-z1T)/1e3:.1f}, recomputed {rms(e-z1T)/1e3:.1f} km; bottom axis {ax[-1]:.2f}")
-    for lev in (ax[-1], ):
-        pass
-    # reference total pressure at various depths: median of lpt at chosen axis levels
-    for k in sorted(set([len(ax)-1]+[int(np.argmin(abs(ax-v))) for v in ((1.4,1.0,0.5,0.0,-1.0) if grid=="tau_grid" else (2.6,2.2,1.9,1.7,1.4,1.0))])):
-        ref=np.median(lpt[k]); zr=realign(z,lpt,ref); zz1=z1-zr; ok=np.isfinite(zz1)
-        zz1=zz1-np.nanmean(zz1)
-        print(f"  align at median Ptot of level {ax[k]:+.2f}: z1 rms {rms((zz1-z1T)[ok])/1e3:5.1f} km, corr {np.corrcoef(zz1[ok],z1T[ok])[0,1]:.3f}, cols {ok.sum()}")
-# oracle: shift colhse logm columns so that z at log m=1.0 matches truth -> remaining z1 error
-with h5py.File(f"{IO}/truth_logm_mu1.0.h5") as t:
-    lm=t["log10m"][:]; zM=t["z_m"][:].transpose(2,1,0)-off
-z,lpt,lt,ax,_=load("colhse_logm_mu1.0","mass_grid"); z1=z1of(z,lt,ax)
-for v in (2.6,1.7,1.0,-0.5):
-    k=int(np.argmin(abs(ax-v))); zz=z1-z[k]+zM[k]; zz-=zz.mean()
-    print(f"  oracle shift (truth height of log m {ax[k]:+.2f}): z1 rms {rms(zz-z1T)/1e3:.1f} km")
-# truth: horizontal variation of total pressure at fixed height near bottom of each axis
-print("truth z of bottom τ level: median %.0f km; of bottom m level: median %.0f km"%(np.median(zTt[-1])/1e3-off/1e3, np.median(zM[-1])/1e3))
+            v = lpt[:, j, i]
+            if v[-1] < ref:                                   # below the column: hydrostatic extrapolation
+                zr[j, i] = z[-1, j, i] - (ref - v[-1]) / (G * q[-1, j, i]); nex += 1
+            else:
+                zr[j, i] = np.interp(ref, v, z[:, j, i])
+    return zr, nex
+
+
+for run, grid, levs in (("colhse_eos_mu1.0", "tau_grid", (1.4, 1.0, 0.5, 0.0, -1.0)),
+                        ("colhse_logm_mu1.0", "mass_grid", (2.6, 2.2, 1.9, 1.7, 1.4, 1.0))):
+    z, lpt, q, lt, ax = load(run, grid)
+    z1 = z1of(z, lt, ax)
+    print(f"== {run} (axis bottom {ax[-1]:+.2f})")
+    for v in levs:
+        k = int(np.argmin(abs(ax - v))); ref = np.median(lpt[k])
+        zr, nex = zref(z, lpt, q, ref)
+        zz = z1 - zr; zz -= zz.mean()
+        zl = z[k] - zr; zl -= zl.mean()
+        tl = zM[k] if grid == "mass_grid" else zT[k] - off
+        print(f"  reference P_tot = median at level {ax[k]:+.2f} (truth median z {np.median(tl) / 1e3:+6.0f} km): "
+              f"z(τ=1) rms {rms(zz - z1T) / 1e3:5.1f} km, corr {np.corrcoef(zz.ravel(), z1T.ravel())[0, 1]:.3f}; "
+              f"extrapolated columns {nex}")

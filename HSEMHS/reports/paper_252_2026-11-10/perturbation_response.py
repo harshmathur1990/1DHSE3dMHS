@@ -1,5 +1,5 @@
 """Response of the reconstructed z(τ=1) to the input errors (round-2 review Q4): rms of z1(perturbed) − z1(unperturbed)
-for column HSE and MHS, split by a Gaussian low-pass of σ = 4 px; and the realised statistics of the perturbations
+for column HSE and MHS, with its Gaussian-smoothed (σ = 4 px) and residual parts (not orthogonal bands); and the realised statistics of the perturbations
 (rms Δ ln T, rms Δ|B|/|B| for |B| > 500 G, 1/e width of the horizontal autocorrelation of Δ ln T at τ = 1).
 
 usage: python perturbation_response.py   (paths below; output kept in perturbation_response.txt)
@@ -24,7 +24,7 @@ for kind in ("colhse","mhs"):
         for s in (1,2,3):
             d=z1(f"{kind}_pert_{tag}_s{s}")-base; l,h=split(d)
             rr.append(rms(d)); lo.append(rms(l)); hi.append(rms(h)); ee.append(rms(z1(f"{kind}_pert_{tag}_s{s}")-zt))
-        print(f"{kind:6s} {tag:5s}: response rms(z1_pert − z1_unpert) {np.mean(rr)/1e3:5.1f} km (σ>4px part {np.mean(lo)/1e3:4.1f}, <4px {np.mean(hi)/1e3:4.1f}); err vs truth {np.mean(ee)/1e3:.1f}; seeds {', '.join(f'{x/1e3:.1f}' for x in rr)}")
+        print(f"{kind:6s} {tag:5s}: response rms(z1_pert − z1_unpert) {np.mean(rr)/1e3:5.1f} km (Gaussian-smoothed σ 4 px {np.mean(lo)/1e3:4.1f}, residual {np.mean(hi)/1e3:4.1f}); err vs truth {np.mean(ee)/1e3:.1f}; seeds {', '.join(f'{x/1e3:.1f}' for x in rr)}")
 # realised perturbation statistics
 for tag in ("small","large"):
     with h5py.File(f"{IO}/perturbed/input_{tag}_s1.nc") as f, h5py.File(f"{IO}/input_eos_mu1.0.nc") as g:
