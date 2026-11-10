@@ -73,9 +73,9 @@ im = ax[0, 0].imshow(T1["z1"] / 1e3, **kw); ax[0, 0].set_title("Bifrost")
 for i, (lab, d) in enumerate([(r"column HSE, $\tau$", col), (r"MHS, $\tau$", mhs), (r"MHS, $m$", mmhs)]):
     ax[0, i + 1].imshow(d["z1"] / 1e3, **kw); ax[0, i + 1].set_title(lab)
     imd = ax[1, i + 1].imshow((d["z1"] - T1["z1"]) / 1e3, **kw)
-    ax[1, i + 1].set_title(f"difference, rms {rms(d['z1'] - T1['z1']) / 1e3:.0f} km")
+    ax[1, i + 1].set_title(f"$\\Delta z$: {rms(d['z1'] - T1['z1']) / 1e3:.0f} km rms")
 imb = ax[1, 0].imshow(B1 * 1e4, origin="lower", extent=ext, cmap="gray_r", vmin=0, vmax=1500, interpolation="nearest")
-ax[1, 0].set_title(r"$|B|$ at $\log\tau_{500}=0$")
+ax[1, 0].set_title(r"$|B|$, $\log\tau=0$")
 for a in list(ax[0]) + list(ax[1, 1:]):
     a.contour(x, x, s1, levels=[0.5], colors="k", linewidths=0.4)
 for k, a in enumerate(ax.ravel()):
