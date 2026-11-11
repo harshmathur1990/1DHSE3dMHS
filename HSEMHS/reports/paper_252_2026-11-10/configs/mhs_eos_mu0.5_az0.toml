@@ -22,4 +22,5 @@ precond = "switch"
 cg_cap = 200
 gn_tol = 1.0e-3
 max_steps = 100
+qual_maxit = 20000
 logtau_cut = -4.0
