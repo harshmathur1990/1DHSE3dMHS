@@ -90,7 +90,7 @@ fig.colorbar(imd, ax=ax[1, 1:], shrink=0.85, label="reconstruction − reference
 fig.colorbar(imb, ax=ax[1, 0], location="left", shrink=0.85, label=r"$|B|$ (G)")
 fig.savefig(f"{OUT}/ztau1.pdf"); plt.close(fig)
 
-# Fig. 2: rms errors per level (μ = 1): own τ and column mass (at the median log τ500 of each m level), photosphere
+# Fig. 2: rms errors per level (μ = 1): own τ and column mass (at the median log τ500 of each m level), log τ500 ≥ −5
 fig, ax = plt.subplots(3, 1, figsize=(W1, 3.7), sharex=True, constrained_layout=True)
 sets = [(col, T1, None, "col", "-", r"column HSE, $\tau$"), (mhs, T1, None, "mhs", "-", r"MHS, $\tau$"),
         (mcol, TM, mcol["lt"], "mcol", "--", "column HSE, $m$"), (mmhs, TM, mmhs["lt"], "mmhs", "--", "MHS, $m$")]

@@ -46,7 +46,7 @@ step saved (μ = 1, own τ) → `history_eos_mu1.0.csv` (`step_history.py`). `di
 | column mass | 56.6 → 19.5 km | −64.6 → −73.2 (−76.7) km | 0.103 → 0.080 | 6, converged |
 
 Cuts at μ = 1 (own τ): −5 ends invalid (one folded column, no output); −6 and no cut stall (z(τ=1) rms 267 and 837 km;
-photospheric median |F_h|/ρg 0.64 and 2.24, against 0.018 for −4, 0.072 column HSE and 0.058 Bifrost). Stop rules
+median |F_h|/ρg at log τ −3…0 0.64 and 2.24, against 0.018 for −4, 0.072 column HSE and 0.058 Bifrost). Stop rules
 (`history_eos_mu1.0.csv`): the qualified stop at step 16 (232 s of steps); the Borrero et al. (2021) rule (mean |Δz(τ=1)| <
 6 km) holds at step 1 (mean 3.0 km, max 421 km, depression −65 km).
 
