@@ -86,6 +86,7 @@ Base.@kwdef struct PoissonTauOptions
     precond::Symbol = :fourier        # :fourier | :block | :hybrid | :switch (fourier, then block once CG hits its limit)
     klow::Int = 8
     damping::Symbol = :reg            # :reg | :marquardt (block or hybrid only)
+    qual_maxit::Int = 400             # CG budget of the stop qualification (stop = :gn)
 end
 
 """
@@ -225,6 +226,7 @@ function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0; cutna
     push_if!(e, 0 < o.eta_min <= o.eta_max < 1, "poisson eta_min and eta_max must satisfy 0 < eta_min ≤ eta_max < 1")
     push_if!(e, o.precond in (:fourier, :block, :hybrid, :switch), "poisson precond must be :fourier, :block, :hybrid or :switch, got :$(o.precond)")
     push_if!(e, o.klow >= 0, "poisson klow must be ≥ 0")
+    push_if!(e, o.qual_maxit >= 1, "poisson qual_maxit must be ≥ 1")
     push_if!(e, o.damping in (:reg, :marquardt), "poisson damping must be :reg or :marquardt, got :$(o.damping)")
     push_if!(e, o.damping != :marquardt || o.precond in (:block, :hybrid), "poisson damping = :marquardt needs precond :block or :hybrid")
     push_if!(e, lt[1] <= c <= lt[end], "$at is outside the axis [$(lt[1]), $(lt[end])]")
@@ -796,7 +798,7 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
                                                         rms_atol = o.rms_atol, mu = ws.view.mu, slant = slant(ws.view),
                                                         lm = o.lm, forcing = o.forcing, cg_cap = o.cg_cap, eta_min = o.eta_min,
                                                         eta_max = o.eta_max, precond = o.precond, klow = o.klow, damping = o.damping,
-                                                        mass = mass_mode(ws.mode))
+                                                        qual_maxit = o.qual_maxit, mass = mass_mode(ws.mode))
     if info.reason == :eos_out_of_envelope
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
         return fail!(st, :eos_out_of_envelope, 1, "the Poisson start state on the $(mass_mode(ws.mode) ? "mass" : "τ") grid lies outside the EOS table")
