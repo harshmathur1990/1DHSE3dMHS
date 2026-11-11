@@ -90,7 +90,7 @@ fig.colorbar(imd, ax=ax[1, 1:], shrink=0.85, label="reconstruction − reference
 fig.colorbar(imb, ax=ax[1, 0], location="left", shrink=0.85, label=r"$|B|$ (G)")
 fig.savefig(f"{OUT}/ztau1.pdf"); plt.close(fig)
 
-# Fig. 2: rms errors per level (μ = 1): own τ and column mass (at the median log τ500 of each m level), photosphere
+# Fig. 2: rms errors per level (μ = 1): own τ and column mass (at the median log τ500 of each m level), log τ500 ≥ −5
 fig, ax = plt.subplots(3, 1, figsize=(W1, 3.7), sharex=True, constrained_layout=True)
 sets = [(col, T1, None, "col", "-", r"column HSE, $\tau$"), (mhs, T1, None, "mhs", "-", r"MHS, $\tau$"),
         (mcol, TM, mcol["lt"], "mcol", "--", "column HSE, $m$"), (mmhs, TM, mmhs["lt"], "mmhs", "--", "MHS, $m$")]
@@ -163,13 +163,11 @@ T5 = truth("eos_mu0.5_az0"); _, s5, q5, _ = masks("eos_mu0.5_az0"); pp = run("mh
 fig, ax = plt.subplots(2, 1, figsize=(W1, 2.9), sharex=True, constrained_layout=True)
 ax[0].plot(mus, res["Tdep"], "ko", ms=4, label="Bifrost")
 ax[0].plot(mus, res["cdep"], "s", color=C["col"], ms=4, label="column HSE")
-ax[0].plot(mus[:2], res["mdep"][:2], "o", color=C["mhs"], ms=4, label="MHS, inclined")
-ax[0].plot(mus[2:], res["mdep"][2:], "o", mfc="none", color=C["mhs"], ms=4, label="MHS, inclined (stop undecided)")
+ax[0].plot(mus, res["mdep"], "o", color=C["mhs"], ms=4, label="MHS, inclined")
 ax[0].plot([0.5], [dep(pp["z1"], s5, q5)], "x", color=C["pp"], label="MHS, plane-parallel")
 ax[0].set_ylabel("depression (km)"); ax[0].legend(fontsize=6); ax[0].grid(alpha=0.3); ax[0].set_xticks(mus)
 ax[1].plot(mus, res["cerr"], "s", color=C["col"], ms=4)
-ax[1].plot(mus[:2], res["merr"][:2], "o", color=C["mhs"], ms=4)
-ax[1].plot(mus[2:], res["merr"][2:], "o", mfc="none", color=C["mhs"], ms=4)
+ax[1].plot(mus, res["merr"], "o", color=C["mhs"], ms=4)
 ax[1].plot([0.5], [rms(pp["z1"] - T5["z1"]) / 1e3], "x", color=C["pp"])
 ax[1].set_ylabel(r"rms error of $z(\tau_{500}=1)$ (km)"); ax[1].set_xlabel(r"$\mu$"); ax[1].grid(alpha=0.3)
 ax[1].invert_xaxis()

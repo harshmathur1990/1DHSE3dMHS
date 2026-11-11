@@ -41,12 +41,16 @@ step saved (μ = 1, own τ) → `history_eos_mu1.0.csv` (`step_history.py`). `di
 | μ = 1, own τ | 20.7 → 22.6 km | −56.8 → −71.2 (−76.7) km | 0.080 → 0.073 | 16, converged |
 | μ = 1, MULTI3D τ | 20.7 → 22.9 km | −60.1 → −71.1 (−76.8) km | 0.127 → 0.116 | 8, converged |
 | μ = 0.707 inclined | 21.6 → 22.0 km | −31.9 → −53.5 (−58.7) km | 0.093 → 0.088 | 33, converged |
-| μ = 0.5 inclined | 23.2 → 28.4 km | −15.4 → −50.4 (−49.3) km | 0.104 → 0.101 | 34, undecided |
+| μ = 0.5 inclined | 23.2 → 28.4 km | −15.4 → −50.4 (−49.3) km | 0.104 → 0.101 | 34, converged¹ |
 | μ = 0.5 plane-parallel | – → 47.2 km | – → +4.5 (−49.3) km | 0.098 | 25, converged |
 | column mass | 56.6 → 19.5 km | −64.6 → −73.2 (−76.7) km | 0.103 → 0.080 | 6, converged |
 
+¹ Rerun on 11 Nov 2026 (branch `qual-maxit`, `poisson.qual_maxit = 20000`): the stop qualification with its default 400 CG
+iterations was undecided (decrement in [2.0e-4, 6.4], tol 1e-3); with 2349 iterations it qualifies, [2.05e-4, 2.59e-4]. The
+state is bit-identical to the first run (kept as `mhs_eos_mu0.5_az0_qual400`); the wall time is 1057 s instead of 671 s.
+
 Cuts at μ = 1 (own τ): −5 ends invalid (one folded column, no output); −6 and no cut stall (z(τ=1) rms 267 and 837 km;
-photospheric median |F_h|/ρg 0.64 and 2.24, against 0.018 for −4, 0.072 column HSE and 0.058 Bifrost). Stop rules
+median |F_h|/ρg at log τ −3…0 0.64 and 2.24, against 0.018 for −4, 0.072 column HSE and 0.058 Bifrost). Stop rules
 (`history_eos_mu1.0.csv`): the qualified stop at step 16 (232 s of steps); the Borrero et al. (2021) rule (mean |Δz(τ=1)| <
 6 km) holds at step 1 (mean 3.0 km, max 421 km, depression −65 km).
 
