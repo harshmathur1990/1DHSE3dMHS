@@ -120,6 +120,7 @@ const CONFIG_SCHEMA = [
         "precond" => "fourier",        # fourier | block (column blocks) | hybrid (blocks + low-|k| Fourier, klow) | switch (fourier, then block once CG hits its limit)
         "klow" => 8,
         "damping" => "reg",            # reg (horizontal regularisation) | marquardt (needs block or hybrid)
+        "qual_maxit" => 400,           # ltau: CG budget of the stop qualification (stop = gn)
     ],
     "tau_grid" => [                  # column-hse-ltau, mhs-poisson-ltau and the logm modes
         "align" => "ptot",             # ptot: P + B²/2μ₀ equal at one height; none: z = 0 at log10 τ (logm: log10 m) = 0 per column
@@ -254,7 +255,7 @@ end
 load_config(path::AbstractString) = parse_config(read(path, String); path = path)
 
 """Keys added after configs were hashed: part of the hash only when set to a non-default value."""
-const HASH_IF_SET = Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping", "logm_cut"])
+const HASH_IF_SET = Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping", "logm_cut", "qual_maxit"])
 
 """SHA-256 of the canonical parsed config, excluding keys irrelevant to restart identity."""
 function config_hash(cfg::Config)

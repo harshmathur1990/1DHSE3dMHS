@@ -41,7 +41,8 @@ function tau_setup(cfg, tag, mode::Symbol)
                                 n_consec = P.n_consec, stop = Symbol(P.stop), gn_tol = P.gn_tol, gn_consec = P.gn_consec,
                                 cg_tol = P.cg_tol, cg_maxit = P.cg_maxit, dc_cap_m = P.dc_cap_m, lm_mu0 = P.lm_mu0,
                                 lm = Symbol(P.lm), forcing = Symbol(P.forcing), cg_cap = P.cg_cap, eta_min = P.eta_min,
-                                eta_max = P.eta_max, precond = Symbol(P.precond), klow = P.klow, damping = Symbol(P.damping))
+                                eta_max = P.eta_max, precond = Symbol(P.precond), klow = P.klow, damping = Symbol(P.damping),
+                                qual_maxit = P.qual_maxit)
     poisson = mass && gn !== nothing ? PoissonMassOptions(gn) : gn
     logm0(s) = MPI.Comm_rank(MPI.COMM_WORLD) == 0 && (println(@sprintf("[%7.1fs] %s: %s", time() - t0, tag, s)); flush(stdout))
     vw = config_view(cfg)
