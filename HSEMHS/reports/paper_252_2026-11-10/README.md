@@ -2,6 +2,7 @@
 
 Source of Table 1 and Figs. 1–5 of the A&A method paper (`HSEMHS-Paper`, `hsemhs.tex`). Runs on `main` at 6e0a52b; outputs in
 `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/paper_252_2026-11-10/`, inputs in `/mn/stornext/d9/data/harshm/MHS/IO/tau252/`.
+All with the LTE EOS. The same cases with the experimental NLTE EOS are in `../paper_252_nlte_2026-11-13`.
 
 ## Why
 

@@ -157,8 +157,9 @@ and timings: [`docs/technical/`](docs/technical).
 * **Equation of state and opacity:** Wittmann's LTE EOS (C++, `wittman-eos/`, wrapped through `HSEMHS/deps/witt`) with
   solar abundances, H₂, an H/He Saha branch above a switch temperature, and the 5000 Å continuum extinction, tabulated in
   (ln T, ln P) with bicubic Hermite interpolation and derivatives (`src/eos/`). The table records its envelope; calls
-  outside it return an error status. Build provenance is in `config/eos_table_bifrost385_fullz.toml`. Optionally the
-  hydrogen ionization of non-equilibrium Bifrost runs replaces Saha's ([NLTE equation of state](#nlte-equation-of-state)).
+  outside it return an error status. Build provenance is in `config/eos_table_bifrost385_fullz.toml`. Experimental and off
+  by default: the hydrogen ionization of non-equilibrium Bifrost runs in place of Saha's, `eos.model = "nlte"`
+  ([NLTE equation of state (experimental)](#nlte-equation-of-state-experimental)).
 
 ## Installation
 
@@ -212,7 +213,7 @@ EOS table chain (the table `cache/eos_table_fullz.h5` is referenced by every mod
 cd HSEMHS
 julia --project=. -t 32 scripts/run.jl config/gate0_bifrost385_fullz.toml       # audit of the raw Bifrost cube → T, P envelope
 julia --project=. -t 32 scripts/run.jl config/eos_table_bifrost385_fullz.toml    # builds cache/eos_table_fullz.h5 from that envelope
-julia --project=. -t 120 scripts/run.jl config/eos_table_nlte.toml              # optional: the NLTE table cache/eos_table_nlte.h5
+julia --project=. -t 120 scripts/run.jl config/eos_table_nlte.toml              # experimental, only for eos.model = "nlte": cache/eos_table_nlte.h5
 ```
 
 The tables are not in git (249 MB and 1.7 GB, above GitHub's 100 MB file limit); the configs above rebuild them, and
@@ -310,7 +311,7 @@ sections or keys are rejected. Keys used per mode:
 | `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, cut_frame, max_steps, stop, gn_tol, gn_consec, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0, lm, forcing, cg_cap, eta_min, eta_max, precond, klow, damping}` and `[view]` | solver settings: [Viewing angle](#viewing-angle) |
 | `column-hse-logm` | as `column-hse-ltau` | `align = "none"`: z = 0 at log₁₀ m = 0 per column before the gauge |
 | `mhs-poisson-logm` | as `mhs-poisson-ltau`, with `poisson.logm_cut` (default −0.5, the Bifrost median m at log τ = −4) in place of `logtau_cut` | `cut_frame = "vertical"`: log₁₀ m_LOS = `logm_cut` − log₁₀ μ |
-| `full-mhs-z` | `input.file`, `eos.table_file`, `run.output` (a **directory**), `full_mhs.*` | everything else is not forwarded: `physics.g`, `[column_hse]`, `[mhs]`, `[parallel]`, `[tau]`, `[output]`, `run.overwrite`, input dataset names; P_ref and g come from the file attributes |
+| `full-mhs-z` | `input.file`, `eos.{table_file, model, nlte_table_file}` (the table path only), `run.output` (a **directory**), `full_mhs.*` | everything else is not forwarded: `physics.g`, `[column_hse]`, `[mhs]`, `[parallel]`, `[tau]`, `[output]`, `run.overwrite`, input dataset names; P_ref and g come from the file attributes |
 
 `full-mhs-z` runs the older M5 driver: `scripts/run.jl` validates the config, exports `MHS_INPUT`, `MHS_EOS_TABLE`,
 `MHS_SIGMA_REL`, `MHS_TRUST`, `MHS_STOP`, `MHS_PHI_RTOL` (read as constants when the driver is included), includes
@@ -401,11 +402,41 @@ different objectives. On the Bifrost cube the warm start gave no saving (table b
 
 Column modes on the height and τ grids, embedded only: `solve_embedded!(ws, lnT, ...; lnne)` takes nₑ as the truth. At every level P is the pressure at which the EOS gives that nₑ at that T (`lnP_from_lnne`), and ρ and χ₅₀₀ follow; there is no hydrostatic integration and B and the alignment are not used. On the height grid τ₅₀₀ is integrated as usual. On the τ grid z = ∫ μ dτ/χ₅₀₀, gauged to mean z(τ = 1) = 0, so the τ axis must fit that nₑ. `res.ne` is the given nₑ, `status.stats["ne_given"]` records the choice, and a level no EOS state reaches fails as `:eos_out_of_envelope`. With the LTE EOS, where nₑ is far from LTE the derived P and ρ differ from the atmosphere's true values; the NLTE EOS (next section) assumes the median NLTE ionization of the Bifrost hion runs instead, and nₑ need not be monotonic in P there, which `lnP_from_lnne` assumes.
 
-## NLTE equation of state
+## NLTE equation of state (experimental)
 
-`eos.model = "nlte"` (default `"lte"`) makes every mode use `eos.nlte_table_file` (default `cache/eos_table_nlte.h5`) in place
-of `eos.table_file`; a table of the other model is rejected. Embedding callers pass the table and, optionally,
-`prepare_embedded(…; eos_model = "nlte")`, which checks it; `eos_model(table)` reports it.
+**Status: experimental, off by default.** Every mode uses the LTE Wittmann EOS (`eos.model = "lte"`) unless a config sets
+
+```toml
+[eos]
+model = "nlte"                                   # experimental; default "lte"
+nlte_table_file = "cache/eos_table_nlte.h5"      # default; build it first (EOS chain above, ≈ 20 min on 120 threads)
+```
+
+With `"nlte"` every mode uses `eos.nlte_table_file` in place of `eos.table_file`; a table of the other model is rejected
+(`load_table(…; model)`). `full-mhs-z` only receives that table path, without the model check, and has not been run with the
+NLTE table. Embedding callers pass the table and, optionally, `prepare_embedded(…; eos_model = "nlte")`, which
+checks it; `eos_model(table)` reports it. Setting `model = "lte"` explicitly leaves the config hash unchanged, so results
+of earlier runs stay comparable. It is experimental because:
+- the correction comes from two Bifrost setups, not from the Sun;
+- it is a per-cell median with a 0.2–0.3 dex floor in nₑ;
+- it has been tested only on the method paper's cases (below).
+
+**When to use it: with a τ axis consistent with NLTE opacities.** That means the NLTE table's χ500
+(`scripts/inputs/make_tau_input.jl … table=cache/eos_table_nlte.h5`) or an NLTE radiative-transfer τ500 such as MULTI3D's.
+On τ integrated from the LTE table, P and ρ come out 1.6–1.8× worse than with LTE. The column-mass modes don't use τ, and
+there the two models agree.
+
+**Paper cases** (`HSEMHS/reports/paper_252_nlte_2026-11-13`; every run converged):
+
+| μ = 1 case | EOS | MHS steps | z(τ=1) rms | ΔlnP solved / above cut | Δlog nₑ solved / above cut |
+|---|---|---|---|---|---|
+| own τ (LTE χ500) | LTE | 16 | 22.6 km | 0.073 / 0.45 | 0.063 / 0.52 dex |
+| NLTE-built τ | NLTE | 7 | 22.5 km | 0.073 / 0.62 | 0.045 / 0.28 dex |
+| MULTI3D τ | LTE | 8 | 22.9 km | 0.116 / 1.55 | 0.037 / 0.51 dex |
+| MULTI3D τ | NLTE | 8 | 22.8 km | 0.126 / 0.92 | 0.026 / 0.21 dex |
+
+On a consistent τ, the NLTE EOS keeps z(τ=1) and the solved-layer P and ρ within 10 % of LTE. It improves nₑ by 20–40 % in
+the solved layers and by ≈ 2× above the cut. The magnetic depression comes out 2–5 km shallower.
 
 **The model.** In the chromosphere hydrogen is not ionized as Saha predicts at the local T and nₑ: its ionization relaxes over
 10²–10³ s, so gas recently heated by a shock is under-ionized and cooling gas over-ionized. From non-equilibrium hydrogen
