@@ -215,6 +215,11 @@ julia --project=. -t 32 scripts/run.jl config/eos_table_bifrost385_fullz.toml   
 julia --project=. -t 120 scripts/run.jl config/eos_table_nlte.toml              # optional: the NLTE table cache/eos_table_nlte.h5
 ```
 
+The tables are not in git (249 MB and 1.7 GB, above GitHub's 100 MB file limit); the configs above rebuild them, and
+`load_table` checks each table's sha256 of its arrays against the one stored in it. Reference builds:
+`eos_table_fullz.h5` 1831 × 1402 nodes, sha256 `4e19ad6a…` (22 Oct 2026); `eos_table_nlte.h5`: nodes, sha256 and checks in
+`HSEMHS/reports/gate1_table_nlte.md`, written by the build (≈ 18 min on 120 threads of a hyades node).
+
 `eos.build_if_missing` exists in the schema but no code path builds the table automatically.
 
 ### Input contracts per mode
@@ -406,12 +411,19 @@ of `eos.table_file`; a table of the other model is rejected. Embedding callers p
 10²–10³ s, so gas recently heated by a shock is under-ionized and cooling gas over-ionized. From non-equilibrium hydrogen
 (hion) Bifrost runs, `scripts/nlte/make_nlte_correction.py` takes, in every cell,
 D = log₁₀(n_p/n_HI)_sim − log₁₀(n_p/n_HI)_Saha(T, pₑ,sim), its median per (log₁₀ T, log₁₀ P) bin (0.01 × 0.02 dex) per run,
-averages the runs with equal weight, smooths it (Gaussian, 2 bins) and tapers it to 0 where the runs have no data and above
-10^4.6 K. Measured against Saha at the run's own nₑ, D is free of the abundance differences between Bifrost and Wittmann; it
+averages the runs with equal weight and smooths it (Gaussian, 0.02 dex in T, 0.24 dex in P). The solvers change P at fixed
+T, so D is then limited to a slope of 2 per dex of P (the upper envelope of |D|, each sign separately): bin medians jump where
+a bin mixes dense near-LTE gas with dilute shocked gas, and an unlimited D sent MHS solves off those cliffs. Beyond the runs'
+pressures D decays to 0 at that slope inside the grid (10⁻¹² … 10⁸ Pa); above 10^4.4 … 10^4.6 K it is tapered to 0. Measured against Saha at the run's own nₑ, D is free of the abundance differences between Bifrost and Wittmann; it
 is ≈ 0 in the photosphere, +2 to +9 dex in cool (3–5 kK) chromospheric gas and −3 to −7 dex in warm (8–25 kK) gas. The NLTE
 EOS (`src/eos/NLTE.jl`) is the hot-branch solver with the hydrogen Saha ratio p(H⁺)/p(H) multiplied by 10^D at the
-self-consistent pₑ; helium, the metals, H⁻, H₂ and the opacity partials stay LTE at that pₑ, so ρ, nₑ and χ₅₀₀ are mutually
-consistent. Where D = 0 the model is the LTE model exactly. NLTE tables store ln n_HI and ln n_p as well
+self-consistent pₑ; helium, the metals, H⁻ and H₂ stay LTE at that pₑ, so ρ, nₑ and χ₅₀₀ are mutually consistent. In
+χ₅₀₀, H⁻, Rayleigh and H₂⁺ use the NLTE neutral hydrogen, but hydrogen's bound-free opacity (Paschen and higher at 500 nm)
+puts the excited levels in Saha with the NLTE n_p and nₑ (Boltzmann from n_HI × 10^dH): in the hion runs those levels stay
+within 0.05 dex of that in cool gas, while the ground state departs by 10⁻¹·⁵ … 10⁶. Against Multi3D's τ500 of snapshot 385
+(which reads the run's level populations), χ₅₀₀ of the NLTE model is within ±0.2 dex (median) in every T, P bin; the LTE
+model is 1–2 dex low in cool chromospheric gas, and excited levels by Boltzmann from the NLTE ground state are 1.4–1.7 dex
+high in 8–25 kK gas. Where D = 0 the model is the LTE model exactly. NLTE tables store ln n_HI and ln n_p as well
 (`hydrogen(table, ln T, ln P)`).
 
 **Data.** `HSEMHS/data/nlte/nlte_hion_correction.h5` (in git): en024048_hion snapshots 500, 600, 700 (24 Mm box, 48 km)

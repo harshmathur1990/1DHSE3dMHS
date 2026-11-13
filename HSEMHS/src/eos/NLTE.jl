@@ -5,8 +5,8 @@
 # the median per (log10 T, log10 P) bin, the runs weighted equally, smoothed, and tapered to 0
 # where the simulations have no data and above 10^4.6 K. The NLTE EOS is the hot-branch model
 # with the hydrogen Saha ratio g₂ = p(H⁺)/p(H) multiplied by 10^D at the self-consistent pₑ;
-# everything else (He, metals, H⁻, H₂ and the opacity partials) stays LTE at that pₑ. Where
-# D = 0 the model is the LTE model unchanged.
+# everything else (He, metals, H⁻, H₂) stays LTE at that pₑ. In χ500 hydrogen's excited levels follow
+# the continuum (hot_branch, Envelope.jl). Where D = 0 the model is the LTE model unchanged.
 #
 # The correction's Saha reference (u_HI = 2, u_HII = 1, χ_H = 13.598434 eV) differs from the
 # EOS's (Wittmann partition functions and χ_H) by s(T) = log10(u_HI/(2 u_HII)) − θ (13.598434 eV − χ_H),

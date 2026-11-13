@@ -75,8 +75,11 @@ function hot_branch(m::EOSModel, tid, T, P, n17; pf = nothing, dH = 0.0)
     rho, ne, pe, ok = hot_solve(h, T, P; pf = pfv, dH = dH)
     ok || return BRANCH_FAIL
     xna, xne = hot_partials!(n17, h, T, P, pe; pf = pfv, dH = dH)
-    chi = chi500_m(T, n17, xna, xne)
     hi, hp = hydrogen_ln(n17)
+    # H⁻ and Rayleigh from the NLTE ground state; hydrogen's excited levels (bound-free at 500 nm) in Saha with the
+    # NLTE n_p and nₑ, i.e. Boltzmann from n_HI × 10^dH: hion runs keep them within 0.05 dex of that in cool gas,
+    # while the ground state departs by 10⁻¹·⁵ … 10⁶ (Multi3D reads those level populations)
+    chi = chi500_m(T, n17, xna, xne; hexc = exp10(dH))
     return BranchOut(log(rho), log(ne), log(chi), hi, hp, chi > 0 && isfinite(chi))
 end
 
