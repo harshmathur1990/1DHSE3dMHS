@@ -11,11 +11,16 @@ the simulation's hydrogen ionization from Saha at the simulation's own electron 
 differences in abundances between Bifrost and Wittmann do not enter it; D = 0 is LTE.
 
 D is binned in (log10 T, log10 P[Pa]); the median per bin is taken per run and the runs are
-averaged with equal weight. A normalized Gaussian smoothing fills and smooths the grid, and the
-correction is tapered to zero where the simulations have no data and above T = 10^4.6 K (fully
-ionized hydrogen, where D carries no information on n_e). Output (HDF5, datasets on the grid
-(log10T, log10P), C order): D (the tapered correction HSEMHS uses), D_raw (smoothed, untapered),
-weight, count_<run>, D_<run>, sigma (half the 16-84 % range of D within a bin, pooled).
+averaged with equal weight. A normalized Gaussian smoothing (0.02 dex in T, 0.24 dex in P) fills and
+smooths the grid. The HSEMHS solvers change P at fixed T, so D must not change fast with P: the
+median jumps where a bin mixes two populations (dense LTE and dilute shocked gas at the same T), and
+D ends where the simulations have no gas. D is therefore made Lipschitz in log10 P with slope
+SLOPE_MAX per dex: the upper envelope of |D| (each sign separately), which also carries D beyond the
+simulations' range at that slope instead of cutting it to 0. Above T = 10^4.4 … 10^4.6 K (fully
+ionized hydrogen, where D carries no information on n_e) D is tapered to 0. Output (HDF5, datasets on
+the grid (log10T, log10P), C order): D (the correction HSEMHS uses), D_raw (smoothed, before the
+envelope and taper), weight (0 exactly where D = 0), count_<run>, D_<run>, sigma (half the 16-84 %
+range of D within a bin, pooled).
 
 Usage (eagle9, `source ~/loadamd.sh`):
     ~/amdenv/bin/python3.12 make_nlte_correction.py OUT.h5
@@ -30,7 +35,8 @@ ROOT = '/mn/stornext/d21/RoCS/matsc/3d/run'
 LT = np.round(np.arange(3.30, 5.0001, 0.01), 4)          # bin centres
 LP = np.round(np.arange(-4.0, 5.6001, 0.02), 4)
 SAHA_C, EION_H, BK_CGS = 9.0804625434325867, 13.598434, 1.3806488e-16
-MIN_COUNT, SIGMA_BINS = 20, 2.0
+MIN_COUNT, SIGMA_BINS = 20, (2.0, 12.0)       # Gaussian σ in bins of (log10 T, log10 P): 0.02, 0.24 dex
+SLOPE_MAX = 2.0                                 # max |∂D/∂log10 P| per dex
 POOL = ThreadPoolExecutor(8)
 
 def read_snapshot(run, s, stride):
@@ -72,6 +78,19 @@ def smooth(val, w):
     den = gaussian_filter(w, SIGMA_BINS, mode='nearest')
     return np.where(den > 1e-6, num / np.maximum(den, 1e-300), 0.0), den
 
+def lipschitz_p(D):
+    """Upper envelope of |D| along log10 P with slope SLOPE_MAX per dex, per sign: max_k(|D_k| − S |Δlog P|)."""
+    step = SLOPE_MAX * (LP[1] - LP[0])
+    out = np.zeros_like(D)
+    for sgn in (1.0, -1.0):
+        e = np.maximum(sgn * D, 0.0)
+        for j in range(1, e.shape[1]):
+            e[:, j] = np.maximum(e[:, j], e[:, j - 1] - step)
+        for j in range(e.shape[1] - 2, -1, -1):
+            e[:, j] = np.maximum(e[:, j], e[:, j + 1] - step)
+        out += sgn * e
+    return out
+
 def smoothstep(x, a, b):
     t = np.clip((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t)
 
@@ -93,8 +112,10 @@ def main(out):
     D_raw, wsm = smooth(pooled, w)
     sigma, _ = smooth(np.where(cov.sum(0) > 0, np.nansum(np.where(cov > 0, sig, 0), 0) / np.maximum(cov.sum(0), 1), 0.0), w)
     LTg = LT[:, None] * np.ones((1, len(LP)))
-    weight = smoothstep(wsm, 0.15, 0.5) * (1 - smoothstep(LTg, 4.4, 4.6))
-    D = weight * D_raw
+    covered = smoothstep(wsm, 0.15, 0.5)                              # where the smoothed median is the data's
+    taper = 1 - smoothstep(LTg, 4.4, 4.6)
+    D = taper * lipschitz_p(covered * D_raw)
+    weight = np.where(D != 0, taper, 0.0)
     with h5py.File(out, 'w') as f:
         f['log10T'] = LT; f['log10P'] = LP
         f['D'] = D; f['D_raw'] = D_raw; f['weight'] = weight; f['sigma'] = sigma
@@ -107,7 +128,8 @@ def main(out):
         a['saha_reference_saha_c'] = SAHA_C
         a['runs'] = '; '.join(f'{r} snapshots {s} stride {st}' for r, (s, st) in RUNS.items())
         a['source'] = ROOT; a['min_count'] = MIN_COUNT; a['smoothing_sigma_bins'] = SIGMA_BINS
-        a['taper'] = 'weight = smoothstep(smoothed coverage, 0.15, 0.5) * (1 - smoothstep(log10 T, 4.4, 4.6))'
+        a['taper'] = 'D = (1 - smoothstep(log10 T, 4.4, 4.6)) * lipschitz_P(smoothstep(smoothed coverage, 0.15, 0.5) * D_raw); weight = that T factor where D != 0'
+        a['slope_max_per_dex_log10P'] = SLOPE_MAX
         a['created'] = datetime.datetime.now().isoformat(timespec='seconds')
         a['script_sha256'] = hashlib.sha256(open(__file__, 'rb').read()).hexdigest()
     print(f'[{time.time()-t0:5.0f}s] wrote {out}: grid {len(LT)} x {len(LP)}, weighted bins {np.count_nonzero(weight > 0.5)}', flush=True)
