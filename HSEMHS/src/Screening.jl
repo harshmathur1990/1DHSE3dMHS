@@ -104,6 +104,8 @@ function run_screening(cfg::Config)
     logm("layer statistics done")
     out = cfg.run.output
     create_output(par, out; overwrite = cfg.run.overwrite)
+    io, io_why = hdf5_io(par, cfg.output, out)
+    logm(hdf5_io_line(io, io_why))
     write_layer_table(par, out, "/diagnostics/layer_screening", tab, cols; long_name = "force-budget screening (not a feasibility certificate)")
     write_layer_table(par, out, "/diagnostics/layer_colhse_residual", rtab, rcols; long_name = "column-HSE residual with B = 0 (vertical_hse_only)")
     if S.write_maps
@@ -111,10 +113,10 @@ function run_screening(cfg::Config)
         fill_owned!((i, j, k) -> UInt8(D[i, j, k] >= M[i, j, k]), ok, par)
         write_fields(par, out, [FieldOut("/diagnostics/screening_ok", ok, "1", "|δL| ≥ |∇ₕP − Lₕ| (screening)"),
                                 FieldOut("/diagnostics/mismatch", M, "N m-3", "|∇ₕP − Lₕ(B_obs)|"),
-                                FieldOut("/diagnostics/dL", D, "N m-3", "|B| σ_B/(μ₀ ℓ)")]; compression = cfg.output.compression)
+                                FieldOut("/diagnostics/dL", D, "N m-3", "|B| σ_B/(μ₀ ℓ)")]; compression = cfg.output.compression, io = io)
     end
     meta = provenance_meta(par, cfg)
-    merge!(meta, Dict{String,Any}("mode" => "screening", "label" => "screening", "colhse_file" => abspath(S.colhse_file),
+    merge!(meta, Dict{String,Any}("mode" => "screening", "hdf5_io" => String(io), "label" => "screening", "colhse_file" => abspath(S.colhse_file),
         "colhse_anchor" => anchor, "ell_m" => ell, "sigma_model" => "per component sqrt((sigma_rel |B|)^2 + floor^2), sigma_B = sqrt(3) sigma",
         "sigma_rel" => cfg.mhs.sigma_rel, "sigma_floor_T" => cfg.mhs.sigma_floor_T, "g" => g))
     write_meta(par, out, meta)

@@ -279,9 +279,26 @@ threading crashes under Julia 1.13). No global environment variable governs all 
 layer medians and quantiles are exact global order statistics (bisection on order-preserving integer keys, no gathering);
 the FFT preconditioners use rfft along y, an `Alltoallv` transpose to y-wavenumber slabs, and an FFT along x.
 
-**Output** is written without parallel HDF5: rank 0 creates each file, then ranks write their hyperslabs in turn. This
-costs time on large outputs (the compressed column-HSE output takes minutes). Memory: the slab modes hold only their slab;
-`full-mhs-z` setup (`bif_setup.jl`) reads the **complete** raw input arrays on every rank before distributing them.
+**Output** is cooperative by default: rank 0 creates each file (datasets, attributes, metadata), then the ranks write
+their hyperslabs in turn. This costs time on large outputs (the compressed column-HSE output takes minutes).
+
+**Parallel HDF5** (`[output] parallel_hdf5 = true`, default `false`) has the ranks write the same hyperslabs at once with
+collective MPI-IO. It is used only when **all** of these hold; otherwise the run falls back to cooperative output:
+- the run has more than one rank;
+- the HDF5 library has MPI-IO (`HDF5.has_parallel()`); the HDF5.jl artifact built against MPICH has it;
+- the output directory is on a file system listed in `output.parallel_fs`, matched by its type in `/proc/self/mounts`.
+
+The default list is `lustre`, `gpfs`, `beegfs`, `pvfs2`, `orangefs`, `panfs` and `wekafs`. NFS and StorNext (`cvfs`,
+hyades' `/mn/stornext`) are not on it: MPI-IO has no driver for them, and a cooperative write once stalled on StorNext.
+
+Rank 0 decides and broadcasts, so all ranks take the same path. The log states the path and the reason
+(`output: parallel HDF5 (collective MPI-IO, file system lustre)` or `output: cooperative HDF5 (file system cvfs is not in
+output.parallel_fs)`), and the output records it (attribute or meta `hdf5_io`). Rank 0 still creates every file alone, so
+both paths give the same file: the multi-rank tests check every dataset of both writers on 2, 4 and 6 ranks.
+`full-mhs-z` (its own writer in `scripts/m5_bifrost/`) stays cooperative.
+
+Memory: the slab modes hold only their slab; `full-mhs-z` setup (`bif_setup.jl`) reads the **complete** raw input arrays
+on every rank before distributing them.
 
 **Multi-node on hyades (site-specific, not portable).** Used for the timings below; depends on files outside the
 repository (`~/.julia/bin/mhs_rank.sh`, `~/.julia/bin/ssh_bash_launcher`, a node-local Julia in `/tmp/julia-1.13.1`):
@@ -305,9 +322,9 @@ sections or keys are rejected. Keys used per mode:
 
 | Mode | Honoured | Notes |
 |---|---|---|
-| `column-hse-z` | `[input]` (names, `crop_z_m`), `physics.g`, `[eos]`, `[column_hse]`, `[tau]`, `[view]`, `[parallel]`, `output.compression`, `run.overwrite` | `[view]` changes τ only ([Viewing angle](#viewing-angle)) |
-| `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed; `[view]` changes τ only |
-| `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file, model, nlte_table_file}`, `tau_grid.align`, `[view]`, `run.overwrite` | other `[input]` keys ignored |
+| `column-hse-z` | `[input]` (names, `crop_z_m`), `physics.g`, `[eos]`, `[column_hse]`, `[tau]`, `[view]`, `[parallel]`, `output.{compression, parallel_hdf5, parallel_fs}`, `run.overwrite` | `[view]` changes τ only ([Viewing angle](#viewing-angle)) |
+| `mhs-poisson-z` | as `column-hse-z` except `[parallel]` and `output.compression`; plus `output.{parallel_hdf5, parallel_fs}`, `poisson.{z_cut_m, max_steps, rtol, n_consec, cg_tol, cg_maxit, anchor_w}` | output uncompressed; `[view]` changes τ only |
+| `column-hse-ltau` | `input.{file, x, y}`, `physics.g`, `eos.{table_file, pf_file, model, nlte_table_file}`, `tau_grid.align`, `[view]`, `output.{parallel_hdf5, parallel_fs}`, `run.overwrite` | other `[input]` keys ignored |
 | `mhs-poisson-ltau` | as `column-hse-ltau`, plus `poisson.{logtau_cut, cut_frame, max_steps, stop, gn_tol, gn_consec, rtol, n_consec, cg_tol, cg_maxit, dc_cap_m, lm_mu0, lm, forcing, cg_cap, eta_min, eta_max, precond, klow, damping}` and `[view]` | solver settings: [Viewing angle](#viewing-angle) |
 | `column-hse-logm` | as `column-hse-ltau` | `align = "none"`: z = 0 at log₁₀ m = 0 per column before the gauge |
 | `mhs-poisson-logm` | as `mhs-poisson-ltau`, with `poisson.logm_cut` (default −0.5, the Bifrost median m at log τ = −4) in place of `logtau_cut` | `cut_frame = "vertical"`: log₁₀ m_LOS = `logm_cut` − log₁₀ μ |

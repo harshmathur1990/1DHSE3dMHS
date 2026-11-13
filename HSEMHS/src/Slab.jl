@@ -263,15 +263,16 @@ function transpose_bwd!(S::SlabFFT, par::ParCtx)
     end
 end
 
-# ---- cooperative HDF5 output (no parallel HDF5) ----
+# ---- cooperative HDF5 output (parallel HDF5 optional: `io = :parallel`, H.hdf5_io) ----
 """
-    coop_write(par, path, slabs, small, attrs)
+    coop_write(par, path, slabs, small, attrs; io=:cooperative)
 
 Rank 0 creates `path` with a global dataset for every `slabs` entry (name => local array whose FIRST dimension is the
 owned x range: Julia (x, y, …), h5py (…, y, x), the MHS checkpoint layout), writes `small` entries whole and the
-attributes; then the ranks in turn write their x hyperslabs.
+attributes; then the ranks write their x hyperslabs: in turn (`io = :cooperative`) or all at once with collective
+MPI-IO (`io = :parallel`). Both give the same file.
 """
-function coop_write(par::ParCtx, path, slabs, small, attrs::Dict)
+function coop_write(par::ParCtx, path, slabs, small, attrs::Dict; io::Symbol = :cooperative)
     ir = owned_x(par)
     if rank0(par)
         h5open(path, "w") do f
@@ -286,14 +287,22 @@ function coop_write(par::ParCtx, path, slabs, small, attrs::Dict)
             end
         end
     end
-    for r in 0:par.nranks-1
-        par.nranks > 1 && MPI.Barrier(par.comm)
-        par.rank == r || continue
-        h5open(path, "r+") do f
-            for (nm, a) in slabs
-                nd = ndims(a)
-                nd == 1 ? (f[nm][ir] = a) : nd == 2 ? (f[nm][ir, :] = a) : (f[nm][ir, :, :] = a)
-            end
+    function owned!(f; pv...)
+        for (nm, a) in slabs
+            ds = open_dataset(f, nm; pv...)
+            nd = ndims(a)
+            nd == 1 ? (ds[ir] = a) : nd == 2 ? (ds[ir, :] = a) : (ds[ir, :, :] = a)
+            close(ds)
+        end
+    end
+    if io === :parallel
+        MPI.Barrier(par.comm)
+        h5open(f -> owned!(f; dxpl_mpio = :collective), path, "r+", par.comm)   # every rank, every dataset, same order
+    else
+        for r in 0:par.nranks-1
+            par.nranks > 1 && MPI.Barrier(par.comm)
+            par.rank == r || continue
+            h5open(f -> owned!(f), path, "r+")
         end
     end
     par.nranks > 1 && MPI.Barrier(par.comm)

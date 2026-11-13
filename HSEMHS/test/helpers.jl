@@ -95,7 +95,7 @@ end
 
 
 """Write a pattern field and a per-column field; return the file path."""
-function write_pattern(par, path)
+function write_pattern(par, path; io = :cooperative)
     b = par.block
     f = H.newfield(par)
     for k in 1:b.nz, j in 1:b.ny, i in 1:b.nx
@@ -104,11 +104,31 @@ function write_pattern(par, path)
     col = [UInt8(((b.i0 + i - 1) + (b.j0 + j - 1)) % 3) for i in 1:b.nx, j in 1:b.ny]
     H.create_output(par, path; overwrite = true)
     H.write_fields(par, path, [H.FieldOut("/output/pattern", f, "1", "test pattern")];
-                   cols = [H.ColumnOut("/diagnostics/colmask", col, "1", "test mask")])
+                   cols = [H.ColumnOut("/diagnostics/colmask", col, "1", "test mask")], io = io)
     H.write_layer_table(par, path, "/diagnostics/layer_test", [Float64(k + c) for k in 1:par.NZ, c in 1:3],
                         ["a", "b", "c"])
     H.write_meta(par, path, Dict("mode" => "test", "nested" => Dict("x" => 1.5)))
     return path
+end
+
+"""Every dataset of two HDF5 files: same names, types, shapes and values (attributes not compared)."""
+function same_datasets(a, b)
+    function names(g, pre = "")
+        out = String[]
+        for k in keys(g)
+            o = g[k]; p = pre * "/" * k
+            o isa HDF5.Group ? append!(out, names(o, p)) : o isa HDF5.Dataset && push!(out, p)
+            close(o)
+        end
+        return sort(out)
+    end
+    h5open(a, "r") do fa
+        h5open(b, "r") do fb
+            na = names(fa)
+            na == names(fb) || return false
+            all(nm -> (x = read(fa[nm]); y = read(fb[nm]); typeof(x) == typeof(y) && size(x) == size(y) && isequal(x, y)), na)
+        end
+    end
 end
 
 """Read back with HDF5.jl, convert to the (x, y, z) convention and verify."""
