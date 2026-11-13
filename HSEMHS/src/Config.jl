@@ -30,6 +30,9 @@ const CONFIG_SCHEMA = [
         "lib" => "deps/witt/libwitt",
         "pf_file" => "../wittman-eos/pf_Kurucz.input",
         "table_file" => "cache/eos_table_fullz.h5",
+        "model" => "lte",              # lte (Wittmann) | nlte (hydrogen ionization of Bifrost hion runs, eos/NLTE.jl)
+        "nlte_table_file" => "cache/eos_table_nlte.h5",          # the table used (and built) when model = "nlte"
+        "nlte_correction" => "data/nlte/nlte_hion_correction.h5", # read only by run.mode = "eos_table" with model = "nlte"
         "build_if_missing" => false,
         "prec" => 1e-10,
         "maxit" => 5000,
@@ -249,13 +252,15 @@ function parse_config(text::AbstractString; path::AbstractString = "")
         end
         sections[sec] = NamedTuple{Tuple(names)}(Tuple(vals))
     end
+    sections["eos"].model in ("lte", "nlte") || invalid("eos.model must be \"lte\" or \"nlte\"; got \"$(sections["eos"].model)\"")
     return Config(sections, String(text), String(path))
 end
 
 load_config(path::AbstractString) = parse_config(read(path, String); path = path)
 
 """Keys added after configs were hashed: part of the hash only when set to a non-default value."""
-const HASH_IF_SET = Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping", "logm_cut", "qual_maxit"])
+const HASH_IF_SET = union(Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping", "logm_cut", "qual_maxit"]),
+                          Set("eos." .* ["model", "nlte_table_file", "nlte_correction"]))
 
 """SHA-256 of the canonical parsed config, excluding keys irrelevant to restart identity."""
 function config_hash(cfg::Config)
@@ -271,6 +276,12 @@ function config_hash(cfg::Config)
     end
     return bytes2hex(sha256(take!(io)))
 end
+
+"""The EOS table a run uses: `eos.nlte_table_file` when eos.model = "nlte", else `eos.table_file`."""
+eos_table_path(cfg::Config) = cfg.eos.model == "nlte" ? cfg.eos.nlte_table_file : cfg.eos.table_file
+
+"""Load the run's EOS table (checks its partition functions and that it is of eos.model)."""
+load_eos(cfg::Config) = load_table(eos_table_path(cfg); pf_file = cfg.eos.pf_file, model = cfg.eos.model)
 
 """Resolve a value that may be the string "from_input" using an input-file attribute."""
 function resolve_from_input(val, attrs::AbstractDict, attrname::String, key::String)

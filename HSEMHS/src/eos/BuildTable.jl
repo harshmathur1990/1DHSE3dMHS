@@ -10,8 +10,9 @@ end
 """
     build_eos_table(cfg) -> EOSTable
 
-run.mode = "eos_table": builds `eos.table_file` and writes the Gate 1 table report to
-`run.output` (.h5) and the same stem with `.md`.
+run.mode = "eos_table": builds `eos.table_file` (eos.model = "lte") or, with the hydrogen
+ionization of `eos.nlte_correction`, `eos.nlte_table_file` (eos.model = "nlte"), and writes the
+Gate 1 table report to `run.output` (.h5) and the same stem with `.md`.
 """
 function build_eos_table(cfg::Config)
     E = cfg.eos
@@ -32,7 +33,10 @@ function build_eos_table(cfg::Config)
     # cold end: report non-convergence below T_sw (handled by the robust fallback, flagged)
     cold = [(10.0^scan.lT[a], 10.0^scan.lP[b]) for a in eachindex(scan.lT), b in eachindex(scan.lP)
             if !scan.conv[a, b] && 10.0^scan.lT[a] < T_sw]
-    m = with_switch(m0, T_sw, hb)
+    nlte = E.model == "nlte" ? load_nlte_correction(E.nlte_correction) : nothing
+    nlte === nothing || logm("NLTE hydrogen ionization from $(nlte.path) (sha256 $(nlte.sha256)): $(get(nlte.meta, "runs", ""))")
+    m = with_nlte(with_switch(m0, T_sw, hb), nlte)
+    table_file = eos_table_path(cfg)
     tab = build_table(m, env; dlog10T = E.dlog10T, dlog10P = E.dlog10P, refine_max_levels = E.refine_max_levels)
     nfailed = count(f -> f & EOS_DIRECT_FAILED != 0, tab.flags)
     nfallback = count(f -> f & EOS_ROBUST_FALLBACK != 0, tab.flags)
@@ -51,9 +55,14 @@ function build_eos_table(cfg::Config)
         "envelope_T" => [env.T_lo, env.T_hi], "envelope_log10P" => [env.log10P_lo, env.log10P_hi],
         "envelope_source" => env.source, "dlog10T" => E.dlog10T, "dlog10P" => E.dlog10P,
         "refinement" => join(tab.meta["refinement"], "\n"), "breaks_T" => tab.meta["breaks_T"],
-        "created" => string(Dates.now()))
-    save_table(E.table_file, tab, meta)
-    logm("saved $(E.table_file) (sha256 $(table_sha256(tab)))")
+        "created" => string(Dates.now()), "eos_model" => E.model)
+    if nlte !== nothing
+        meta["nlte_correction"] = nlte.path; meta["nlte_correction_sha256"] = nlte.sha256
+        meta["nlte_correction_runs"] = string(get(nlte.meta, "runs", ""))
+        meta["nlte_nodes"] = count(f -> f & EOS_NLTE != 0, tab.flags)
+    end
+    save_table(table_file, tab, meta)
+    logm("saved $(table_file) (sha256 $(table_sha256(tab)))")
     # ---- report ----
     out = cfg.run.output
     mkpath(dirname(abspath(out)))
@@ -61,7 +70,7 @@ function build_eos_table(cfg::Config)
         f["scan/log10T"] = scan.lT; f["scan/log10P"] = scan.lP
         f["scan/direct_converged"] = UInt8.(scan.conv); f["scan/closure_residual"] = scan.closure
         f["validation/maxerr_maps"] = val.maps
-        write_attribute(f["validation/maxerr_maps"], "fields", collect(LN_FIELDS))
+        write_attribute(f["validation/maxerr_maps"], "fields", collect(field_names(tab)))
         for (k, v) in val.stats
             write_attribute(f["validation"], k, v)
         end
@@ -70,7 +79,9 @@ function build_eos_table(cfg::Config)
             der.max <= 1e-3, nfailed == 0, val.nfail == 0)
     io = IOBuffer()
     println(io, "# Gate 1: EOS table report\n")
-    println(io, "- Table: `$(E.table_file)`, $(length(tab.X)) × $(length(tab.Y)) nodes, sha256 `$(table_sha256(tab))`")
+    println(io, "- Table: `$(table_file)`, $(length(tab.X)) × $(length(tab.Y)) nodes, sha256 `$(table_sha256(tab))`")
+    println(io, "- EOS model: $(E.model)", nlte === nothing ? "" :
+            " (hydrogen ionization from `$(nlte.path)`, $(get(nlte.meta, "runs", "")); $(count(f -> f & EOS_NLTE != 0, tab.flags)) NLTE nodes)")
     @printf(io, "- Envelope: T = %.4g – %.4g K, log₁₀P = %.2f – %.2f Pa (%s)\n", env.T_lo, env.T_hi, env.log10P_lo, env.log10P_hi, env.source)
     println(io, "- Direct solver: prec = $(E.prec), maxit = $(E.maxit), FIX_GASC_H2 = $(witt_fix_gasc_h2())")
     println(io, "- Coverage scan (400 × 200): $(ncf) direct calls did not converge; fully-ionized test: $(scan.full_ionization_ok)")

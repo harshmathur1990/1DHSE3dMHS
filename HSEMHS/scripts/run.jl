@@ -28,7 +28,7 @@ end
 code = if cfg.run.mode == "full-mhs-z"
     F = cfg.full_mhs
     ENV["MHS_INPUT"] = abspath(cfg.input.file)
-    ENV["MHS_EOS_TABLE"] = abspath(cfg.eos.table_file)
+    ENV["MHS_EOS_TABLE"] = abspath(HSEMHS.eos_table_path(cfg))
     ENV["MHS_SIGMA_REL"] = string(F.sigma_rel)
     ENV["MHS_TRUST"] = F.trust_region ? "on" : "off"
     ENV["MHS_STOP"] = F.stop

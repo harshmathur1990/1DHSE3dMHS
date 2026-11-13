@@ -48,9 +48,9 @@ function run_column_hse(cfg::Config)
     o, Psrc = hse_opts_from_config(cfg, spec, g)
     logm(@sprintf("grid %d×%d×%d, anchor %s, P_ref = %.6g Pa (%s), g = %.3f, ranks %d (%d×%d), threads %d",
                   NX, NY, NZ, o.anchor, o.P_ref, Psrc, g, par.nranks, par.px, par.py, Threads.nthreads()))
-    eos = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)
+    eos = load_eos(cfg)
     T = read_field(spec, par, I.temperature, :temperature; positive = true)
-    logm("read temperature; EOS table $(cfg.eos.table_file) (T_sw = $(eos.T_sw) K)")
+    logm("read temperature; EOS table $(eos_table_path(cfg)) ($(eos_model(eos)), T_sw = $(eos.T_sw) K)")
     res = column_hse(par, grid, T, eos, o)
     vw = config_view(cfg); tsl = slant(vw)
     if tsl != (0.0, 0.0) && res.status == converged          # τ along inclined rays (ViewTau.jl); z(τ=1) on footprints
@@ -114,7 +114,7 @@ function run_column_hse(cfg::Config)
                                   "azimuth_deg" => vw.azimuth_deg, "geometry" => String(vw.geometry),
                                   "z_tau1" => tsl != (0.0, 0.0) ? "on ray footprints (x, y at z = 0)" : "per column",
                                   "wavelength_A" => WL500, "extinction" => "absorption + scattering (counted once)"),
-        "eos" => Dict{String,Any}("table_file" => abspath(cfg.eos.table_file), "table_sha256" => table_sha256(eos),
+        "eos" => Dict{String,Any}("table_file" => abspath(eos_table_path(cfg)), "model" => eos_model(eos), "table_sha256" => table_sha256(eos),
                                   "T_sw" => eos.T_sw, "hot_branch" => eos.hot_branch,
                                   "fix_gasc_h2" => get(eos.meta, "fix_gasc_h2", -1),
                                   "pf_sha256" => get(eos.meta, "pf_sha256", "")),

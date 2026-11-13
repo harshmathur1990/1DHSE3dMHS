@@ -19,6 +19,13 @@ y, all-to-all transpose, FFT in x). Sums are reduced in a rank-dependent order, 
 to rounding, which the iterative modes can amplify (see the root README and the technical PDFs for measured differences). Output is
 written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks then write their slabs in turn.
 
+## Equation of state
+
+These configs use the default LTE Wittmann table (`eos.table_file = "cache/eos_table_fullz.h5"`, `eos.model = "lte"`). The
+NLTE hydrogen ionization of Bifrost hion runs is **experimental and off by default**. To try it, add `model = "nlte"` to
+`[eos]` after building `cache/eos_table_nlte.h5` (`config/eos_table_nlte.toml`). Use it only with a τ input consistent with
+NLTE opacities, or in the column-mass modes. Details are in the root `README.md` ("NLTE equation of state (experimental)").
+
 ## Outputs
 
 * `column-hse-z`: the column HSE file (`/output`, `/diagnostics`, `/input`).

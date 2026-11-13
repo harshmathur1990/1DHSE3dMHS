@@ -1,6 +1,7 @@
 # Bicubic Hermite EOS table (implementation doc §7.6).
 #
-# Fields F1 = ln ρ [kg m-3], F2 = ln nₑ [m-3], F3 = ln χ₅₀₀ [m-1] on X = ln T, Y = ln P.
+# Fields F1 = ln ρ [kg m-3], F2 = ln nₑ [m-3], F3 = ln χ₅₀₀ [m-1] on X = ln T, Y = ln P; tables of
+# the NLTE model (eos.model = "nlte") add F4 = ln n_HI, F5 = ln n_p [m-3].
 # Each node stores (f, f_X, f_Y, f_XY); derivatives from central differences (δ = 1e-3) of
 # the EOS model (direct / blend / hot branch). Axes are nonuniform after refinement; an
 # O(1) bucket lookup finds the cell. Evaluation is allocation-free and thread-safe.
@@ -40,7 +41,7 @@ end
 mutable struct EOSTable <: AbstractEOS
     X::Vector{Float64}
     Y::Vector{Float64}
-    V::Array{Float64,4}              # (4, 3, nX, nY): f, fX, fY, fXY for each field
+    V::Array{Float64,4}              # (4, nfields, nX, nY): f, fX, fY, fXY for each field
     flags::Matrix{UInt8}             # node flags (EOS_ROBUST_FALLBACK, EOS_DIRECT_FAILED, …)
     xb::Bucket
     yb::Bucket
@@ -73,7 +74,7 @@ end
         f |= EOS_BLEND
     end
     @inbounds f |= (tab.flags[p, q] | tab.flags[p+1, q] | tab.flags[p, q+1] | tab.flags[p+1, q+1]) &
-                   (EOS_ROBUST_FALLBACK | EOS_DIRECT_FAILED)
+                   (EOS_ROBUST_FALLBACK | EOS_DIRECT_FAILED | EOS_NLTE)
     return f
 end
 
@@ -138,6 +139,31 @@ end
     n, _ = hermite(tab, 2, p, q, t, s, hX, hY, false)
     c, _ = hermite(tab, 3, p, q, t, s, hX, hY, false)
     return r, n, c, xflags(tab, X, p, q)
+end
+
+nfields(tab::EOSTable) = size(tab.V, 2)
+field_names(nf::Int) = nf == 5 ? LN_FIELDS_H : LN_FIELDS
+field_names(tab::EOSTable) = field_names(nfields(tab))
+
+"""EOS model of a table: "nlte" or "lte" (tables built before the NLTE option are LTE)."""
+eos_model(tab::EOSTable) = String(get(tab.meta, "eos_model", "lte"))
+
+"""(ln n_HI, ln n_p [m-3], status) at (X = ln T, Y = ln P); the table must store them (NLTE tables)."""
+@inline function hydrogen(tab::EOSTable, X::Float64, Y::Float64)
+    nfields(tab) >= 5 || invalid("this EOS table has no hydrogen populations (an LTE table); build one with eos.model = \"nlte\"")
+    in_table(tab, X, Y) || return NaN, NaN, EOS_OUT_OF_ENVELOPE
+    p, q, t, s, hX, hY = locate(tab, X, Y)
+    a, _ = hermite(tab, 4, p, q, t, s, hX, hY, false)
+    b, _ = hermite(tab, 5, p, q, t, s, hX, hY, false)
+    return a, b, xflags(tab, X, p, q)
+end
+
+"""All fields at (X, Y), interpolated (NaNs outside the table)."""
+function fields_at(tab::EOSTable, X::Float64, Y::Float64)
+    nf = nfields(tab)
+    in_table(tab, X, Y) || return fill(NaN, nf)
+    p, q, t, s, hX, hY = locate(tab, X, Y)
+    return [hermite(tab, k, p, q, t, s, hX, hY, false)[1] for k in 1:nf]
 end
 
 # ---------------------------------------------------------------------------------------
@@ -216,28 +242,31 @@ function xstencil(X, breaksX::Vector{Float64})
     end
 end
 
-"""Evaluate one node from 9 model evaluations → (4, 3) block; returns flags."""
+"""Evaluate one node from 9 model evaluations → (4, nfields) block; returns flags."""
 function node_values!(out::AbstractArray{Float64,2}, m::EOSModel, X, Y, st, pfs, n17)
     offs, coef, δx = st
     δ = TABLE_DELTA
-    F = Array{Float64}(undef, 3, 3, 3)          # (field, x-slot, y-slot)
+    nf = size(out, 2)
+    F = Array{Float64}(undef, nf, 3, 3)          # (field, x-slot, y-slot)
     fl = EOS_OK
     ok = true
     for (ia, a) in enumerate(offs), (ib, bb) in enumerate((-1, 0, 1))
-        r, n, c, f, good = model_eval(m, X + a * δx, Y + bb * δ; n17 = n17, pf = pfs[ia])
-        F[1, ia, ib] = r; F[2, ia, ib] = n; F[3, ia, ib] = c
+        v, f, good = model_fields(m, X + a * δx, Y + bb * δ; n17 = n17, pf = pfs[ia])
+        for k in 1:nf
+            F[k, ia, ib] = v[k]
+        end
         (a == 0 && bb == 0) && (fl = f)
         ok &= good
     end
     i0 = findfirst(==(0), offs)
-    for k in 1:3
+    for k in 1:nf
         out[1, k] = F[k, i0, 2]
         out[2, k] = sum(coef[ia] * F[k, ia, 2] for ia in 1:3) / δx
         out[3, k] = (F[k, i0, 3] - F[k, i0, 1]) / (2δ)
         out[4, k] = sum(coef[ia] * (F[k, ia, 3] - F[k, ia, 1]) for ia in 1:3) / (2δ * δx)
     end
     ok || (fl |= EOS_DIRECT_FAILED)
-    return fl & (EOS_ROBUST_FALLBACK | EOS_DIRECT_FAILED)
+    return fl & (EOS_ROBUST_FALLBACK | EOS_DIRECT_FAILED | EOS_NLTE)
 end
 
 """Fill nodes (i, j) with need[i, j] (threaded over X columns, partition functions cached)."""
@@ -249,7 +278,7 @@ function compute_nodes!(V, flags, m::EOSModel, X, Y, need::BitMatrix, breaksX)
         st = xstencil(X[i], breaksX)
         pfs = [hot_pf(h, exp(X[i] + a * st[3])) for a in st[1]]
         n17 = zeros(17)
-        out = zeros(4, 3)
+        out = zeros(4, size(V, 2))
         for j in eachindex(Y)
             need[i, j] || continue
             flags[i, j] = node_values!(out, m, X[i], Y[j], st, pfs, n17)
@@ -261,12 +290,14 @@ end
 """
     check_cells(tab, m; tol) -> (xmark, ymark, maxerr)
 
-Compare the interpolant with the model at X-edge, Y-edge and centre midpoints of every cell.
+Compare the interpolant with the model at X-edge, Y-edge and centre midpoints of every cell
+(n_HI and n_p of NLTE tables to 1e-3 in ln).
 """
-function check_cells(tab::EOSTable, m::EOSModel; tol = (5e-6, 5e-5, 5e-5))
+function check_cells(tab::EOSTable, m::EOSModel; tol = (5e-6, 5e-5, 5e-5, 1e-3, 1e-3))
     nX, nY = length(tab.X), length(tab.Y)
+    nf = nfields(tab)
     xmark = falses(nX - 1); ymark = falses(nY - 1)
-    maxerr = zeros(3, Threads.maxthreadid())
+    maxerr = zeros(nf, Threads.maxthreadid())
     xm_t = [falses(nX - 1) for _ in 1:Threads.maxthreadid()]
     ym_t = [falses(nY - 1) for _ in 1:Threads.maxthreadid()]
     Threads.@threads :dynamic for p in 1:nX-1
@@ -278,14 +309,14 @@ function check_cells(tab::EOSTable, m::EOSModel; tol = (5e-6, 5e-5, 5e-5))
         for q in 1:nY-1
             Ym = 0.5 * (tab.Y[q] + tab.Y[q+1])
             for (X, Y, kind) in ((Xs[1], tab.Y[q], 1), (tab.X[p], Ym, 2), (Xs[1], Ym, 3))
-                r, n, c, _, good = model_eval(m, X, Y; n17 = n17, pf = kind == 2 ? pf0 : pfm)
+                v, _, good = model_fields(m, X, Y; n17 = n17, pf = kind == 2 ? pf0 : pfm)
                 good || continue
-                ri, ni, ci, _ = state(tab, X, Y)
-                e = (abs(ri - r), abs(ni - n), abs(ci - c))
-                for k in 1:3
+                vi = fields_at(tab, X, Y)
+                e = ntuple(k -> abs(vi[k] - v[k]), nf)
+                for k in 1:nf
                     maxerr[k, tid] = max(maxerr[k, tid], e[k])
                 end
-                if any(e[k] > tol[k] for k in 1:3)
+                if any(e[k] > tol[k] for k in 1:nf)
                     kind != 2 && (xm_t[tid][p] = true)
                     kind != 1 && (ym_t[tid][q] = true)
                 end
@@ -307,7 +338,7 @@ function build_table(m::EOSModel, env::Envelope; dlog10T = 0.002, dlog10P = 0.02
     breaksX = [xright(T) for T in model_breaks(m)]
     X = axis_with_breaks(uniform_axis(Base.log(env.T_lo), Base.log(env.T_hi), dlog10T * Base.log(10.0)), breaksX)
     Y = uniform_axis(env.log10P_lo * Base.log(10.0), env.log10P_hi * Base.log(10.0), dlog10P * Base.log(10.0))
-    V = fill(NaN, 4, 3, length(X), length(Y))
+    V = fill(NaN, 4, model_nfields(m), length(X), length(Y))
     flags = zeros(UInt8, length(X), length(Y))
     compute_nodes!(V, flags, m, X, Y, trues(length(X), length(Y)), breaksX)
     @printf(log, "[%7.1fs] table: %d × %d nodes computed\n", time() - t0, length(X), length(Y)); flush(log)
@@ -315,8 +346,9 @@ function build_table(m::EOSModel, env::Envelope; dlog10T = 0.002, dlog10P = 0.02
     tab = EOSTable(X, Y, V, flags, m.T_sw, m.hot_branch, m.mass_per_H, meta)
     for level in 1:refine_max_levels
         xm, ym, maxerr = check_cells(tab, m)
-        msg = @sprintf("level %d: %d × %d nodes, midpoint max |Δ| = %.2e / %.2e / %.2e (ln ρ / ln nₑ / ln χ); marked %d X and %d Y intervals",
-                       level - 1, length(tab.X), length(tab.Y), maxerr..., count(xm), count(ym))
+        msg = @sprintf("level %d: %d × %d nodes, midpoint max |Δ| = %s (%s); marked %d X and %d Y intervals",
+                       level - 1, length(tab.X), length(tab.Y), join([@sprintf("%.2e", e) for e in maxerr], " / "),
+                       join(field_names(tab), " / "), count(xm), count(ym))
         push!(meta["refinement"], msg)
         @printf(log, "[%7.1fs] table: %s\n", time() - t0, msg); flush(log)
         (count(xm) == 0 && count(ym) == 0) && break
@@ -332,7 +364,7 @@ function refine(tab::EOSTable, m::EOSModel, xm::BitVector, ym::BitVector, breaks
     Y = sort(vcat(tab.Y, [0.5 * (tab.Y[q] + tab.Y[q+1]) for q in findall(ym)]))
     ix = [searchsortedfirst(X, x) for x in tab.X]
     iy = [searchsortedfirst(Y, y) for y in tab.Y]
-    V = fill(NaN, 4, 3, length(X), length(Y))
+    V = fill(NaN, 4, nfields(tab), length(X), length(Y))
     flags = zeros(UInt8, length(X), length(Y))
     need = trues(length(X), length(Y))
     for (jo, jn) in enumerate(iy), (io, inn) in enumerate(ix)
@@ -358,36 +390,39 @@ function validate_table(tab::EOSTable, m::EOSModel; n = 10^6, seed = 20261016, n
     rng = Random.Xoshiro(seed)
     Xs = tab.X[1] .+ (tab.X[end] - tab.X[1]) .* rand(rng, n)
     Ys = tab.Y[1] .+ (tab.Y[end] - tab.Y[1]) .* rand(rng, n)
-    err = fill(NaN, 3, n)
+    nf = nfields(tab)
+    err = fill(NaN, nf, n)
     nfail = zeros(Int, Threads.maxthreadid())
     Threads.@threads :dynamic for i in 1:n
         n17 = zeros(17)
-        r, ne, c, _, good = model_eval(m, Xs[i], Ys[i]; n17 = n17)
+        v, _, good = model_fields(m, Xs[i], Ys[i]; n17 = n17)
         if !good
             nfail[Threads.threadid()] += 1
             continue
         end
-        ri, ni, ci, _ = state(tab, Xs[i], Ys[i])
-        err[1, i] = abs(ri - r); err[2, i] = abs(ni - ne); err[3, i] = abs(ci - c)
+        vi = fields_at(tab, Xs[i], Ys[i])
+        for k in 1:nf
+            err[k, i] = abs(vi[k] - v[k])
+        end
     end
     ok = .!isnan.(err[1, :])
     stats = Dict{String,Float64}()
-    for (k, nm) in enumerate(LN_FIELDS)
+    for (k, nm) in enumerate(field_names(tab))
         e = err[k, ok]
         stats[nm*"_max"] = maximum(e)
         stats[nm*"_p999"] = quantile(e, 0.999)
     end
     bx = clamp.(floor.(Int, (Xs .- tab.X[1]) ./ (tab.X[end] - tab.X[1]) .* nbins[1]) .+ 1, 1, nbins[1])
     by = clamp.(floor.(Int, (Ys .- tab.Y[1]) ./ (tab.Y[end] - tab.Y[1]) .* nbins[2]) .+ 1, 1, nbins[2])
-    maps = zeros(3, nbins...)
+    maps = zeros(nf, nbins...)
     for i in 1:n
         ok[i] || continue
-        for k in 1:3
+        for k in 1:nf
             maps[k, bx[i], by[i]] = max(maps[k, bx[i], by[i]], err[k, i])
         end
     end
     worst = Dict{String,Tuple{Float64,Float64}}()
-    for (k, nm) in enumerate(LN_FIELDS)
+    for (k, nm) in enumerate(field_names(tab))
         e = copy(err[k, :]); e[.!ok] .= -1
         i = argmax(e)
         worst[nm] = (exp(Xs[i]), exp(Ys[i]))
@@ -448,7 +483,7 @@ function save_table(path::AbstractString, tab::EOSTable, meta::AbstractDict)
     h5open(path, "w") do f
         f["X"] = tab.X
         f["Y"] = tab.Y
-        for (k, nm) in enumerate(LN_FIELDS), (c, comp) in enumerate(("f", "fX", "fY", "fXY"))
+        for (k, nm) in enumerate(field_names(tab)), (c, comp) in enumerate(("f", "fX", "fY", "fXY"))
             f["$nm/$comp"] = tab.V[c, k, :, :]
         end
         f["flags"] = tab.flags
@@ -462,13 +497,17 @@ function save_table(path::AbstractString, tab::EOSTable, meta::AbstractDict)
     end
 end
 
-"""Load a table; verifies its SHA-256 and (optionally) the partition-function file hash."""
-function load_table(path::AbstractString; pf_file = nothing)
-    isfile(path) || invalid("EOS table $path does not exist (build it with scripts/build_eos_table.jl)")
+"""
+Load a table; verifies its SHA-256, (optionally) the partition-function file hash and, when
+`model` ("lte" or "nlte") is given, that the table is of that EOS model.
+"""
+function load_table(path::AbstractString; pf_file = nothing, model = nothing)
+    isfile(path) || invalid("EOS table $path does not exist (build it with run.mode = \"eos_table\")")
     h5open(path, "r") do f
         X = read(f["X"]); Y = read(f["Y"])
-        V = Array{Float64}(undef, 4, 3, length(X), length(Y))
-        for (k, nm) in enumerate(LN_FIELDS), (c, comp) in enumerate(("f", "fX", "fY", "fXY"))
+        names = haskey(f, "lnnhi") ? LN_FIELDS_H : LN_FIELDS
+        V = Array{Float64}(undef, 4, length(names), length(X), length(Y))
+        for (k, nm) in enumerate(names), (c, comp) in enumerate(("f", "fX", "fY", "fXY"))
             V[c, k, :, :] = read(f["$nm/$comp"])
         end
         flags = read(f["flags"])
@@ -483,6 +522,8 @@ function load_table(path::AbstractString; pf_file = nothing)
             file_sha256(pf_file) == meta["pf_sha256"] ||
                 invalid("EOS table $path was built with a different partition-function file")
         end
+        model === nothing || eos_model(tab) == model ||
+            invalid("EOS table $path is an $(uppercase(eos_model(tab))) table, but eos.model = \"$model\"")
         return tab
     end
 end

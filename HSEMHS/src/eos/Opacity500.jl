@@ -392,12 +392,13 @@ function h2raop(xh1, freq, t, tkev, tlog)
 end
 
 """
-    cop(T, TKEV, TK, HKT, TLOG, XNA, XNE, WL, n17) -> (extinction, scattering)  [cm⁻¹]
+    cop(T, TKEV, TK, HKT, TLOG, XNA, XNE, WL, n17; hexc=1) -> (extinction, scattering)  [cm⁻¹]
 
 `n17` are the background partials (H1, H2, HMIN, HE1, HE2, HE3, C1, AL1, SI1, SI2, CA1,
-CA2, MG1, MG2, FE1, N1, O1), cm⁻³, divided by partition functions.
+CA2, MG1, MG2, FE1, N1, O1), cm⁻³, divided by partition functions. `hexc` scales H1 in the hydrogen
+bound-free and free-free term (`hop`, excited levels by Boltzmann from H1) only; 1 is the original.
 """
-function cop(t, tkev, tk, hkt, tlog, xna, xne, wl, n::AbstractVector)
+function cop(t, tkev, tk, hkt, tlog, xna, xne, wl, n::AbstractVector; hexc = 1.0)
     h1, h2, hmin, he1, he2, he3, c1, al1, si1, si2, ca1, ca2, mg1, mg2, fe1, n1, o1 = ntuple(i -> n[i], 17)
     freq = 2.997925e18 / wl
     freqlg = log(freq)
@@ -405,7 +406,7 @@ function cop(t, tkev, tk, hkt, tlog, xna, xne, wl, n::AbstractVector)
     ehvkt = exp(-freq * hkt)
     stim = 1.0 - ehvkt
     acool = 0.0; aluke = 0.0
-    ahyd = hop(xne, h1, h2, freq, freqlg, t, tlog, tkev, stim, ehvkt)
+    ahyd = hop(xne, h1 * hexc, h2, freq, freqlg, t, tlog, tkev, stim, ehvkt)
     ah2p = h2plop(h1, h2, freq, freqlg, freq15, tkev, stim)
     ahmin = hminop(h1, hmin, freq, t, tkev, xne, ehvkt)
     sigh = hrayop(h1, freq)
@@ -423,10 +424,10 @@ function cop(t, tkev, tk, hkt, tlog, xna, xne, wl, n::AbstractVector)
     return a + b, b
 end
 
-"""Extinction at 5000 Å in m⁻¹ (absorption + scattering, counted once)."""
-function chi500_m(T, n17::AbstractVector, xna, xne)
+"""Extinction at 5000 Å in m⁻¹ (absorption + scattering, counted once); `hexc` as in `cop`."""
+function chi500_m(T, n17::AbstractVector, xna, xne; hexc = 1.0)
     tk = T * BK_CGS
     tkev = tk / EV_CGS
-    opac, _ = cop(T, tkev, tk, HH_CGS / tk, log(T), xna, xne, WL500, n17)
+    opac, _ = cop(T, tkev, tk, HH_CGS / tk, log(T), xna, xne, WL500, n17; hexc = hexc)
     return 100.0 * opac
 end

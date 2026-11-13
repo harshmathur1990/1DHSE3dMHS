@@ -1,0 +1,7 @@
+registration: swap false, offsets (1, 2), flips (false, true)
+grid 252 × 252 × 467, dx 95.24 km, dy 95.24 km; μ 1.0000 (θ 0.00°), φ 0.0°, t = (0.0000, 0.0000), max shift 0.0 cells; τ from eos; axis -8.00 … 1.40 (95)
+χ500 outside the table at 0 points
+sheared
+log10 τ at the top of the rays: p50 -9.41, p99 -7.39, max -7.26; 11609 rays above the axis minimum -8.0 (top extrapolated)
+rays not reaching the bottom of the τ axis: 0 of 63504
+wrote /mn/stornext/d9/data/harshm/MHS/IO/tau252_nlte/input_eosnlte_mu1.0.nc and /mn/stornext/d9/data/harshm/MHS/IO/tau252_nlte/truth_eosnlte_mu1.0.h5
