@@ -86,11 +86,13 @@ end
 
 """
 Hydrogen/donor balance at given pe (cgs), the exact system solved by Wittmann's pe_pg,
-written without its 1e±15 clamps and with cancellation-free roots.
+written without its 1e±15 clamps and with cancellation-free roots. `dH` multiplies the
+hydrogen Saha ratio p(H+)/p(H) by 10^dH (NLTE.jl); dH = 0 is the LTE model.
 Returns (f1, f2, f3, f4, f5, fe, g1).
 """
-function hydrogen_fractions(h::HotEOS, theta, uH, us, pe)
+function hydrogen_fractions(h::HotEOS, theta, uH, us, pe; dH = 0.0)
     g2 = saha_w(theta, h.eion[1][1], uH[1], uH[2], pe)          # p(H+)/p(H)
+    dH == 0 || (g2 *= exp10(dH))
     g3 = 1.0 / saha_w(theta, 0.754, 1.0, uH[1], pe)             # p(H-)/p(H)
     g1 = 0.0
     @inbounds for q in 1:NCONTR-1
@@ -129,18 +131,19 @@ function hot_pf(h::HotEOS, T)
 end
 
 """
-    hot_solve(h, T, P) -> (rho [kg m-3], ne [m-3], pe_cgs, ok)
+    hot_solve(h, T, P; pf, dH = 0) -> (rho [kg m-3], ne [m-3], pe_cgs, ok)
 
 Robust solution of the direct solver's equations: root of ln pe' (pe) − ln pe with
-pe' = pg / (1 + (Σf + ab_others)/fe), bracketed in [1e-30 pg, pg).
+pe' = pg / (1 + (Σf + ab_others)/fe), bracketed in [1e-30 pg, pg). `dH`: NLTE hydrogen
+departure, see `hydrogen_fractions`.
 """
-function hot_solve(h::HotEOS, T::Float64, P::Float64; pf = hot_pf(h, T))
+function hot_solve(h::HotEOS, T::Float64, P::Float64; pf = hot_pf(h, T), dH = 0.0)
     pg = P * 10.0
     theta = 5040.0 / T
     uH, us = pf
     function G(lp)
         pe = exp(lp)
-        f1, f2, f3, f4, f5, fe, _ = hydrogen_fractions(h, theta, uH, us, pe)
+        f1, f2, f3, f4, f5, fe, _ = hydrogen_fractions(h, theta, uH, us, pe; dH = dH)
         pnew = pg / (1 + (f1 + f2 + f3 + f4 + f5 + h.ab_others) / fe)
         return lp - log(pnew)            # increasing in lp
     end
@@ -160,13 +163,13 @@ function hot_solve(h::HotEOS, T::Float64, P::Float64; pf = hot_pf(h, T))
         return NaN, NaN, NaN, false
     end
     pe = exp(lp)
-    _, _, _, _, _, fe, _ = hydrogen_fractions(h, theta, uH, us, pe)
+    _, _, _, _, _, fe, _ = hydrogen_fractions(h, theta, uH, us, pe; dH = dH)
     rho_cgs = pe * h.rho_from_H / (fe * T)
     return rho_cgs * 1e3, pe / (BK_CGS * T) * 1e6, pe, isfinite(rho_cgs) && rho_cgs > 0
 end
 
 """Background partials (same layout and conventions as the C++ background_partials)."""
-function hot_partials!(n::Vector{Float64}, h::HotEOS, T::Float64, P::Float64, pe::Float64; pf = hot_pf(h, T))
+function hot_partials!(n::Vector{Float64}, h::HotEOS, T::Float64, P::Float64, pe::Float64; pf = hot_pf(h, T), dH = 0.0)
     pg = P * 10.0
     theta = 5040.0 / T
     tk = BK_CGS * T
@@ -203,7 +206,7 @@ function hot_partials!(n::Vector{Float64}, h::HotEOS, T::Float64, P::Float64, pe
     ion!(x, 26, 0); n[15] = x[1]
     ion!(x, 7, 0); n[16] = x[1]
     ion!(x, 8, 0); n[17] = x[1]
-    f1, f2, f3, _, _, fe, _ = hydrogen_fractions(h, theta, uH, us, pe)
+    f1, f2, f3, _, _, fe, _ = hydrogen_fractions(h, theta, uH, us, pe; dH = dH)
     phtot = pe / fe
     n[1] = f1 * phtot / tk * 0.5
     n[2] = f2 * phtot / tk

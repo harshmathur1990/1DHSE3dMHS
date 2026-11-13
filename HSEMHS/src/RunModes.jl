@@ -33,7 +33,7 @@ function tau_setup(cfg, tag, mode::Symbol)
     (dx > 0 && dy > 0) || invalid("$path: x and y must increase")
     issorted(lt) || invalid("$axname must increase (top level first) in $path")
     g = tau_gravity(cfg, path)
-    tab = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)
+    tab = load_eos(cfg)
     G = cfg.tau_grid; P = cfg.poisson
     column = ColumnTauOptions(align = G.align)
     gn = !gn_mode(mode) ? nothing :
@@ -56,7 +56,7 @@ function tau_setup(cfg, tag, mode::Symbol)
                   path, nt, axname, lt[1], lt[end], NX, NY, dx / 1e3, g, par.nranks, Threads.nthreads()))
     vw.mu == 1.0 || logm(@sprintf("view: μ %.4f (θ %.2f°), azimuth %.1f°, geometry %s; %s is along the line of sight",
                                     vw.mu, acosd(vw.mu), vw.azimuth_deg, vw.geometry, mass ? "m" : "τ"))
-    return (; ws, par, logm, mass, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = cfg.eos.table_file, view = vw)
+    return (; ws, par, logm, mass, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = eos_table_path(cfg), view = vw)
 end
 
 """log10 τ500 (`mass`: log10 m [kg m⁻²]), x and y [m] of a τ-grid or column-mass input (`PoissonTau.read_tau_input`)."""
@@ -92,7 +92,7 @@ function write_tau_grid(s, out, lt, z, lnP, attrs; logtau = nothing, zt1m = noth
              "$grp/Bz" => xyz_of(s.Bz), "$grp/z_tau1_m" => zt1]
     s.mass && push!(slabs, "$grp/logtau500" => xyz_of(logtau))
     small = ["$grp/$(s.mass ? "log10m" : "logtau500")" => lt, "coords/x_m" => s.x, "coords/y_m" => s.y]
-    a = Dict{String,Any}("input" => abspath(s.path), "eos_table" => abspath(s.table_file),
+    a = Dict{String,Any}("input" => abspath(s.path), "eos_table" => abspath(s.table_file), "eos_model" => eos_model(s.tab),
                          "g" => s.g, "mpi_ranks" => s.par.nranks, "threads" => Threads.nthreads(),
                          "units" => s.mass ? "SI: log10m of m in kg m-2, z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, m), h5py (m, y, x)" :
                                     "SI: z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, τ), h5py (τ, y, x)")
@@ -209,7 +209,7 @@ function run_mhs_poisson_z(cfg::Config)
     ensure_mpi()
     g = input_gravity(cfg.physics.g, spec)
     o, Psrc = hse_opts_from_config(cfg, spec, g)
-    eos = load_table(cfg.eos.table_file; pf_file = cfg.eos.pf_file)
+    eos = load_eos(cfg)
     column = ColumnZOptions(anchor = o.anchor, P_ref = o.P_ref, z_ref = o.z_ref, n_sub = o.n_sub, adapt = o.adapt,
                             rk_tol = o.rk_tol, n_sub_max = o.n_sub_max, tau_top = o.tau_top, H_max = o.H_max, mu = o.mu)
     poisson = PoissonZOptions(z_cut_m = P.z_cut_m, max_steps = P.max_steps == 0 ? 100 : P.max_steps, rtol = P.rtol, n_consec = P.n_consec,
@@ -243,7 +243,7 @@ function run_mhs_poisson_z(cfg::Config)
                  "atmosphere/z_tau1_m" => permutedims(zt1, (2, 1))]
         small = ["coords/x_m" => spec.x, "coords/y_m" => spec.y, "coords/z_m" => z]
         a = Dict{String,Any}("kind" => "poisson_step", "mode" => "mhs-poisson-z", "accepted" => 0, "input" => abspath(I.file),
-                             "z_cut_m" => P.z_cut_m, "eos_table" => abspath(cfg.eos.table_file), "phi_start" => st.phi0,
+                             "z_cut_m" => P.z_cut_m, "eos_table" => abspath(eos_table_path(cfg)), "eos_model" => eos_model(eos), "phi_start" => st.phi0,
                              "phi_end" => st.phi, "steps" => st.steps, "P_ref_Pa" => o.P_ref, "anchor" => String(o.anchor),
                              "g" => g, "mpi_ranks" => par.nranks, "threads" => Threads.nthreads(),
                              "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement,

@@ -1,0 +1,25 @@
+# The NLTE EOS/opacity table (cache/eos_table_nlte.h5): the envelope, grid and settings of
+# config/eos_table_bifrost385_fullz.toml, with the hydrogen ionization of the Bifrost hion runs
+# (data/nlte/nlte_hion_correction.h5, scripts/nlte/make_nlte_correction.py; src/eos/NLTE.jl).
+[run]
+mode = "eos_table"
+output = "reports/gate1_table_nlte.h5"
+overwrite = true
+
+[input]
+file = "../IO/input-mhs-hse-fullz.nc"        # not read in this mode
+
+[eos]
+model = "nlte"
+pf_file = "../wittman-eos/pf_Kurucz.input"
+nlte_table_file = "cache/eos_table_nlte.h5"
+nlte_correction = "data/nlte/nlte_hion_correction.h5"
+envelope_from = "reports/gate0_bifrost385_fullz.h5"
+logP_range = [-13.0, 15.0]
+prec = 1e-10
+maxit = 5000
+dlog10T = 0.002
+dlog10P = 0.02
+refine_max_levels = 3                        # two refinements: 4076 × 2534 nodes, max |Δ ln| 1.3e-3 (ρ), 5e-3 (nₑ, χ₅₀₀), 5e-2 (n_HI, n_p);
+                                             # a third would give 27 M nodes (4 GB per rank) for errors far below the model uncertainty
+validate_points = 1000000

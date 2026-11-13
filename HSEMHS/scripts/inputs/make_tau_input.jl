@@ -26,9 +26,10 @@ get the top values of T and B and a linear extrapolation of z, ln P, ln ρ (coun
 must reach the bottom of the axis.
 
 usage: julia --project=. -t N scripts/inputs/make_tau_input.jl DIR BIFROST.nc OUT_INPUT.nc OUT_TRUTH.h5 [KEY=VALUE ...]
-KEY: mu (1), azimuth_deg (0), tau (eos | multi3d), lt_min (-8), lt_max (1.4), dlt (0.1).
+KEY: mu (1), azimuth_deg (0), tau (eos | multi3d), lt_min (-8), lt_max (1.4), dlt (0.1), table (cache/eos_table_fullz.h5:
+the EOS table of the χ₅₀₀ that tau=eos integrates, e.g. cache/eos_table_nlte.h5).
 OUT_INPUT: log10tau500, x, y [m], temperature, B_x, B_y, B_z; h5py (x, y, τ); attributes view_*, tau_source, grid, source.
-OUT_TRUTH: truth/{z_m, lnP, lnrho, T} h5py (τ, y, x), truth/z_tau1_m (y, x), logtau500, x_m, y_m.
+OUT_TRUTH: truth/{z_m, lnP, lnrho, lnne, T} h5py (τ, y, x), truth/z_tau1_m (y, x), logtau500, x_m, y_m.
 =#
 using HSEMHS
 using HDF5
@@ -105,7 +106,8 @@ end
 
 function main(dir, bfile, out_in, out_truth, kv...)
     H.ensure_mpi()
-    o = Dict("mu" => "1", "azimuth_deg" => "0", "tau" => "eos", "lt_min" => "-8", "lt_max" => "1.4", "dlt" => "0.1")
+    o = Dict("mu" => "1", "azimuth_deg" => "0", "tau" => "eos", "lt_min" => "-8", "lt_max" => "1.4", "dlt" => "0.1",
+             "table" => "cache/eos_table_fullz.h5")
     for a in kv
         k, v = split(a, "="; limit = 2)
         haskey(o, k) || error("unknown key $k"); o[k] = v
@@ -119,7 +121,7 @@ function main(dir, bfile, out_in, out_truth, kv...)
     v = H.ViewOptions(mu = μ, azimuth_deg = φ, geometry = :inclined)
     isempty(H.option_errors(v)) || error(join(H.option_errors(v), "; "))
     t = H.slant(v)
-    tab = H.load_table("cache/eos_table_fullz.h5")
+    tab = H.load_table(o["table"])
 
     # the run's atmosphere and the netCDF on the run's columns, ordered x, y increasing: Julia (z, y, x)
     nx, ny, nz, z = multi3d_mesh(dir)
@@ -137,7 +139,7 @@ function main(dir, bfile, out_in, out_truth, kv...)
     on_cols(A) = A[:, cy, cx]
     x = xb[cx]; y = yb[cy]; NX = nx; NY = ny; dx = x[2] - x[1]; dy = y[2] - y[1]
     lT = log.(permutedims(Float64.(Tm[px, py, :]), (3, 2, 1)))      # the run's T, (z, y, x)
-    lP = log.(on_cols(rd("gas_pressure"))); lr = log.(on_cols(rd("density")))
+    lP = log.(on_cols(rd("gas_pressure"))); lr = log.(on_cols(rd("density"))); lne = log.(on_cols(rd("electron_density")))
     Bx = on_cols(rd("B_x")); By = on_cols(rd("B_y")); Bz = on_cols(rd("B_z"))
     close(bf)
     @printf("grid %d × %d × %d, dx %.2f km, dy %.2f km; μ %.4f (θ %.2f°), φ %.1f°, t = (%.4f, %.4f), max shift %.1f cells; τ from %s; axis %.2f … %.2f (%d)\n",
@@ -153,12 +155,12 @@ function main(dir, bfile, out_in, out_truth, kv...)
     println("χ500 outside the table at $(nbad[]) points")
     par = H.slab_par(MPI.COMM_WORLD, NX, NY, nz)
     S(A) = H.shear_levels(par, A, z, dx, dy, t, 1.0)
-    sχ = S(chi); sT = S(lT); sP = S(lP); sr = S(lr); sBx = S(Bx); sBy = S(By); sBz = S(Bz)
+    sχ = S(chi); sT = S(lT); sP = S(lP); sr = S(lr); sne = S(lne); sBx = S(Bx); sBy = S(By); sBz = S(Bz)
     println("sheared")
     LM = m3d ? permutedims(log10.(Float64.(read_f32(joinpath(dir, "H", "tau500"), nx, ny, nz)[px, py, :])), (3, 2, 1)) :
                nothing                                              # (z, y, x)
     T_in = fill(NaN, nt, NY, NX); bx = similar(T_in); by = similar(T_in); bz = similar(T_in)
-    zt = similar(T_in); uP = similar(T_in); ur = similar(T_in); z1 = fill(NaN, NY, NX); z1eos = fill(NaN, NY, NX)
+    zt = similar(T_in); uP = similar(T_in); ur = similar(T_in); une = similar(T_in); z1 = fill(NaN, NY, NX); z1eos = fill(NaN, NY, NX)
     nmiss = Threads.Atomic{Int}(0); nmono = Threads.Atomic{Int}(0); ntop = Threads.Atomic{Int}(0); ltop = fill(NaN, NY, NX)
     Threads.@threads for i in 1:NX
         tc = zeros(nz)
@@ -184,6 +186,7 @@ function main(dir, bfile, out_in, out_truth, kv...)
                 zt[k, j, i] = interp_at(z, lτ, lt[k]; top = :extrapolate)
                 uP[k, j, i] = interp_at(@view(sP[:, j, i]), lτ, lt[k]; top = :extrapolate)
                 ur[k, j, i] = interp_at(@view(sr[:, j, i]), lτ, lt[k]; top = :extrapolate)
+                une[k, j, i] = interp_at(@view(sne[:, j, i]), lτ, lt[k]; top = :extrapolate)
             end
         end
     end
@@ -203,7 +206,7 @@ function main(dir, bfile, out_in, out_truth, kv...)
         r >= 0.9 || error("the run's z(τ=1) does not follow the table's own (corr $r): misregistered τ500?")
     end
     src = abspath(bfile)
-    tsrc = LM === nothing ? "eos: Tau.tau_column! with chi500 of cache/eos_table_fullz.h5" :
+    tsrc = LM === nothing ? "eos: Tau.tau_column! with chi500 of $(o["table"]) ($(H.eos_model(tab)))" :
                             "multi3d: " * abspath(joinpath(dir, "H", "tau500"))
     gsrc = "MULTI3D run " * abspath(dir) * " (T from atm3d); B, P, rho from the netCDF columns x[$(cx[1]):2:$(cx[end])], y[$(cy[1]):2:$(cy[end])] (1-based)"
     h5open(out_in, "w") do f
@@ -219,7 +222,7 @@ function main(dir, bfile, out_in, out_truth, kv...)
     end
     h5open(out_truth, "w") do f
         p(A) = permutedims(A, ndims(A):-1:1)                       # Julia (x, y, τ): h5py (τ, y, x) as the run outputs
-        f["truth/z_m"] = p(zt); f["truth/lnP"] = p(uP); f["truth/lnrho"] = p(ur); f["truth/T"] = p(T_in)
+        f["truth/z_m"] = p(zt); f["truth/lnP"] = p(uP); f["truth/lnrho"] = p(ur); f["truth/lnne"] = p(une); f["truth/T"] = p(T_in)
         f["truth/z_tau1_m"] = p(z1)
         f["logtau500"] = lt; f["x_m"] = x; f["y_m"] = y
         a = attributes(f)

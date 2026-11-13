@@ -397,7 +397,7 @@ end
 
 """
     prepare_embedded(comm, mode; axis, x, y, eos, g, column, poisson=nothing, logf=s->nothing, progress=false,
-                     view=ViewOptions()) -> EmbeddedWorkspace
+                     view=ViewOptions(), eos_model=nothing) -> EmbeddedWorkspace
 
 Collective over `comm`. `mode` ∈ $(EMBEDDED_MODES). `axis` is the height axis z [m] (top first, decreasing) for the
 height modes, the log10 τ500 axis (increasing) for the τ modes or the log10 m axis (increasing; m [kg m⁻²] along the line of
@@ -409,9 +409,12 @@ context duplicates `comm`; release it with `free_embedded!`. `progress = true` (
 progress bar over this rank's columns during column HSE. `view` (a ViewOptions) is the viewing angle, fixed for the
 workspace: in the τ modes the axis is then τ along the line of sight (plane-parallel or inclined geometry); in the height
 modes μ and the geometry only change the returned τ (τ_LOS at the grid points; z_tau1 on the ray footprints).
+`eos_model` ("lte" or "nlte"), when given, must be the EOS model of the table (`eos_model(table)`); NLTE tables also give
+the atomic neutral hydrogen and proton densities, `hydrogen(table, ln T, ln P)`.
 """
 function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, column, poisson = nothing,
-                          logf = s -> nothing, progress::Bool = false, view::ViewOptions = ViewOptions())
+                          logf = s -> nothing, progress::Bool = false, view::ViewOptions = ViewOptions(),
+                          eos_model::Union{Nothing,AbstractString} = nothing)
     # stage 1: local checks and the EOS table, agreed before any collective construction
     local_state = agree(comm, "prepare_embedded($mode)") do
         mode in EMBEDDED_MODES || invalid("mode must be one of $(EMBEDDED_MODES), got :$mode")
@@ -443,6 +446,9 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
         msg === nothing || invalid(msg)
         tab = eos isa EOSTable ? eos : eos isa AbstractString ? load_table(eos) :
               invalid("eos must be an EOSTable or a table path")
+        eos_model === nothing || eos_model in ("lte", "nlte") || invalid("eos_model must be \"lte\" or \"nlte\", got \"$eos_model\"")
+        eos_model === nothing || HSEMHS.eos_model(tab) == eos_model ||
+            invalid("the EOS table is an $(uppercase(HSEMHS.eos_model(tab))) table, but eos_model = \"$eos_model\"")
         (ax, xs, ys, dx, dy, tab, col)
     end
     ax, xs, ys, dx, dy, tab, col = local_state
