@@ -101,6 +101,27 @@ ts = @testset "MPI n=$R" begin
     write_pattern(par, path)
     ok = MPI.Comm_rank(comm) == 0 ? check_pattern(path, 10, 8, 9) : true
     @test MPI.bcast(ok, comm; root = 0)
+    # parallel HDF5 (collective MPI-IO) writes the same datasets as the token ring: write_fields (chunked, deflate)
+    # and the slab writer (contiguous, 1-, 2- and 3-D)
+    if HDF5.has_parallel() && R > 1
+        out = (parallel_hdf5 = true, parallel_fs = [H.fs_type(path)])
+        io, why = H.hdf5_io(par, out, path)
+        @test io === :parallel && occursin("file system", why)
+        @test H.hdf5_io(par, (parallel_hdf5 = true, parallel_fs = String[]), path)[1] === :cooperative
+        ppath = joinpath(dir, "out_mpi_parallel.h5")
+        write_pattern(par, ppath; io = :parallel)
+        ok = MPI.Comm_rank(comm) == 0 ? check_pattern(ppath, 10, 8, 9) && same_datasets(path, ppath) : true
+        @test MPI.bcast(ok, comm; root = 0)
+        sp = H.Slab.slab_par(14, 6, 5); ir = H.Slab.owned_x(sp)
+        slabs = ["g/a3" => [i + 100.0j + 1e4k for i in ir, j in 1:6, k in 1:5], "g/a2" => [Float32(i - j) for i in ir, j in 1:6],
+                 "g/a1" => [Int32(i^2) for i in ir]]
+        small = ["coords/x" => collect(1.0:14.0)]
+        sc, sq = joinpath(dir, "slab_coop.h5"), joinpath(dir, "slab_par.h5")
+        H.Slab.coop_write(sp, sc, slabs, small, Dict{String,Any}("k" => 1))
+        H.Slab.coop_write(sp, sq, slabs, small, Dict{String,Any}("k" => 1); io = :parallel)
+        ok = MPI.Comm_rank(comm) == 0 ? same_datasets(sc, sq) && h5read(sq, "g/a3")[14, 6, 5] == 14 + 600.0 + 5e4 : true
+        @test MPI.bcast(ok, comm; root = 0)
+    end
 end
 
 nfail = 0   # reaching here means the top-level testset passed (it throws otherwise)

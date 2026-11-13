@@ -56,7 +56,9 @@ function tau_setup(cfg, tag, mode::Symbol)
                   path, nt, axname, lt[1], lt[end], NX, NY, dx / 1e3, g, par.nranks, Threads.nthreads()))
     vw.mu == 1.0 || logm(@sprintf("view: μ %.4f (θ %.2f°), azimuth %.1f°, geometry %s; %s is along the line of sight",
                                     vw.mu, acosd(vw.mu), vw.azimuth_deg, vw.geometry, mass ? "m" : "τ"))
-    return (; ws, par, logm, mass, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = eos_table_path(cfg), view = vw)
+    io, io_why = hdf5_io(par, cfg.output, cfg.run.output)
+    logm(hdf5_io_line(io, io_why))
+    return (; ws, par, logm, mass, lt, x, y, T, Bx, By, Bz, dx, dy, g, tab, t0, path, table_file = eos_table_path(cfg), view = vw, io)
 end
 
 """log10 τ500 (`mass`: log10 m [kg m⁻²]), x and y [m] of a τ-grid or column-mass input (`PoissonTau.read_tau_input`)."""
@@ -93,12 +95,12 @@ function write_tau_grid(s, out, lt, z, lnP, attrs; logtau = nothing, zt1m = noth
     s.mass && push!(slabs, "$grp/logtau500" => xyz_of(logtau))
     small = ["$grp/$(s.mass ? "log10m" : "logtau500")" => lt, "coords/x_m" => s.x, "coords/y_m" => s.y]
     a = Dict{String,Any}("input" => abspath(s.path), "eos_table" => abspath(s.table_file), "eos_model" => eos_model(s.tab),
-                         "g" => s.g, "mpi_ranks" => s.par.nranks, "threads" => Threads.nthreads(),
+                         "g" => s.g, "mpi_ranks" => s.par.nranks, "threads" => Threads.nthreads(), "hdf5_io" => String(s.io),
                          "units" => s.mass ? "SI: log10m of m in kg m-2, z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, m), h5py (m, y, x)" :
                                     "SI: z m, Pgas Pa, rho kg m-3, T K, B T; arrays Julia (x, y, τ), h5py (τ, y, x)")
     merge!(a, attrs)
     merge!(a, view_attrs(s.view))
-    coop_write(s.par, out, slabs, small, a)
+    coop_write(s.par, out, slabs, small, a; io = s.io)
     zq = gquantiles(s.par, s.mass ? zt1m : z[argmin(abs.(lt)), :, :], [0.01, 0.5, 0.99]) ./ 1e3
     s.logm(@sprintf("z(τ=1) p1/p50/p99 %.1f / %.1f / %.1f km; wrote %s", zq..., out))
 end
@@ -224,6 +226,8 @@ function run_mhs_poisson_z(cfg::Config)
         out = check_output(par, cfg)
         logm(@sprintf("grid %d×%d×%d, z_cut %.3f Mm, anchor %s P_ref = %.6g Pa (%s), g = %.3f, ranks %d (x slabs), threads %d",
                       NX, NY, NZ, P.z_cut_m / 1e6, o.anchor, o.P_ref, Psrc, g, par.nranks, Threads.nthreads()))
+        io, io_why = hdf5_io(par, cfg.output, out)
+        logm(hdf5_io_line(io, io_why))
         Tf = read_field(spec, par, I.temperature, :temperature; positive = true)
         T = zyx_of(Tf, b)
         Bx, By, Bz = (zyx_of(read_field(spec, par, nm, :field), b) for nm in (I.bx, I.by, I.bz))
@@ -245,11 +249,11 @@ function run_mhs_poisson_z(cfg::Config)
         a = Dict{String,Any}("kind" => "poisson_step", "mode" => "mhs-poisson-z", "accepted" => 0, "input" => abspath(I.file),
                              "z_cut_m" => P.z_cut_m, "eos_table" => abspath(eos_table_path(cfg)), "eos_model" => eos_model(eos), "phi_start" => st.phi0,
                              "phi_end" => st.phi, "steps" => st.steps, "P_ref_Pa" => o.P_ref, "anchor" => String(o.anchor),
-                             "g" => g, "mpi_ranks" => par.nranks, "threads" => Threads.nthreads(),
+                             "g" => g, "mpi_ranks" => par.nranks, "threads" => Threads.nthreads(), "hdf5_io" => String(io),
                              "stop_reason" => String(st.reason), "gn_decrement" => st.gn_decrement,
                              "units" => "SI: Pgas Pa, rho kg m-3, T K, B T, z m (top first); arrays Julia (x, y, z), h5py (z, y, x)")
         merge!(a, view_attrs(vw))
-        coop_write(par, out, slabs, small, a)
+        coop_write(par, out, slabs, small, a; io = io)
         clear_failure_record(par, out)
         logm("wrote $out")
     finally

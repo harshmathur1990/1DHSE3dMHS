@@ -161,7 +161,8 @@ const CONFIG_SCHEMA = [
         "py" => 0,
     ],
     "output" => [
-        "parallel_hdf5" => false,
+        "parallel_hdf5" => false,      # collective MPI-IO writes when also > 1 rank, HDF5.has_parallel() and the output on parallel_fs; else cooperative
+        "parallel_fs" => ["lustre", "gpfs", "beegfs", "pvfs2", "orangefs", "panfs", "wekafs"],   # file-system types (/proc/self/mounts) counted as parallel
         "compression" => 4,
     ],
 ]
@@ -192,6 +193,9 @@ function coerce(default, value, key)
         value isa AbstractVector || invalid("config key $key must be an array of numbers")
         all(v -> v isa Real, value) || invalid("config key $key must be an array of numbers")
         return Float64.(value)
+    elseif default isa Vector{String}
+        (value isa AbstractVector && all(v -> v isa String, value)) || invalid("config key $key must be an array of strings")
+        return String.(value)
     elseif default isa Float64
         value isa Real && return Float64(value)
         value isa String && return value          # e.g. "from_input"
@@ -260,7 +264,7 @@ load_config(path::AbstractString) = parse_config(read(path, String); path = path
 
 """Keys added after configs were hashed: part of the hash only when set to a non-default value."""
 const HASH_IF_SET = union(Set("poisson." .* ["lm", "forcing", "cg_cap", "eta_min", "eta_max", "precond", "klow", "damping", "logm_cut", "qual_maxit"]),
-                          Set("eos." .* ["model", "nlte_table_file", "nlte_correction"]))
+                          Set("eos." .* ["model", "nlte_table_file", "nlte_correction"]), Set(["output.parallel_fs"]))
 
 """SHA-256 of the canonical parsed config, excluding keys irrelevant to restart identity."""
 function config_hash(cfg::Config)

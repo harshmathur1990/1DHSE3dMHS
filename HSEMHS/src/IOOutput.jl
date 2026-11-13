@@ -1,8 +1,10 @@
 # Output writer (implementation doc §11).
 #
 # No parallel HDF5 needed: rank 0 creates every dataset at its global shape, then ranks
-# write their owned hyperslabs in turn (token ring). On disk, 3D datasets follow the C
-# convention (x, y, z), which Julia sees as (z, y, x).
+# write their owned hyperslabs in turn (token ring). With output.parallel_hdf5 on a parallel
+# file system (`hdf5_io`) the ranks write the same hyperslabs at once with collective MPI-IO
+# instead; the file layout is the same. On disk, 3D datasets follow the C convention (x, y, z),
+# which Julia sees as (z, y, x).
 
 """A distributed 3D dataset to write: owned region of `data` goes to `path` in the file."""
 struct FieldOut
@@ -54,6 +56,55 @@ function create_output(par::ParCtx, path::AbstractString; overwrite::Bool = fals
     return nothing
 end
 
+"""
+    fs_type(path) -> String
+
+File-system type of the directory holding `path` (its nearest existing ancestor), from the longest matching mount
+point in /proc/self/mounts; "" when unknown (not Linux).
+"""
+function fs_type(path::AbstractString)
+    (Sys.islinux() && isfile("/proc/self/mounts")) || return ""
+    d = dirname(abspath(path))
+    while !isdir(d) && dirname(d) != d
+        d = dirname(d)
+    end
+    p = realpath(d)
+    best, typ = "", ""
+    for ln in eachline("/proc/self/mounts")
+        f = split(ln)
+        length(f) >= 3 || continue
+        mp = replace(f[2], "\\040" => " ")
+        inside = mp == "/" || p == mp || startswith(p, mp * "/")
+        inside && length(mp) > length(best) && ((best, typ) = (mp, String(f[3])))
+    end
+    return typ
+end
+
+"""
+    hdf5_io(par, output, path) -> (mode, reason)
+
+`:parallel` when `output.parallel_hdf5` is set, the run has more than one rank, the HDF5 library has MPI-IO
+(`HDF5.has_parallel()`) and `path` is on a file system in `output.parallel_fs`; `:cooperative` otherwise, with the
+reason. Decided on rank 0 and broadcast, so all ranks take the same path.
+"""
+function hdf5_io(par::ParCtx, output, path::AbstractString)
+    why = ""
+    if rank0(par)
+        fs = fs_type(path)
+        why = !output.parallel_hdf5 ? "output.parallel_hdf5 = false" :
+              par.nranks == 1 ? "1 rank" :
+              !HDF5.has_parallel() ? "the HDF5 library has no MPI-IO" :
+              fs in output.parallel_fs ? "parallel: file system $fs" :
+              "file system $(isempty(fs) ? "unknown" : fs) is not in output.parallel_fs"
+    end
+    why = MPI.bcast(why, par.comm; root = 0)
+    return (startswith(why, "parallel: ") ? :parallel : :cooperative), why
+end
+
+"""Log line for the output path chosen by `hdf5_io`."""
+hdf5_io_line(io, why) = io === :parallel ? "output: parallel HDF5 (collective MPI-IO, $(why[11:end]))" :
+                                           "output: cooperative HDF5 ($why)"
+
 function ensure_parent(f, path)
     parts = split(strip(path, '/'), '/')
     g = f
@@ -64,12 +115,13 @@ function ensure_parent(f, path)
 end
 
 """
-    write_fields(par, file, fields; cols=ColumnOut[], compression=4)
+    write_fields(par, file, fields; cols=ColumnOut[], compression=4, io=:cooperative)
 
-Create all datasets on rank 0, then write every rank's owned part via the token ring.
+Create all datasets on rank 0, then write every rank's owned part via the token ring (`io = :cooperative`) or all at
+once with collective MPI-IO (`io = :parallel`, from `hdf5_io`).
 """
 function write_fields(par::ParCtx, file::AbstractString, fields::Vector{FieldOut};
-                      cols::Vector{ColumnOut} = ColumnOut[], compression::Int = 4)
+                      cols::Vector{ColumnOut} = ColumnOut[], compression::Int = 4, io::Symbol = :cooperative)
     NX, NY, NZ = par.NX, par.NY, par.NZ
     b = par.block
     if rank0(par)
@@ -93,18 +145,25 @@ function write_fields(par::ParCtx, file::AbstractString, fields::Vector{FieldOut
         end
     end
     MPI.Barrier(par.comm)
-    token_ring(par) do
-        h5open(file, "r+") do f
-            jr = b.j0:b.j0+b.ny-1
-            ir = b.i0:b.i0+b.nx-1
-            for fo in fields
-                a = permutedims(collect(fo.data[1:b.nx, 1:b.ny, 1:b.nz]), (3, 2, 1))
-                f[fo.path][1:NZ, jr, ir] = a
-            end
-            for co in cols
-                f[co.path][jr, ir] = permutedims(collect(co.data), (2, 1))
-            end
+    jr = b.j0:b.j0+b.ny-1
+    ir = b.i0:b.i0+b.nx-1
+    function owned!(f; pv...)
+        for fo in fields
+            ds = open_dataset(f, fo.path; pv...)
+            ds[1:NZ, jr, ir] = permutedims(collect(fo.data[1:b.nx, 1:b.ny, 1:b.nz]), (3, 2, 1))
+            close(ds)
         end
+        for co in cols
+            ds = open_dataset(f, co.path; pv...)
+            ds[jr, ir] = permutedims(collect(co.data), (2, 1))
+            close(ds)
+        end
+    end
+    if io === :parallel
+        h5open(f -> owned!(f; dxpl_mpio = :collective), file, "r+", par.comm)   # every rank, every dataset, same order
+        MPI.Barrier(par.comm)
+    else
+        token_ring(() -> h5open(f -> owned!(f), file, "r+"), par)
     end
     return nothing
 end

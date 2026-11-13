@@ -88,6 +88,8 @@ function run_column_hse(cfg::Config)
     # ---- write ----
     out = cfg.run.output
     create_output(par, out; overwrite = cfg.run.overwrite)
+    io, io_why = hdf5_io(par, cfg.output, out)
+    logm(hdf5_io_line(io, io_why))
     copy_inputs(par, out, spec.path, [I.temperature, I.bx, I.by, I.bz, I.x, I.y, I.z])
     fo = FieldOut[FieldOut("/output/$nm", F[nm], u, ln) for (nm, u, ln) in COLHSE_FIELDS]
     push!(fo, FieldOut("/diagnostics/R_x", Rx, "N m-3", "x force residual, B = 0 (vertical_hse_only)"))
@@ -98,12 +100,12 @@ function run_column_hse(cfg::Config)
                    ColumnOut("/diagnostics/tau_top_method", res.tau_top_method, "1", "0 exp_tail, 1 half_cell, 2 zero"),
                    ColumnOut("/diagnostics/rk_max_substeps", res.rk_max_substeps, "1", "largest RK4 substep count used"),
                    ColumnOut("/diagnostics/z_tau500_1", res.z_tau1, "m", "height of tau500 = 1")]
-    write_fields(par, out, fo; cols = co, compression = cfg.output.compression)
+    write_fields(par, out, fo; cols = co, compression = cfg.output.compression, io = io)
     write_layer_table(par, out, "/diagnostics/layer_pressure", tab_P, cols_P)
     write_layer_table(par, out, "/diagnostics/layer_residual", tab_R, cols_R)
     meta = provenance_meta(par, cfg)
     merge!(meta, Dict{String,Any}(
-        "mode" => "column_hse", "label" => "vertical_hse_only", "g" => g,
+        "mode" => "column_hse", "hdf5_io" => String(io), "label" => "vertical_hse_only", "g" => g,
         "anchor" => Dict{String,Any}("type" => String(o.anchor), "value_Pa" => o.P_ref, "source" => Psrc,
                                      "z_ref_m" => o.z_ref, "plane_z_m" => o.anchor == :bottom ? spec.z[end] :
                                                                          o.anchor == :top ? spec.z[1] : o.z_ref),

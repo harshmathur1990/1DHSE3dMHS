@@ -17,7 +17,10 @@ One entry point for every mode, MPI + threads in all of them:
 Quantiles and medians are exact global order statistics and the Poisson preconditioners use a distributed FFT (rfft in
 y, all-to-all transpose, FFT in x). Sums are reduced in a rank-dependent order, so results agree across rank counts only
 to rounding, which the iterative modes can amplify (see the root README and the technical PDFs for measured differences). Output is
-written cooperatively (no parallel HDF5): rank 0 creates each file, the ranks then write their slabs in turn.
+written cooperatively by default: rank 0 creates each file, the ranks then write their slabs in turn. With
+`[output] parallel_hdf5 = true`, the ranks instead write at once with collective MPI-IO. That happens only on more than one
+rank, with an MPI-enabled HDF5 library, and when the output is on a file system listed in `output.parallel_fs` (Lustre,
+GPFS, BeeGFS, …; not StorNext or NFS). Otherwise the run stays cooperative and logs why (root README, "Output").
 
 ## Equation of state
 
