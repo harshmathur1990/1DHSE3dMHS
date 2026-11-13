@@ -33,7 +33,7 @@ from helita.sim.bifrost import BifrostData
 RUNS = {'en024048_hion': ([500, 600, 700], 2), 'ch012012_hion': ([900, 930, 960], 4)}   # snapshots, x/y stride
 ROOT = '/mn/stornext/d21/RoCS/matsc/3d/run'
 LT = np.round(np.arange(3.30, 5.0001, 0.01), 4)          # bin centres
-LP = np.round(np.arange(-4.0, 5.6001, 0.02), 4)
+LP = np.round(np.arange(-12.0, 8.0001, 0.02), 4)    # wide enough for the slope envelope to reach 0 inside the grid
 SAHA_C, EION_H, BK_CGS = 9.0804625434325867, 13.598434, 1.3806488e-16
 MIN_COUNT, SIGMA_BINS = 20, (2.0, 12.0)       # Gaussian σ in bins of (log10 T, log10 P): 0.02, 0.24 dex
 SLOPE_MAX = 2.0                                 # max |∂D/∂log10 P| per dex
