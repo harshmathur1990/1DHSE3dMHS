@@ -32,7 +32,7 @@ const CONFIG_SCHEMA = [
         "table_file" => "cache/eos_table_fullz.h5",
         "model" => "lte",              # lte (Wittmann) | nlte (hydrogen ionization of Bifrost hion runs, eos/NLTE.jl)
         "nlte_table_file" => "cache/eos_table_nlte.h5",          # the table used (and built) when model = "nlte"
-        "nlte_correction" => "data/nlte/nlte_hion_correction.h5", # read only by run.mode = "eos_table" with model = "nlte"
+        "nlte_correction" => WittBifrostEOS.default_nlte_correction(),   # read only by run.mode = "eos_table" with model = "nlte"
         "build_if_missing" => false,
         "prec" => 1e-10,
         "maxit" => 5000,

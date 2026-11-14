@@ -28,11 +28,7 @@ function set_attrs!(obj, d::AbstractDict)
     end
 end
 
-meta_value(v::Symbol) = String(v)
-meta_value(v::Nothing) = "none"
-meta_value(v::AbstractVector{<:AbstractString}) = String.(v)
-meta_value(v::Bool) = Int8(v)
-meta_value(v) = v
+# meta_value and _write_meta (HDF5 metadata): WittBifrostEOS's
 
 """Create a new output file with the standard groups (rank 0), honouring `overwrite`."""
 function create_output(par::ParCtx, path::AbstractString; overwrite::Bool = false)
@@ -194,21 +190,6 @@ function write_meta(par::ParCtx, file::AbstractString, meta::AbstractDict; group
     MPI.Barrier(par.comm)
 end
 
-function _write_meta(g, meta::AbstractDict)
-    for (k, v) in meta
-        k = String(k)
-        if v isa AbstractDict
-            sub = haskey(g, k) ? g[k] : create_group(g, k)
-            _write_meta(sub, v)
-        elseif v isa AbstractMatrix
-            g[k] = permutedims(Matrix(v), (2, 1))
-        elseif v isa AbstractVector && !(eltype(v) <: AbstractString) && length(v) > 64
-            g[k] = collect(v)
-        else
-            write_attribute(g, k, meta_value(v))
-        end
-    end
-end
 
 """Copy input datasets untouched (original dtype and attributes) into /input (rank 0)."""
 function copy_inputs(par::ParCtx, file::AbstractString, src::AbstractString, names)

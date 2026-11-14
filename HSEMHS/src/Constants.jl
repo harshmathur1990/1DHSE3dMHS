@@ -9,10 +9,7 @@ const MU0       = 1.25663706212e-6      # N A^-2 (CODATA 2018)
 const SIGMA_T   = 6.6524587321e-29      # m^2
 const ONE_GAUSS = 1.0e-4                # T
 
-# Constants used inside the Wittmann C++ code (CODATA 2010, CGS there), in SI.
-# Quantities that must agree with the C++ EOS state use these.
-const K_B_WITT = 1.3806488e-23
-const M_U_WITT = 1.660538921e-27
+# K_B_WITT and M_U_WITT, the constants used inside the Wittmann C++ code (CODATA 2010) in SI: WittBifrostEOS's.
 
 constants_meta() = Dict{String,Any}(
     "K_B" => K_B, "M_U" => M_U, "M_E" => M_E, "H_PL" => H_PL, "E_CH" => E_CH,
