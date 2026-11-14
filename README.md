@@ -154,9 +154,11 @@ and timings: [`docs/technical/`](docs/technical).
   is retained. No hard face bounds or barrier in the default driver (those were separate M5g experiments).
   σ is a specified penalty scale on the field change (uniform 5 G in the mode config), not an observational uncertainty
   and not a hard acceptance bound.
-* **Equation of state and opacity:** Wittmann's LTE EOS (C++, `wittman-eos/`, wrapped through `HSEMHS/deps/witt`) with
+* **Equation of state and opacity:** Wittmann's LTE EOS with
   solar abundances, H₂, an H/He Saha branch above a switch temperature, and the 5000 Å continuum extinction, tabulated in
-  (ln T, ln P) with bicubic Hermite interpolation and derivatives (`src/eos/`). The table records its envelope; calls
+  (ln T, ln P) with bicubic Hermite interpolation and derivatives. All of it, the shim around the C++ code, and the NLTE
+  correction are the package [WittBifrostEOS](https://github.com/harshmathur1990/WittBifrostEOS), which FFNOInversion
+  uses too; HSEMHS keeps `build_eos_table` (`src/eos/BuildTable.jl`) and the Gate 0 envelope (`src/eos/Envelope.jl`). The table records its envelope; calls
   outside it return an error status. Build provenance is in `config/eos_table_bifrost385_fullz.toml`. Experimental and off
   by default: the hydrogen ionization of non-equilibrium Bifrost runs in place of Saha's, `eos.model = "nlte"`
   ([NLTE equation of state (experimental)](#nlte-equation-of-state-experimental)).
@@ -171,13 +173,15 @@ TeX installation (`pdflatex` with `extarticle`, `tikz`, `tabularx`, `lmodern`, `
 ```sh
 cd HSEMHS
 julia --project=. -e 'using Pkg; Pkg.instantiate()'            # Julia dependencies
-julia --project=. deps/witt/build.jl                           # compiles deps/witt/libwitt.{so,dylib} for this platform
+julia --project=. -e 'using Pkg; Pkg.build("WittBifrostEOS")' # compiles WittBifrostEOS's libwitt for this platform
 julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'      # installs ~/.julia/bin/mpiexecjl matching MPI.jl's MPI
 julia --project=. -e 'using HSEMHS'                            # precompiles; must finish without error
 ```
 
-`deps/witt/build.jl` patches the verbatim Wittmann source into `witt_shim.cpp` by counted replacements and compiles it;
-the partition-function file is `wittman-eos/pf_Kurucz.input` (`eos.pf_file`, path relative to `HSEMHS/`).
+WittBifrostEOS's `deps/witt/build.jl` patches the Wittmann source into `witt_shim.cpp` by counted replacements and
+compiles it into a scratch space (`WittBifrostEOS.build_libwitt(dir)` and `WITTBIFROSTEOS_LIBWITT` build and load another);
+the partition-function file is `wittman-eos/pf_Kurucz.input` (`eos.pf_file`, path relative to `HSEMHS/`), the same file
+as WittBifrostEOS's `data/pf_Kurucz.input`. `Project.toml` pins WittBifrostEOS by Git revision (`[sources]`, Julia ≥ 1.11).
 
 ## Data and the EOS table
 
@@ -457,14 +461,14 @@ the solved layers and by ≈ 2× above the cut. The magnetic depression comes ou
 
 **The model.** In the chromosphere hydrogen is not ionized as Saha predicts at the local T and nₑ: its ionization relaxes over
 10²–10³ s, so gas recently heated by a shock is under-ionized and cooling gas over-ionized. From non-equilibrium hydrogen
-(hion) Bifrost runs, `scripts/nlte/make_nlte_correction.py` takes, in every cell,
+(hion) Bifrost runs, WittBifrostEOS's `scripts/make_nlte_correction.py` takes, in every cell,
 D = log₁₀(n_p/n_HI)_sim − log₁₀(n_p/n_HI)_Saha(T, pₑ,sim), its median per (log₁₀ T, log₁₀ P) bin (0.01 × 0.02 dex) per run,
 averages the runs with equal weight and smooths it (Gaussian, 0.02 dex in T, 0.24 dex in P). The solvers change P at fixed
 T, so D is then limited to a slope of 2 per dex of P (the upper envelope of |D|, each sign separately): bin medians jump where
 a bin mixes dense near-LTE gas with dilute shocked gas, and an unlimited D sent MHS solves off those cliffs. Beyond the runs'
 pressures D decays to 0 at that slope inside the grid (10⁻¹² … 10⁸ Pa); above 10^4.4 … 10^4.6 K it is tapered to 0. Measured against Saha at the run's own nₑ, D is free of the abundance differences between Bifrost and Wittmann; it
 is ≈ 0 in the photosphere, +2 to +9 dex in cool (3–5 kK) chromospheric gas and −3 to −7 dex in warm (8–25 kK) gas. The NLTE
-EOS (`src/eos/NLTE.jl`) is the hot-branch solver with the hydrogen Saha ratio p(H⁺)/p(H) multiplied by 10^D at the
+EOS (WittBifrostEOS's `src/NLTE.jl`) is the hot-branch solver with the hydrogen Saha ratio p(H⁺)/p(H) multiplied by 10^D at the
 self-consistent pₑ; helium, the metals, H⁻ and H₂ stay LTE at that pₑ, so ρ, nₑ and χ₅₀₀ are mutually consistent. In
 χ₅₀₀, H⁻, Rayleigh and H₂⁺ use the NLTE neutral hydrogen, but hydrogen's bound-free opacity (Paschen and higher at 500 nm)
 puts the excited levels in Saha with the NLTE n_p and nₑ (Boltzmann from n_HI × 10^dH): in the hion runs those levels stay
@@ -474,7 +478,7 @@ model is 1–2 dex low in cool chromospheric gas, and excited levels by Boltzman
 high in 8–25 kK gas. Where D = 0 the model is the LTE model exactly. NLTE tables store ln n_HI and ln n_p as well
 (`hydrogen(table, ln T, ln P)`).
 
-**Data.** `HSEMHS/data/nlte/nlte_hion_correction.h5` (in git): en024048_hion snapshots 500, 600, 700 (24 Mm box, 48 km)
+**Data.** WittBifrostEOS's `data/nlte/nlte_hion_correction.h5` (`eos.nlte_correction` by default; in git, sha256 86248e8a…): en024048_hion snapshots 500, 600, 700 (24 Mm box, 48 km)
 and ch012012_hion snapshots 900, 930, 960 (12 Mm box, 12 km), `/mn/stornext/d21/RoCS/matsc/3d/run`. The two runs used
 different hydrogen atoms and code versions (en: `H_6.atom.ccpol`, Lyα in radiative equilibrium, 2013; ch: `h_6.atom` with
 Lyα from GENRAD and EUV photoionization, 2023); their per-run tables (`D_<run>` in the file) differ by ≈ 1 dex in places,
@@ -720,7 +724,8 @@ The column-mass modes have no PDFs yet: see [The column-mass modes](#the-column-
 * `design/` – `DESIGN_HISTORY.md` (condensed history and decisions in force), `old/` (the original specification,
   design reviews and Codex briefs/reviews, unchanged), and one folder per new design topic (`tau/`: viewing angle).
   The code and `docs/` are current.
-* `wittman-eos/` – Wittmann EOS source and partition functions; `HSEMHS/deps/witt/` – the shim and build script.
+* `wittman-eos/` – Wittmann EOS source as distributed, and partition functions; the shim, build script and the EOS code are
+  WittBifrostEOS's.
 * Not in git: `IO/`, `HSEMHS/cache/`, `HSEMHS/out/`, built `libwitt`.
 
 ## Licence and attribution

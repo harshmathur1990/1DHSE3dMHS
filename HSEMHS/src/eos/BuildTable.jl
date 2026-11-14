@@ -1,11 +1,5 @@
 # Gate 1 driver: coverage scan, T_sw, table build, validation, save, report (doc §7).
 
-function read_log_abund(spec::AbstractString)
-    spec == "wittmann_default" && return nothing
-    v = parse.(Float64, split(read(spec, String)))
-    length(v) == 99 || invalid("abundance file $spec must contain 99 log10 fractions")
-    return v
-end
 
 """
     build_eos_table(cfg) -> EOSTable
