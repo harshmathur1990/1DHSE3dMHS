@@ -179,9 +179,9 @@ julia --project=. -e 'using HSEMHS'                            # precompiles; mu
 ```
 
 WittBifrostEOS's `deps/witt/build.jl` patches the Wittmann source into `witt_shim.cpp` by counted replacements and
-compiles it (where the package directory is read-only: `WittBifrostEOS.build_libwitt(dir)` and `WITTBIFROSTEOS_LIBWITT`);
+compiles it into a scratch space (`WittBifrostEOS.build_libwitt(dir)` and `WITTBIFROSTEOS_LIBWITT` build and load another);
 the partition-function file is `wittman-eos/pf_Kurucz.input` (`eos.pf_file`, path relative to `HSEMHS/`), the same file
-as WittBifrostEOS's `data/pf_Kurucz.input`. WittBifrostEOS is a local checkout for now (`[sources]` in `Project.toml`).
+as WittBifrostEOS's `data/pf_Kurucz.input`. `Project.toml` pins WittBifrostEOS by Git revision (`[sources]`, Julia ≥ 1.11).
 
 ## Data and the EOS table
 

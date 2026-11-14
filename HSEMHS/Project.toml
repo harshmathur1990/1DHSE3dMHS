@@ -21,7 +21,7 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 WittBifrostEOS = "ae47c4ec-14cd-4845-8eff-b40a9f32171b"
 
 [sources]
-WittBifrostEOS = {path = "/mn/stornext/d9/data/harshm/WittBifrostEOS.jl"}
+WittBifrostEOS = {rev = "f2575705b81ded04a39cdb2cceb0c6bc8de744e8", url = "https://github.com/harshmathur1990/WittBifrostEOS.git"}
 
 [compat]
 DelimitedFiles = "1.9.1"
