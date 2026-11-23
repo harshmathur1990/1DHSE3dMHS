@@ -1,7 +1,7 @@
 # Gate 1: EOS table report
 
 - Table: `cache/eos_table_nlte.h5`, 4092 × 3714 nodes, sha256 `462cf9a33e1900c1adb56be439fe3373ecd5d63c5a97523398baad715d9e77f5`
-- EOS model: nlte (hydrogen ionization from `/mn/stornext/d9/data/harshm/MHS_nlte/HSEMHS/data/nlte/nlte_hion_correction.h5`, en024048_hion snapshots [500, 600, 700] stride 2; ch012012_hion snapshots [900, 930, 960] stride 4; 5565370 NLTE nodes)
+- EOS model: nlte (hydrogen ionization from `/mn/stornext/u3/harshm/.julia/packages/WittBifrostEOS/diLV4/data/nlte/nlte_hion_correction.h5`, en024048_hion snapshots [500, 600, 700] stride 2; ch012012_hion snapshots [900, 930, 960] stride 4; 5565370 NLTE nodes)
 - Envelope: T = 2172 – 1.781e+06 K, log₁₀P = -13.00 – 15.00 Pa (eos.logP_range override)
 - Direct solver: prec = 1.0e-10, maxit = 5000, FIX_GASC_H2 = true
 - Coverage scan (400 × 200): 14824 direct calls did not converge; fully-ionized test: false
@@ -27,4 +27,4 @@
 | table nodes from failed model calls | 0 | 0 | true |
 | model failures at withheld points | 0 | 0 | true |
 
-Worst points (T [K], P [Pa]): lnchi: (3846.0, 4.396e-7); lnne: (2982.0, 8.392e-10); lnnhi: (6265.0, 0.0001387); lnnp: (2585.0, 1.207e-11); lnrho: (5387.0, 0.0001912)
+Worst points (T [K], P [Pa]): lnne: (2982.0, 8.392e-10); lnnp: (2585.0, 1.207e-11); lnrho: (5387.0, 0.0001912); lnnhi: (6265.0, 0.0001387); lnchi: (3846.0, 4.396e-7)
