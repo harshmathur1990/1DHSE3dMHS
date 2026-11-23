@@ -153,7 +153,7 @@ In this folder:
 - `scripts/plot_T_planes.py`: the plane T maps;
 - `figs/`.
 
-Data (about 1.35 GB each) in `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/mu_mismatch_2026-11-02/` (moved there from
+Data (about 1.35 GB each) in `/mn/stornext/d9/data/harshm/hsemhs_data/out/mu_mismatch_2026-11-02/` (moved there from
 `MHS_solvertime/HSEMHS/out/modes/` on 2 Nov 2026), with the full unfiltered run logs, launch scripts and host files in
 `logs/` (the stopped first try on `viewing-angle` in `logs/viewingangle_first_try/`) and the run TOMLs in `configs/`. On the cluster, `data/` in this folder links to them (not in git):
 

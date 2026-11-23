@@ -41,4 +41,4 @@ edge of the plateau.
 
 ## Data
 
-`/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/logm_cut_2026-11-03/`, linked from `data/` on the cluster.
+`/mn/stornext/d9/data/harshm/hsemhs_data/out/logm_cut_2026-11-03/`, linked from `data/` on the cluster.
