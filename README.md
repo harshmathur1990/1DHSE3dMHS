@@ -364,7 +364,7 @@ on it.
   * An independent re-implementation of the inclined method reproduced τ to 4e-13 and z(τ = 1) to 1e-10 m.
   * z(τ = 1) median: 63.5 km (μ = 1), 103.1 km (0.5 plane-parallel), 103.3 km (0.5 inclined); std 37.6, 35.0, 31.3 km.
   * Report: `HSEMHS/reports/viewing_z_2026-11-02/`; outputs in
-    `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/viewing_z_2026-11-02/`; check script `HSEMHS/scripts/viewing/check_zview.py`.
+    `/mn/stornext/d9/data/harshm/hsemhs_data/out/viewing_z_2026-11-02/`; check script `HSEMHS/scripts/viewing/check_zview.py`.
 
 **τ-grid input contract (μ < 1; the column-mass modes the same, with log₁₀ m_LOS).** One line of sight per pixel: T and B on a common log₁₀ τ_LOS axis (what an inversion of
 off-centre Stokes profiles returns), on a **regular, deprojected footprint grid** in the local solar frame (x, y in metres;
@@ -591,7 +591,7 @@ round-off acceptance, `switch`) and `test_warm.jl`; multi-rank by `test/mpi/mpi_
 ## Measured performance
 
 Not fresh validation: timings of single runs, with their code state. Logs are on hyades in
-`/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/modes/` (`<mode>.log`, `run_all.sh`) and
+`/mn/stornext/d9/data/harshm/hsemhs_data/out/modes/` (`<mode>.log`, `run_all.sh`) and
 `…/out/modes_test/`. Multi-node runs used 4 nodes (hyades4, 5, 15, 21), 8 ranks × 32 threads.
 
 | Date / commit | Mode | Input | Layout | Wall | Termination |
@@ -611,7 +611,7 @@ The table above predates the viewing angle and the qualified stop rule; current 
 Branch `solver-time`; full Bifrost cube 504² × 95 (`out/view/input_mu*_az*.nc`), vertical-depth cut −4, vertical
 balance, 25 steps, gn_tol 1e-3, D2 benchmark settings; production CLI; one hyades node, 3 ranks × 32 threads; time =
 process wall time; memory = peak per rank. Details: `design/tau/SOLVER_TIME_DESIGN.md` §6.14; scripts
-`HSEMHS/scripts/delivery/`; logs on hyades in `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/delivery/`.
+`HSEMHS/scripts/delivery/`; logs on hyades in `/mn/stornext/d9/data/harshm/hsemhs_data/out/delivery/`.
 
 | case | precond | status (stop) | Φ/Φ₀ | time | memory |
 |---|---|---|---|---|---|

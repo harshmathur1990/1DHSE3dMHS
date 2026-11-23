@@ -34,4 +34,4 @@ The Poisson runs used 4 ranks × 32 threads. Their logs end in an MPI teardown e
 - `configs/`: the run TOMLs; `logs/`: run logs and `run_one.sh`.
 - Check script: `HSEMHS/scripts/viewing/check_zview.py`.
 - `data/` (not in git): links to the outputs in
-  `/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/viewing_z_2026-11-02/` (about 19 GB).
+  `/mn/stornext/d9/data/harshm/hsemhs_data/out/viewing_z_2026-11-02/` (about 19 GB).

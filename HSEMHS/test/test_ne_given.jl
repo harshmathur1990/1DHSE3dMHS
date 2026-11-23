@@ -16,7 +16,7 @@ const HN = HSEMHS
         end
     end
 
-    table_file = get(ENV, "HSEMHS_TEST_TABLE", "/mn/stornext/d9/data/harshm/hsemhs_env112/work/e2e/inputs/eos_table_fullz.h5")
+    table_file = get(ENV, "HSEMHS_TEST_TABLE", "/mn/stornext/d9/data/harshm/hsemhs_data/envs/env112/work/e2e/inputs/eos_table_fullz.h5")
     if isfile(table_file)
         tab = HN.load_table(table_file)
         T3 = [5000.0 + 200.0 * k + 30.0 * j + 7.0 * i for k in 1:nk, j in 1:ny, i in 1:nx]; lT3 = log.(T3)

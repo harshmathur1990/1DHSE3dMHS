@@ -51,4 +51,4 @@ refinement ×1, ×4, ×16, ×64: max |Δz| 279 km, 11 km, 1.0 km, 88 m; max |Δ 
 
 ## Data
 
-`/mn/stornext/d9/data/harshm/MHS/HSEMHS/out/logm_2026-11-02/`, linked from `data/` on the cluster.
+`/mn/stornext/d9/data/harshm/hsemhs_data/out/logm_2026-11-02/`, linked from `data/` on the cluster.
