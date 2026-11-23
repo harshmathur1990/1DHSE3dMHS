@@ -42,9 +42,10 @@ function build_eos_table(cfg::Config)
     meta = Dict{String,Any}(
         "prec" => E.prec, "maxit" => E.maxit, "abundances" => E.abundances,
         "pf_file" => abspath(E.pf_file), "pf_sha256" => file_sha256(E.pf_file),
-        "shim_sha256" => file_sha256(joinpath(pkgdir(@__MODULE__), "deps", "witt", "witt_shim.cpp")),
-        "source_sha256" => file_sha256(joinpath(pkgdir(@__MODULE__), "deps", "witt", "witt_eos_cpp.cpp")),
-        "compiler" => read(joinpath(pkgdir(@__MODULE__), "deps", "witt", "compiler.txt"), String),
+        # the C++ sources are WittBifrostEOS's; its build writes compiler.txt next to the library it compiles
+        "shim_sha256" => file_sha256(joinpath(pkgdir(WittBifrostEOS), "deps", "witt", "witt_shim.cpp")),
+        "source_sha256" => file_sha256(joinpath(pkgdir(WittBifrostEOS), "deps", "witt", "witt_eos_cpp.cpp")),
+        "compiler" => let c = joinpath(dirname(libwitt_path()), "compiler.txt"); isfile(c) ? read(c, String) : "unrecorded" end,
         "fix_gasc_h2" => witt_fix_gasc_h2(), "T_sw" => T_sw, "hot_branch" => hb,
         "envelope_T" => [env.T_lo, env.T_hi], "envelope_log10P" => [env.log10P_lo, env.log10P_hi],
         "envelope_source" => env.source, "dlog10T" => E.dlog10T, "dlog10P" => E.dlog10P,
