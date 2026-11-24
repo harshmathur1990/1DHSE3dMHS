@@ -172,6 +172,8 @@ function adjoint_cases(; poisson = true)
         c("mhs-poisson-ltau μ 0.8 inclined", :mhs_poisson_ltau, :ltau; view = INC8, tol = 1e-5, poisson = TIGHT_TAU),
         c("mhs-poisson-ltau block preconditioner", :mhs_poisson_ltau, :ltau; tol = 1e-5, poisson = merge(TIGHT_TAU, (precond = :block,))),
         c("mhs-poisson-logm", :mhs_poisson_logm, :logm; tol = 1e-5, poisson = TIGHT_TAU),
+        c("mhs-poisson-ltau default solver + polish", :mhs_poisson_ltau, :ltau; tol = 1e-5, poisson = (polish = 5,)),
+        c("mhs-poisson-logm default solver + polish", :mhs_poisson_logm, :logm; tol = 1e-5, poisson = (polish = 5,)),
     ])
     return cases
 end

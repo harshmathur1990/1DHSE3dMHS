@@ -142,6 +142,55 @@ const ADJ_CASES = Regex(get(ENV, "ADJ_CASES", ".*"))
         @test fd_pair_error(out, X, dX, ubar, sum(Xbar .* dX)) < 1e-8
     end
 
+
+    @testset "τ-grid Poisson residual: ∇Φ in every input ($(mass ? "mass" : "τ") axis, $(incl ? "inclined" : "vertical"))" for
+            mass in (false, true), incl in (false, true)
+        fx = load_tau_fixture("11x12", Colon()); lt = mass ? fx.lt .+ 1.0 : fx.lt
+        view = incl ? INC8 : PPV
+        B = (fx.Bx, fx.By, fx.Bz)
+        wc = H.prepare_embedded(comm, mass ? :column_hse_logm : :column_hse_ltau; axis = lt, x = fx.x, y = fx.y, eos = tab,
+                                g = 274.0, column = H.ColumnTauOptions(align = "ptot"), view = view)
+        r0 = H.snapshot(H.solve_embedded!(wc, fx.lnT, B...))
+        par = wc.par; dx = fx.x[2] - fx.x[1]; dy = fx.y[2] - fx.y[1]
+        cut = mass ? -1.5 : -4.0
+        pr, c0 = H.PoissonTau.tp_setup(par, tab, 274.0, lt, copy(fx.lnT), copy.(B)..., r0.z, dx, dy;   # pr keeps these arrays logtau_cut = cut, mu = view.mu,
+                                       slant = H.slant(view), mass = mass)
+        H.PoissonTau.evaluate!(pr, r0.lnP, c0); H.PoissonTau.tp_weights!(pr, 274.0, dx)
+        kc = pr.kc; nt = size(fx.lnT, 1)
+        u = r0.lnP .+ 0.01 .* smooth_field(rng, size(fx.lnT)...) .* ((1:nt) .> kc)   # off the column HSE, below the cut
+        c = c0 .+ 2e3 .* randn(rng, size(c0))
+        g = H.PoissonTau.resid_vjp(pr, u, c)
+        f(du, dc, dX, dB, dzr) = begin
+            pr.lT .= fx.lnT .+ dX; pr.Bx .= B[1] .+ dB[1]; pr.By .= B[2] .+ dB[2]; pr.Bz .= B[3] .+ dB[3]
+            z0 = copy(pr.zrel); pr.zrel .+= dzr
+            v = H.PoissonTau.evaluate!(pr, u .+ du, c .+ dc)[1]
+            pr.zrel .= z0; pr.lT .= fx.lnT; pr.Bx .= B[1]; pr.By .= B[2]; pr.Bz .= B[3]
+            v
+        end
+        z3 = zeros(size(fx.lnT))
+        du = 0.01 .* randn(rng, size(fx.lnT)) .* ((1:nt) .>= kc)
+        dc = 1e3 .* randn(rng, size(c0))
+        dX = 0.01 .* randn(rng, size(fx.lnT))
+        Bs = maximum(abs, fx.Bz)
+        dB = ntuple(_ -> 0.01 * Bs .* randn(rng, size(fx.lnT)), 3)
+        dzr = 1e3 .* randn(rng, size(pr.zrel)) .* ((1:kc) .< kc)
+        for (name, args, pairing) in (
+                ("ln P", (du, 0 .* dc, z3, (z3, z3, z3), 0 .* dzr), sum(g.ubar .* du)),
+                ("c", (z3, dc, z3, (z3, z3, z3), 0 .* dzr), sum(g.cbar .* dc)),
+                ("ln T", (z3, 0 .* dc, dX, (z3, z3, z3), 0 .* dzr), sum(g.Xbar .* dX)),
+                ("B", (z3, 0 .* dc, z3, dB, 0 .* dzr), sum(g.Bbar[1] .* dB[1]) + sum(g.Bbar[2] .* dB[2]) + sum(g.Bbar[3] .* dB[3])),
+                ("heights above the cut", (z3, 0 .* dc, z3, (z3, z3, z3), dzr), sum(g.zrelbar .* dzr)))
+            best = Inf
+            for h in (1e-3, 1e-4, 1e-5, 1e-6)
+                d1 = (f((h .* a for a in args[1:3])..., h .* args[4], h .* args[5]) -
+                      f((-h .* a for a in args[1:3])..., -h .* args[4], -h .* args[5])) / 2h
+                best = min(best, abs(d1 - pairing) / max(abs(d1), abs(pairing), 1e-300))
+            end
+            @info "∇Φ check" name mass incl best
+            @test best < 1e-6
+        end
+        H.free_embedded!(wc)
+    end
   end
   if ADJ_GROUP in ("cases", "all")
     @testset "embedded: $(case.name)" for case in filter(c -> occursin(ADJ_CASES, c.name), adjoint_cases())

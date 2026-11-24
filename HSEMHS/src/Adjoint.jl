@@ -50,7 +50,8 @@ function new_record(ws::EmbeddedWorkspace)
     if height_mode(ws.mode)
         return (rk4 = [RK4Tape() for _ in 1:b.ny, _ in 1:b.nx],)
     end
-    return (tapes = [PoissonTau.HeunTape() for _ in 1:b.ny, _ in 1:b.nx], z_col = zeros(s), z_al = zeros(s))
+    return (tapes = [PoissonTau.HeunTape() for _ in 1:b.ny, _ in 1:b.nx], z_col = zeros(s), z_al = zeros(s),
+            u_start = zeros(s), z_start = zeros(s), z_column = zeros(s))
 end
 
 """The record of a finished solve: inputs, a snapshot of the result and the stage tapes."""
@@ -111,19 +112,29 @@ end
 
 """Column HSE on the τ or mass axis: outputs → (ln P, z) → alignment → columns (design/adjoint/02)."""
 function column_tau_adjoint!(X̄, B̄, ws::EmbeddedWorkspace, bar)
-    t = ws.tape; rec = t.rec; res = t.res; lT = t.lnT; par = ws.par; mass = mass_mode(ws.mode)
-    nk, ny, nx = size(lT)
+    t = ws.tape; res = t.res; lT = t.lnT
     ū = zeros(size(lT))
     state_vjp!(X̄, ū, bar, lT, res.lnP, ws.eos)
-    z̄ = copy(bar.z)
+    l̄ = mass_mode(ws.mode) ? bar.logtau500 .+ bar.tau500 .* res.tau500 .* log(10.0) : nothing
+    return column_tau_core!(X̄, B̄, ws, ū, copy(bar.z), res.lnP; l̄ = l̄)
+end
+
+"""
+The column HSE of the recorded solve pulled back from the cotangents of its ln P (ū) and of its gauged heights (z̄), and on
+the mass axis of the log10 τ the gauge used (l̄): gauge → alignment → Heun columns. `lnP` is the column's ln P (the start
+of a Poisson solve). ū and z̄ are consumed.
+"""
+function column_tau_core!(X̄, B̄, ws::EmbeddedWorkspace, ū, z̄, lnP; l̄ = nothing)
+    t = ws.tape; rec = t.rec; lT = t.lnT; par = ws.par; mass = mass_mode(ws.mode)
+    nk, ny, nx = size(lT)
     if mass
-        l̄ = bar.logtau500 .+ bar.tau500 .* res.tau500 .* log(10.0)
-        PoissonTau.gauge_vjp!(par, z̄, rec.z_al, ws.axis, res.logtau500, l̄)
-        PoissonTau.logtau_mass_vjp!(X̄, ū, l̄, lT, res.lnP, ws.axis, ws.eos)
+        l̄ === nothing && (l̄ = zeros(size(lT)))
+        PoissonTau.gauge_vjp!(par, z̄, rec.z_al, ws.axis, PoissonTau.logtau_mass(lT, lnP, ws.axis, ws.eos), l̄)
+        PoissonTau.logtau_mass_vjp!(X̄, ū, l̄, lT, lnP, ws.axis, ws.eos)
     else
         PoissonTau.gauge_vjp!(par, z̄, rec.z_al, ws.axis)
     end
-    ws.column.align == "ptot" && PoissonTau.align_ptot_vjp!(par, z̄, ū, X̄, B̄, rec.z_col, res.lnP, lT, t.Bx, t.By, t.Bz,
+    ws.column.align == "ptot" && PoissonTau.align_ptot_vjp!(par, z̄, ū, X̄, B̄, rec.z_col, lnP, lT, t.Bx, t.By, t.Bz,
                                                             ws.eos, ws.g)
     mu = ws.view.mu
     Threads.@threads for i in 1:nx
@@ -135,6 +146,65 @@ function column_tau_adjoint!(X̄, B̄, ws::EmbeddedWorkspace, bar)
     return X̄
 end
 
+"""The τ-grid problem of the recorded Poisson solve, at its start (weights formed there) and its cut level."""
+function tau_problem(ws::EmbeddedWorkspace)
+    t = ws.tape; rec = t.rec; o = ws.poisson
+    pre = o.precond == :switch ? :block : o.precond
+    pr, c0 = PoissonTau.tp_setup(ws.par, ws.eos, ws.g, ws.axis, copy(t.lnT), copy(t.Bx), copy(t.By), copy(t.Bz), rec.z_start,
+                                 ws.dx, ws.dy; logtau_cut = los_cut(o, ws.view.mu), S = ws.fft, mu = ws.view.mu,
+                                 slant = slant(ws.view), precond = pre, klow = o.klow, mass = mass_mode(ws.mode))
+    PoissonTau.evaluate!(pr, rec.u_start, c0); PoissonTau.tp_weights!(pr, ws.g, ws.dx)
+    return pr, c0
+end
+
+"""mhs-poisson-ltau, -logm: outputs → gauge → heights and the stationary region → the fixed part and the weights → the
+column-HSE start (design/adjoint/03)."""
+function poisson_tau_adjoint!(X̄, B̄, ws, bar, info; cg_tol, cg_maxit, gauss_newton, stationary_tol)
+    t = ws.tape; rec = t.rec; res = t.res; lT = t.lnT; par = ws.par; mass = mass_mode(ws.mode)
+    st = res.status; kc = st.stats["cut_level"]; nk, ny, nx = size(lT)
+    ū = zeros(size(lT))
+    state_vjp!(X̄, ū, bar, lT, res.lnP, ws.eos)
+    z̄ = copy(bar.z)
+    shift = get(st.stats, "gauge_shift_m", 0.0)
+    zpre = res.z .+ shift                                          # the heights before the gauge
+    if mass
+        l̄ = bar.logtau500 .+ bar.tau500 .* res.tau500 .* log(10.0)
+        PoissonTau.gauge_vjp!(par, z̄, zpre, ws.axis, res.logtau500, l̄)
+        PoissonTau.logtau_mass_vjp!(X̄, ū, l̄, lT, res.lnP, ws.axis, ws.eos)
+    else
+        PoissonTau.gauge_vjp!(par, z̄, zpre, ws.axis)
+    end
+    pr, c0 = tau_problem(ws)
+    c = zpre[kc, :, :]
+    PoissonTau.evaluate!(pr, res.lnP, c)
+    cb, zrelb, ub, Xh = PoissonTau.heights_vjp(pr, res.lnP, z̄)           # the heights of the solution
+    X̄ .+= Xh; ū .+= ub
+    ū0 = zeros(size(lT)); z̄0 = zeros(size(lT))
+    xb = PoissonTau.to_slots(pr, cb, ū)
+    if st.steps == 0 && get(st.stats, "polish_steps", 0) == 0          # start accepted: the solution is the start
+        ū0 .= ū; z̄0[kc, :, :] .+= cb
+        @views ū0[kc+1:nk, :, :] .= ū[kc+1:nk, :, :]
+    else
+        Xb, u0b, zrelb2, Bb, cg = PoissonTau.tau_stationary_vjp(pr, res.lnP, c, xb, rec.u_start, c0; cg_tol = cg_tol,
+                                                                cg_maxit = cg_maxit, gauss_newton = gauss_newton)
+        X̄ .+= Xb; ū0 .+= u0b; zrelb .+= zrelb2
+        for k in 1:3
+            B̄[k] .+= Bb[k]
+        end
+        @views ū0[1:kc, :, :] .+= ū[1:kc, :, :]                        # ln P at and above the cut: the start's
+        info["cg_iterations"] = cg.its; info["cg_rel"] = cg.rel; info["cg_flag"] = String(cg.flag)
+        info["newton_decrement"] = cg.newton_decrement; info["null_component"] = cg.null_component
+        z̄0[kc, :, :] .+= cg.cnull                                     # the null modes of c are the start's
+    end
+    # zrel_k = z0_k − z0_kc above the cut (the start's heights)
+    @views z̄0[1:kc-1, :, :] .+= zrelb[1:kc-1, :, :]
+    @views z̄0[kc, :, :] .-= dropdims(sum(zrelb[1:kc-1, :, :]; dims = 1); dims = 1)
+    # the start: the column HSE of this solve (a warm start adds the change of that column to an earlier solution, so
+    # its derivative is the column's)
+    column_tau_core!(X̄, B̄, ws, ū0, z̄0, log.(res.Pgas_start))
+    dec = get(info, "newton_decrement", 0.0)
+    return (isfinite(dec) && dec <= stationary_tol) ? :stationary : :not_stationary
+end
 """
 τ₅₀₀ of the height grid from χ (vertical columns or inclined rays): its adjoint for the cotangent τ̄ of `res.tau500` adds
 χ̄ (design/adjoint/01).
@@ -181,9 +251,9 @@ Keywords: `cg_tol` (1e-10), `cg_maxit` (1000) of the adjoint solve, `gauss_newto
 largest undamped Newton decrement ½ GᵀΔ/Φ of the returned state reported as :stationary).
 """
 function poisson_adjoint!(X̄, B̄, ws, bar, info; cg_tol = 1e-10, cg_maxit = 1000, gauss_newton = false, stationary_tol = 1e-6)
-    ws.mode == :mhs_poisson_z && return poisson_z_adjoint!(X̄, B̄, ws, bar, info; cg_tol = cg_tol, cg_maxit = cg_maxit,
-                                                          gauss_newton = gauss_newton, stationary_tol = stationary_tol)
-    invalid("the adjoint of $(ws.mode) is not implemented yet")
+    f = ws.mode == :mhs_poisson_z ? poisson_z_adjoint! : poisson_tau_adjoint!
+    return f(X̄, B̄, ws, bar, info; cg_tol = cg_tol, cg_maxit = cg_maxit, gauss_newton = gauss_newton,
+             stationary_tol = stationary_tol)
 end
 
 """mhs-poisson-z: outputs → continuation above z_cut → the stationary region (bordered by the anchor) → B through J×B and

@@ -88,6 +88,7 @@ Base.@kwdef struct PoissonTauOptions
     klow::Int = 8
     damping::Symbol = :reg            # :reg | :marquardt (block or hybrid only)
     qual_maxit::Int = 400             # CG budget of the stop qualification (stop = :gn)
+    polish::Int = 0                   # Newton steps (exact Hessian) after the solve, to the stationary point the adjoint differentiates
 end
 
 """
@@ -229,6 +230,7 @@ function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0; cutna
     push_if!(e, o.precond in (:fourier, :block, :hybrid, :switch), "poisson precond must be :fourier, :block, :hybrid or :switch, got :$(o.precond)")
     push_if!(e, o.klow >= 0, "poisson klow must be ≥ 0")
     push_if!(e, o.qual_maxit >= 1, "poisson qual_maxit must be ≥ 1")
+    push_if!(e, o.polish >= 0, "poisson polish must be ≥ 0")
     push_if!(e, o.damping in (:reg, :marquardt), "poisson damping must be :reg or :marquardt, got :$(o.damping)")
     push_if!(e, o.damping != :marquardt || o.precond in (:block, :hybrid), "poisson damping = :marquardt needs precond :block or :hybrid")
     push_if!(e, lt[1] <= c <= lt[end], "$at is outside the axis [$(lt[1]), $(lt[end])]")
@@ -549,7 +551,7 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
         res.Pgas_start .= res.Pgas
         kc = cut_levels(ws.poisson, ws.axis, ws.view.mu)[1]
         col = (res.lnP[kc:end, :, :], res.z[kc, :, :])                 # this column HSE, for the next warm start
-        st.valid && poisson_ltau!(ws, lT, bx, by, bz, st; warm = start == :previous ? ws.warm : nothing)
+        st.valid && poisson_ltau!(ws, lT, bx, by, bz, st; warm = start == :previous ? ws.warm : nothing, rec = rec)
     end
     st.valid && check_fields!(ws, st)
     if gn_mode(ws.mode) && st.valid                                   # an invalid solve keeps the earlier warm start
@@ -794,13 +796,15 @@ end
 """Gauss–Newton solve on the τ or mass grid from the column-HSE start in ws.res (or a warm start on top of it: `warm` =
 (ln P on levels k_c…, cut heights) of a previous solution and of its column HSE, PoissonTau.warm_start!); gauged
 afterwards (mean z(τ = 1) = 0)."""
-function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing)
+function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing, rec = nothing)
     par = ws.par; res = ws.res; o = ws.poisson; lt = ws.axis
     u0 = copy(res.lnP); z0 = res.z
     if warm !== nothing
         z0 = copy(res.z)
         PoissonTau.warm_start!(u0, z0, cut_levels(o, lt, ws.view.mu)[1], warm...)
     end
+    rec === nothing || (rec.u_start .= u0; rec.z_start .= z0; rec.z_column .= res.z)   # the state solve_tau starts from
+    us = copy(u0); zs = copy(z0)                                       # solve_tau updates its start ln P in place
     st.stats["start"] = warm === nothing ? "column_hse" : "previous"
     u, z, Φ0, Φ, steps, kc, info = PoissonTau.solve_tau(par, ws.eos, ws.g, lt, lT, bx, by, bz, u0, z0,
                                                         ws.dx, ws.dy; logtau_cut = los_cut(o, ws.view.mu), max_steps = o.max_steps,
@@ -815,6 +819,16 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
     if info.reason == :eos_out_of_envelope
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
         return fail!(st, :eos_out_of_envelope, 1, "the Poisson start state on the $(mass_mode(ws.mode) ? "mass" : "τ") grid lies outside the EOS table")
+    end
+    if o.polish > 0 && steps > 0                                      # to the stationary point the adjoint differentiates
+        pre = o.precond == :switch ? :block : o.precond
+        pp, c0 = PoissonTau.tp_setup(par, ws.eos, ws.g, lt, lT, bx, by, bz, zs, ws.dx, ws.dy; logtau_cut = los_cut(o, ws.view.mu),
+                                     S = ws.fft, mu = ws.view.mu, slant = slant(ws.view), precond = pre, klow = o.klow,
+                                     mass = mass_mode(ws.mode))
+        PoissonTau.evaluate!(pp, us, c0); PoissonTau.tp_weights!(pp, ws.g, ws.dx)
+        c = z[kc, :, :]
+        st.stats["polish_steps"], st.stats["polish_decrement"] = PoissonTau.tau_newton_polish!(pp, u, c; steps = o.polish)
+        z = copy(pp.z); Φ = PoissonTau.evaluate!(pp, u, c)[1]
     end
     st.stats["gauge_shift_m"] = PoissonTau.gauge!(par, z, lt, mass_mode(ws.mode) ? PoissonTau.logtau_mass(lT, u, lt, ws.eos) : nothing)
     res.lnP .= u; res.z .= z; res.Pgas .= exp.(u)
