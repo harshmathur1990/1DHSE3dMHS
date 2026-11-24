@@ -43,12 +43,20 @@ geometries.
 
 | Mode | solve | recorded solve | adjoint | adjoint / solve |
 | --- | --- | --- | --- | --- |
-| column-hse-ltau (96 levels, FALC start + perturbation) | 0.52 s | 1.28 s | 0.44 s | 0.85 |
-| column-hse-logm (96 levels) | 0.49 s | 0.83 s | 0.57 s | 1.15 |
-| column-hse-z (177 levels, tiled fixture) | 0.87 s | 1.73 s | 2.91 s | 3.3 |
+| column-hse-ltau (96 levels, FALC start + perturbation) | 0.37 s | 1.24 s | 0.60 s | 1.6 |
+| column-hse-logm (96 levels) | 0.36 s | 0.79 s | 0.63 s | 1.8 |
+| column-hse-z (177 levels, tiled fixture) | 0.81 s | 1.74 s | 2.51 s | 3.1 |
+| mhs-poisson-ltau (95 levels, polish 3) | 631 s | 649 s | 555 s | 0.88 |
+| mhs-poisson-z (177 levels, polish 3) | 281 s | 275 s | 9.5 s | 0.03 |
+
+The column times vary by ~30 % between runs (a first run: ltau 0.52 / 0.44 s, logm 0.49 / 0.57 s). Two changes after
+the first run: the adjoint's Newton decrement (a status number, not part of the gradient) is solved to CG tolerance 1e-3,
+and column-hse-z reuses the recorded ln P instead of replaying the column (adjoint 2.91 → 2.51 s). Before them
+mhs-poisson-ltau's adjoint took 1199 s and mhs-poisson-z's 22 s; the default adjoint CG tolerance is 1e-8. Accuracies
+above are unchanged by them.
 
 The equilibrium part of one gradient of the current inversion (column-hse-ltau) goes from 1280 reconstructions (two per
-control coordinate) to 0.44 s, independent of the number of control coordinates. `test/scripts/adjoint_benchmark.jl`.
+control coordinate) to 0.6 s, independent of the number of control coordinates. `test/scripts/adjoint_benchmark.jl`.
 
 ## FFNOInversion (Phase 7, branch `equilibrium-adjoint` of FFNOML)
 

@@ -140,7 +140,7 @@ function stationary_vjp(pr::Prob, u, u0, ub; cg_tol = 1e-10, cg_maxit = 1000, ga
     G = similar(u); Rx, Ry, Rz = similar(u), similar(u), zeros(n - 1, ny, nx)
     gradphi!(G, pr, u, Rx, Ry, Rz); Φ = phi(pr, Rx, Ry, Rz)
     δ = zeros(n, ny, nx)
-    pcg!(op.Hop!, op.Mop!, par, pr, δ, op.proj!(-G); tol = cg_tol, maxit = cg_maxit)
+    pcg!(op.Hop!, op.Mop!, par, pr, δ, op.proj!(-G); tol = 1e-3, maxit = 200)          # its size only
     dec = -gdot(par, G, δ) / (2Φ)
     # mixed term −(∂G/∂a)ᵀ λ = −d/dε ∇ₐΦ(u + ελ), and the weights' share −d/dε (Sc, Sf)(u + ελ)
     vm = gmax(par, maximum(abs, λ)); ε = 1e-7 * max(scale, 1.0) / max(vm, 1e-300)

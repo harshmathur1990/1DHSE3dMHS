@@ -86,12 +86,13 @@ end
 """
     hse_column_vjp!(Xbar, ubar, X, z, eos, o, tape) -> Xbar
 
-Adjoint of `hse_column_replay!` for the cotangent ū of ln P: adds ∂ℓ/∂(ln T) to `Xbar` (ln P_ref is a constant).
+Adjoint of `hse_column_replay!` for the cotangent ū of ln P: adds ∂ℓ/∂(ln T) to `Xbar` (ln P_ref is a constant). `u`, the
+column's ln P from the recorded solve (identical to the replay's), saves the replay.
 """
 function hse_column_vjp!(Xbar::AbstractVector, ubar::AbstractVector, X::AbstractVector, z::AbstractVector, eos, o::HSEOpts,
-                         tape::RK4Tape)
+                         tape::RK4Tape; u = nothing)
     NZ = length(z)
-    u = fill(NaN, NZ); hse_column_replay!(u, X, z, eos, o, tape)
+    u === nothing && (u = fill(NaN, NZ); hse_column_replay!(u, X, z, eos, o, tape))   # given: the recorded column's ln P
     lp = log(o.P_ref)
     ub = collect(Float64, ubar)
     @inbounds for e in reverse(eachindex(tape.ka))

@@ -593,7 +593,7 @@ function tau_stationary_vjp(pr::TP, u, c, xb, u_start, c_start; cg_tol = 1e-10, 
     its, rel = pcg!(op.Hop!, op.Mop!, par, pr, λ, op.proj!(copy(xb)); tol = cg_tol, maxit = cg_maxit, flag = flag)
     # stationarity: ½ GᵀΔ/Φ of one undamped Newton step
     G = op.grad(u, c); Φ = evaluate!(pr, u, c)[1]
-    δ = zeros(size(G)); pcg!(op.Hop!, op.Mop!, par, pr, δ, op.proj!(-G); tol = cg_tol, maxit = cg_maxit)
+    δ = zeros(size(G)); pcg!(op.Hop!, op.Mop!, par, pr, δ, op.proj!(-G); tol = 1e-3, maxit = 200)   # its size only
     dec = -gdot(par, G, δ) / (2Φ)
     # mixed term −d/dε ∇ₐΦ along λ (a = ln T, B, ln P at the cut, the heights above it; the weights' layer sums)
     vm = max(gmax(par, maximum(abs, @view λ[2:end, :, :])) / op.su, gmax(par, maximum(abs, @view λ[1, :, :])) / op.sc)

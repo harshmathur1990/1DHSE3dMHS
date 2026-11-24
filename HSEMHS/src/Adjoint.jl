@@ -239,7 +239,8 @@ function column_z_adjoint!(X̄, ws::EmbeddedWorkspace, bar)
     o = hse_opts(ws.column, ws.g)
     Threads.@threads for i in 1:nx
         @inbounds for j in 1:ny
-            hse_column_vjp!(@view(X̄[:, j, i]), @view(ū[:, j, i]), @view(lT[:, j, i]), ws.axis, ws.eos, o, rec.rk4[j, i])
+            hse_column_vjp!(@view(X̄[:, j, i]), @view(ū[:, j, i]), @view(lT[:, j, i]), ws.axis, ws.eos, o, rec.rk4[j, i];
+                            u = @view(res.lnP[:, j, i]))      # the recorded ln P (the replay's, bit for bit)
         end
     end
     return X̄
@@ -247,10 +248,10 @@ end
 
 """
 Poisson modes: the column-HSE start, the implicit-function adjoint of the solved region and the fixed part (design/adjoint/03).
-Keywords: `cg_tol` (1e-10), `cg_maxit` (1000) of the adjoint solve, `gauss_newton` (false), `stationary_tol` (1e-6: the
+Keywords: `cg_tol` (1e-8), `cg_maxit` (1000) of the adjoint solve, `gauss_newton` (false), `stationary_tol` (1e-6: the
 largest undamped Newton decrement ½ GᵀΔ/Φ of the returned state reported as :stationary).
 """
-function poisson_adjoint!(X̄, B̄, ws, bar, info; cg_tol = 1e-10, cg_maxit = 1000, gauss_newton = false, stationary_tol = 1e-6)
+function poisson_adjoint!(X̄, B̄, ws, bar, info; cg_tol = 1e-8, cg_maxit = 1000, gauss_newton = false, stationary_tol = 1e-6)
     f = ws.mode == :mhs_poisson_z ? poisson_z_adjoint! : poisson_tau_adjoint!
     return f(X̄, B̄, ws, bar, info; cg_tol = cg_tol, cg_maxit = cg_maxit, gauss_newton = gauss_newton,
              stationary_tol = stationary_tol)
@@ -286,9 +287,11 @@ function poisson_z_adjoint!(X̄, B̄, ws, bar, info; cg_tol, cg_maxit, gauss_new
         info["anchor_multiplier"] = cg.kappa; info["newton_decrement"] = cg.newton_decrement
     end
     oo = hse_opts(ws.column, ws.g)
+    lnP0 = log.(res.Pgas_start)                                       # the column-HSE start (to rounding)
     Threads.@threads for i in 1:nx
         @inbounds for j in 1:ny
-            hse_column_vjp!(@view(X̄[:, j, i]), @view(ū0[:, j, i]), @view(lT[:, j, i]), z, ws.eos, oo, rec.rk4[j, i])
+            hse_column_vjp!(@view(X̄[:, j, i]), @view(ū0[:, j, i]), @view(lT[:, j, i]), z, ws.eos, oo, rec.rk4[j, i];
+                            u = @view(lnP0[:, j, i]))
         end
     end
     dec = get(info, "newton_decrement", 0.0)

@@ -1,6 +1,8 @@
 # Adjoint of the embedded equilibrium (all six modes)
 
-Branch `equilibrium-adjoint`, started 24 Nov 2026. Plan only; nothing is implemented yet.
+Branch `equilibrium-adjoint`, started 24 Nov 2026. **All phases implemented and tested (24 Nov 2026)**: results and
+deviations from this plan in `HSEMHS/reports/adjoint_phase1-3.md` and `adjoint_phase4-6.md`; usage in the top-level README
+("Adjoint of the embedded equilibrium").
 
 ## Why
 
