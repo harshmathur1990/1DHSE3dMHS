@@ -46,3 +46,29 @@ function z_tau1(tau::AbstractVector, z::AbstractVector)
     end
     return NaN
 end
+
+"""
+    tau_column_vjp!(chibar, taubar, chi, z, method; mu=1.0) -> chibar
+
+Adjoint of `tau_column!` at `chi` with its top closure `method` frozen (design/adjoint/01): adds ∂ℓ/∂χ to `chibar` for
+the cotangent `taubar` of the returned `tau` (= τ/μ). z is the fixed axis.
+"""
+function tau_column_vjp!(chibar::AbstractVector, taubar::AbstractVector, chi::AbstractVector, z::AbstractVector,
+                         method::UInt8; mu::Float64 = 1.0)
+    NZ = length(z)
+    A = 0.0                                              # Σ_{m ≥ k+1} τ̄_m / μ, built from the bottom
+    @inbounds for k in NZ-1:-1:1
+        A += taubar[k+1] / mu
+        w = 0.5 * (z[k] - z[k+1]) * A
+        chibar[k] += w; chibar[k+1] += w
+    end
+    @inbounds A += taubar[1] / mu                        # ∂ℓ/∂t₀
+    if method == TAU_EXP_TAIL
+        L = log(chi[2] / chi[1]); Hc = (z[1] - z[2]) / L
+        chibar[1] += A * Hc * (1 + 1 / L)
+        chibar[2] -= A * chi[1] * Hc / (L * chi[2])
+    elseif method == TAU_HALF_CELL
+        chibar[1] += A * 0.5 * (z[1] - z[2])
+    end
+    return chibar
+end

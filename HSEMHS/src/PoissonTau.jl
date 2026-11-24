@@ -66,8 +66,9 @@ interval; then lnP and z are NaN from that level down and the column is reported
 `mass = true`: lt is log10 m and the same integration gives P = μ g m (exact: the slope of ln P is 1 at every substep)
 and dz = −μ m/ρ d ln m.
 """
-function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0, mass = false)
+function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0, mass = false, tape = nothing)
     nt = length(lt)
+    tape === nothing || empty!(tape)
     τ = exp.(LN10 .* lt)
     lp = mass ? log(mu * g * τ[1]) : log(1e2)
     for _ in 1:(mass ? 0 : 200)                                    # top: P = g τ ρ/χ (κ constant above the top level)
@@ -92,12 +93,14 @@ function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0, mass = false)
             # rise ~1000x within one 0.1 dex level (κ drops with T), and a step sized from f1 alone then averaged a
             # huge f2 over the whole level (Δ ln P ≈ 21, P × 1e9 in one column of a 504² MURaM run).
             h = min(b - x, 0.05 / max(abs(f1), 1e-30))
+            br = b - x <= 0.05 / max(abs(f1), 1e-30) ? 0x00 : 0x01        # which bound set h (min keeps the first on a tie)
+            nq = 0
             local f2, g2
             while true
                 sy = (x + h - a) / (b - a)
                 f2, g2 = rhs(lT[k] + (lT[k+1] - lT[k]) * sy, x + h, l + h * f1)
                 (isfinite(f2) && h * abs(f2) > 0.1 && h > 1e-9 * (b - a)) || break
-                h /= 4
+                h /= 4; nq += 1
             end
             ln = l + h / 2 * (f1 + f2)
             if !isfinite(f2) || ln > lPmax                         # left the EOS table: the column fails
@@ -105,6 +108,7 @@ function hse_tau!(lnP, z, lT, lt, tab, g; mu = 1.0, mass = false)
                 z .= NaN
                 return false
             end
+            tape === nothing || record!(tape, k, br, nq)
             l = ln; zz += h / 2 * (g1 + g2); x += h
         end
         lnP[k+1] = l; z[k+1] = zz
@@ -175,30 +179,39 @@ function gauge!(par, z, lt, logtau = nothing)
     return s
 end
 
+"""Every owned column by `hse_tau!` (threaded), recording into `tapes` (a matrix of HeunTape) unless it is `nothing`."""
+function hse_columns!(lnP, z, lT, lt, tab, g, mu, mass, tapes, nfail, bar)
+    nt, ny, nx = size(lT)
+    Threads.@threads for i in 1:nx
+        for j in 1:ny
+            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g; mu = mu, mass = mass,
+                     tape = tapes === nothing ? nothing : tapes[j, i]) ||
+                Threads.atomic_add!(nfail, 1)
+            next!(bar)
+        end
+    end
+end
+
 """
 Column HSE in τ for every owned column, aligned and gauged; `mu` = cos θ of the line of sight (τ is τ_LOS). Returns (lnP, z, nfailed, Pref_total, nbelow, nbad):
 nfailed is the global number of columns whose pressure left the EOS table, nbad the global number of non-finite ln P;
 when nbad > 0 the alignment and gauge are skipped (they would spread the NaNs) and every rank returns the same values,
 so callers decide collectively. `mass = true`: lt is log10 m (along the line of sight), gauged on the τ computed from it.
 """
-function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false, mu = 1.0, mass = false)
+function column_hse_tau(par, lt, lT, Bx, By, Bz, tab, g; align = "ptot", progress = false, mu = 1.0, mass = false, rec = nothing)
     nt, ny, nx = size(lT)
     lnP = zeros(nt, ny, nx); z = zeros(nt, ny, nx)
     nfail = Threads.Atomic{Int}(0)
     bar = Progress(nx * ny; desc = "Column HSE, tau grid (this rank's columns) ", dt = 10, output = stdout,
                    enabled = progress)
-    Threads.@threads for i in 1:nx
-        for j in 1:ny
-            hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g; mu = mu, mass = mass) ||
-                Threads.atomic_add!(nfail, 1)
-            next!(bar)
-        end
-    end
+    hse_columns!(lnP, z, lT, lt, tab, g, mu, mass, rec === nothing ? nothing : rec.tapes, nfail, bar)
     finish!(bar)
     nfailed = gcount(par, nfail[])
     nbad = gcount(par, count(!isfinite, lnP))
     nbad > 0 && return lnP, z, nfailed, NaN, 0, nbad
+    rec === nothing || (rec.z_col .= z)                                # per-column heights before alignment and gauge
     Pt, nb = align == "ptot" ? align_ptot!(par, z, lnP, lT, Bx, By, Bz, tab, g) : (NaN, 0)
+    rec === nothing || (rec.z_al .= z)                                # aligned heights before the gauge
     gauge!(par, z, lt, mass ? logtau_mass(lT, lnP, lt, tab) : nothing)
     return lnP, z, nfailed, Pt, nb, 0
 end
@@ -1394,5 +1407,7 @@ function solve_tau(par, tab, g, lt, lT, Bx, By, Bz, u, z0, dx, dy; logtau_cut = 
                   w.total_s))
     return u, copy(pr.z), Φ0, Φ, steps, kc, info
 end
+
+include("PoissonTauAdjoint.jl")
 
 end # module PoissonTau

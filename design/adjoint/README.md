@@ -57,14 +57,15 @@ adj.status                                                            # :exact, 
 
 These are proposals for the user to confirm or change before the code is written.
 
-- **A1. Frozen discrete choices.** Adaptive substep counts (RK4 doubling), Heun step sizes and the shrink loop, EOS table
-  cells, the exp-tail/half-cell branch of the τ top closure, the alignment level index, interpolation brackets (z(τ = 1),
-  gauge) and order statistics (medians) are recorded in the forward solve and held fixed. Away from these switching
-  points the map is smooth and this is its exact derivative; at a switch the finite difference itself is not defined.
-  For Heun the step sizes depend on the state (h = 0.05/|f₁|); freezing them drops dh/d(state), a term of the size of the
-  local truncation error (|Δ ln P| ≤ 0.05 per substep, Heun's local error ~1e-4), so the column adjoints agree with finite
-  differences of the solver to about that level and exactly with those of the frozen-step scheme. The validation tests
-  both (04).
+- **A1. Frozen discrete choices.** Adaptive substep counts (RK4 doubling), EOS table cells, the exp-tail/half-cell
+  branch of the τ top closure, the alignment level index, interpolation brackets (z(τ = 1), gauge) and order statistics
+  (medians) are recorded in the forward solve and held fixed. Away from these switching points the map is smooth and
+  this is its exact derivative; at a switch the finite difference itself is not defined. *Implemented (Phase 2) more
+  strictly than first proposed:* the Heun step sizes are not frozen; the tape records which bound set each step (the
+  interval end or the slope limit 0.05/|f₁|) and how often it was quartered, and the adjoint differentiates the step
+  length through x and f₁, so the τ- and mass-axis adjoints agree with finite differences of the solver itself to ~1e-9
+  (frozen lengths gave 6e-4). The implicit top closure is differentiated by the implicit function theorem (the forward's
+  damped iteration stops at 1e-10).
 - **A2. EOS derivatives.** Derivatives of ln ρ, ln nₑ, ln χ₅₀₀ in ln T and ln P are those of the bicubic Hermite
   interpolant (exact for the table, continuous across cells), not of the Wittmann model behind it. The Poisson solver's
   own Jacobian uses a ±1e-4 probe for ∂ ln χ/∂ ln P (`EPS_PROBE`); the adjoint uses the exact interpolant derivative. The

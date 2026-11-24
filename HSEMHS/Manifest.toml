@@ -396,7 +396,7 @@ version = "1.11.0"
 
 [[deps.WittBifrostEOS]]
 deps = ["HDF5", "Libdl", "Printf", "Random", "SHA", "Scratch", "Statistics"]
-git-tree-sha1 = "7f06a3d108bf0ea159927608da571942aab38b0a"
+path = "../../WittBifrostEOS.jl"
 repo-rev = "f2575705b81ded04a39cdb2cceb0c6bc8de744e8"
 repo-url = "https://github.com/harshmathur1990/WittBifrostEOS.git"
 uuid = "ae47c4ec-14cd-4845-8eff-b40a9f32171b"

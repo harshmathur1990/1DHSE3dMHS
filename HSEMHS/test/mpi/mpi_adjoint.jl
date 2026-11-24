@@ -18,7 +18,7 @@ const me = MPI.Comm_rank(comm)
 
 @testset "equilibrium adjoint on $(MPI.Comm_size(comm)) ranks" begin
     tab = H.load_table(ETABLE)
-    for case in adjoint_cases()
+    for case in filter(c -> occursin(Regex(get(ENV, "ADJ_CASES", ".*")), c.name), adjoint_cases())
         inp = adjoint_inputs(case.grid)
         r = adjoint_dot_error(comm, case, inp, tab)
         me == 0 && @info "adjoint check" case = case.name ranks = MPI.Comm_size(comm) err = r.err
