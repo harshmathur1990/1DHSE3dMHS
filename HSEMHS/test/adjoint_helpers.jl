@@ -72,7 +72,7 @@ function adjoint_workspace(comm, case, inp, tab)
         zr = (inp.axis[1] + inp.axis[end]) / 2
         col = H.ColumnZOptions(anchor = case.anchor, P_ref = anchor_pressure(inp.lnT, inp.axis, inp.P_ref, inp.g, tab, case.anchor),
                                z_ref = zr, adapt = case.adapt, tau_top = case.top)
-        poi = m == :mhs_poisson_z ? H.PoissonZOptions(; z_cut_m = 1.0e6, case.poisson...) : nothing
+        poi = m == :mhs_poisson_z ? H.PoissonZOptions(; merge((z_cut_m = 1.0e6,), case.poisson)...) : nothing
     else
         col = H.ColumnTauOptions(align = case.align)
         poi = m == :mhs_poisson_ltau ? H.PoissonTauOptions(; logtau_cut = -4.0, case.poisson...) :
@@ -143,7 +143,7 @@ const PPV = H.ViewOptions()
 const PP8 = H.ViewOptions(mu = 0.8)
 const INC8 = H.ViewOptions(mu = 0.8, azimuth_deg = 30.0, geometry = :inclined)
 const TIGHT_TAU = (max_steps = 80, stop = :gn, gn_tol = 1e-9, gn_consec = 1, cg_tol = 1e-10, cg_maxit = 400, qual_maxit = 400)
-const TIGHT_Z = (max_steps = 80, rtol = 1e-14, n_consec = 3, cg_tol = 1e-10, cg_maxit = 400)
+const TIGHT_Z = (max_steps = 30, polish = 10)        # the Gauss–Newton solve stalls short of stationarity; the polish reaches it
 
 """The case matrix of design/adjoint/04-validation.md. `tol` is the target of each case."""
 function adjoint_cases(; poisson = true)

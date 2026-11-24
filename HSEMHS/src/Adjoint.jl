@@ -175,4 +175,52 @@ function column_z_adjoint!(X̄, ws::EmbeddedWorkspace, bar)
     return X̄
 end
 
-poisson_adjoint!(X̄, B̄, ws, bar, info; kw...) = invalid("the adjoint of $(ws.mode) is not implemented yet")
+"""
+Poisson modes: the column-HSE start, the implicit-function adjoint of the solved region and the fixed part (design/adjoint/03).
+Keywords: `cg_tol` (1e-10), `cg_maxit` (1000) of the adjoint solve, `gauss_newton` (false), `stationary_tol` (1e-6: the
+largest undamped Newton decrement ½ GᵀΔ/Φ of the returned state reported as :stationary).
+"""
+function poisson_adjoint!(X̄, B̄, ws, bar, info; cg_tol = 1e-10, cg_maxit = 1000, gauss_newton = false, stationary_tol = 1e-6)
+    ws.mode == :mhs_poisson_z && return poisson_z_adjoint!(X̄, B̄, ws, bar, info; cg_tol = cg_tol, cg_maxit = cg_maxit,
+                                                          gauss_newton = gauss_newton, stationary_tol = stationary_tol)
+    invalid("the adjoint of $(ws.mode) is not implemented yet")
+end
+
+"""mhs-poisson-z: outputs → continuation above z_cut → the stationary region (bordered by the anchor) → B through J×B and
+the start → the column-HSE adjoint of the start."""
+function poisson_z_adjoint!(X̄, B̄, ws, bar, info; cg_tol, cg_maxit, gauss_newton, stationary_tol)
+    t = ws.tape; rec = t.rec; res = t.res; lT = t.lnT; o = ws.poisson; z = ws.axis; par = ws.par
+    nk, ny, nx = size(lT)
+    st = res.status
+    τ̄ = bar.tau500 .+ ifelse.(bar.logtau500 .== 0, 0.0, bar.logtau500 ./ (res.tau500 .* log(10.0)))
+    χ̄ = height_tau_vjp!(zeros(size(lT)), τ̄, ws, res.chi500)
+    ū = zeros(size(lT))
+    state_vjp!(X̄, ū, bar, lT, res.lnP, ws.eos; chibar = χ̄)
+    ū0 = zeros(size(lT))                                              # cotangent of the column-HSE start ln P
+    kc = st.stats["cut_level"]; R = kc:nk
+    PoissonZ.continuation_vjp!(X̄, ū, lT, res.lnP, z, ws.eos, ws.g, kc)   # above z_cut: integrated from u at kc
+    if st.steps == 0                                                  # start accepted as it is below the cut
+        ū0[R, :, :] .+= ū[R, :, :]
+    else
+        Lx, Ly, Lz = PoissonZ.lorentz(par, t.Bx, t.By, t.Bz, z, ws.dx, ws.dy)
+        pr, u0R, _, _, _ = PoissonZ.zprob(par, ws.eos, ws.g, lT, Lx, Ly, Lz, res.Pgas_start, z, ws.dx, ws.dy;
+                                         zcut = o.z_cut_m, anchor_w = o.anchor_w, S = ws.fft)
+        Xb, Lxb, Lyb, Lzb, u0b, cg = PoissonZ.stationary_vjp(pr, res.lnP[R, :, :], u0R, ū[R, :, :]; cg_tol = cg_tol,
+                                                            cg_maxit = cg_maxit, gauss_newton = gauss_newton)
+        X̄[R, :, :] .+= Xb
+        ū0[R, :, :] .+= u0b
+        L̄ = (zeros(size(lT)), zeros(size(lT)), zeros(size(lT)))
+        L̄[1][R, :, :] .= Lxb; L̄[2][R, :, :] .= Lyb; L̄[3][R, :, :] .= Lzb
+        PoissonZ.lorentz_vjp!(B̄, par, L̄..., t.Bx, t.By, t.Bz, z, ws.dx, ws.dy)
+        info["cg_iterations"] = cg.its; info["cg_rel"] = cg.rel; info["cg_flag"] = String(cg.flag)
+        info["anchor_multiplier"] = cg.kappa; info["newton_decrement"] = cg.newton_decrement
+    end
+    oo = hse_opts(ws.column, ws.g)
+    Threads.@threads for i in 1:nx
+        @inbounds for j in 1:ny
+            hse_column_vjp!(@view(X̄[:, j, i]), @view(ū0[:, j, i]), @view(lT[:, j, i]), z, ws.eos, oo, rec.rk4[j, i])
+        end
+    end
+    dec = get(info, "newton_decrement", 0.0)
+    return st.steps == 0 || (isfinite(dec) && dec <= stationary_tol) ? :stationary : :not_stationary
+end

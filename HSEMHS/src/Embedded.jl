@@ -54,6 +54,7 @@ Base.@kwdef struct PoissonZOptions
     cg_tol::Float64 = 1e-3
     cg_maxit::Int = 80
     rms_atol::Float64 = 0.0
+    polish::Int = 0                   # Newton steps (exact Hessian, anchor mean held) after the solve, to the stationary point the adjoint differentiates
 end
 
 """
@@ -198,6 +199,7 @@ cut_levels(o::PoissonTauOptions, lt, mu = 1.0) = (kc = argmin(abs.(lt .- los_cut
 function option_errors(o::PoissonZOptions, z::AbstractVector)
     e = solver_errors(String[], o)
     push_if!(e, o.anchor_w > 0, "poisson anchor_w must be positive")
+    push_if!(e, o.polish >= 0, "poisson polish must be ≥ 0")
     kc, n = cut_levels(o, z)
     if kc === nothing
         push!(e, "z_cut_m = $(o.z_cut_m) m lies below the height axis (bottom $(z[end]) m)")
@@ -736,13 +738,14 @@ function poisson_z!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     sol = PoissonZ.solve_pressure(par, ws.eos, ws.g, lT, Lx, Ly, Lz, res.Pgas_start, z, ws.dx, ws.dy;
                                   zcut = o.z_cut_m, maxouter = o.max_steps, rtol = o.rtol, anchor_w = o.anchor_w,
                                   cg_tol = o.cg_tol, cg_maxit = o.cg_maxit, n_consec = o.n_consec, logf = ws.logf,
-                                  S = ws.fft, rms_atol = o.rms_atol)
+                                  S = ws.fft, rms_atol = o.rms_atol, polish = o.polish)
     res.Pgas .= sol.P
     res.lnP .= log.(sol.P)
     st.reason = sol.reason; st.steps = sol.steps; st.phi0 = sol.Φ0; st.phi = sol.Φ; st.rms0 = sol.rms0; st.rms = sol.rms
     st.phi0_zero = sol.phi0_zero; st.gn_decrement = sol.gn_decrement; st.grad_norm = sol.grad_norm
     st.cg_its = sol.cg_its; st.cg_rel = sol.cg_rel
     st.stats["cut_level"] = sol.kc
+    o.polish > 0 && (st.stats["polish_steps"] = sol.polish_steps; st.stats["polish_decrement"] = sol.polish_decrement)
     sol.cont_bad > 0 && fail!(st, :continuation_failed, sol.cont_bad,
                               "hydrostatic continuation above z_cut left $(sol.cont_bad) non-finite pressures")
     st.valid && height_state!(ws, lT)

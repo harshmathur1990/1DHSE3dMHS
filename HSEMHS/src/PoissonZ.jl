@@ -289,22 +289,11 @@ function lorentz(par, Bx, By, Bz, z, dx, dy)
 end
 
 """
-    solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
-                   anchor_w = 1.0, logf = s -> nothing)
-
-Gauss–Newton Poisson step from the start pressure P0 (z, y, x slabs; z top first) with the Lorentz force fixed. Solves
-z ≤ zcut (the mean of ln P over the anchor cells, a Bool array like P0 or the bottom plane by default, stays that of
-P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u, reason, gn_decrement,
-grad_norm, cg_its, cg_rel, rms0, rms, phi0_zero, cont_bad): `reason` is :converged, :no_descent or :max_steps;
-`gn_decrement` the relative decrease of Φ predicted by one further Gauss–Newton step (a scale-free stationarity measure)
-and `grad_norm` = ‖Jᵀ W R‖ at the returned state; `cont_bad` the global number of non-finite pressures left by the
-hydrostatic continuation above zcut. The anchor and `ereg` terms act on the increment system only (they damp changes of
-the anchor-cell mean ln P per step; Φ has no anchor term). `S` reuses a cached SlabFFT; `rms_atol` > 0 accepts a start
-with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
+The problem `solve_pressure` minimises, at its start P0: (pr, u0, Wtot, kc, zr) with pr::Prob (weights from the start's
+layer-median scale heights; pr.q, pr.qd, pr.ex are buffers for the state), u0 = ln P0 on the solved levels kc:nz, the
+total weight and the solved heights zr. Shared by the solve and its adjoint.
 """
-function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
-                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing, S = nothing,
-                        rms_atol = 0.0, stationarity = true)
+function zprob(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, anchor = nothing, anchor_w = 1.0, S = nothing)
     nz, ny, nx = size(P0); NX = par.NX
     kc = findfirst(<=(zcut), z)
     kc === nothing && H.invalid("z_cut = $zcut m lies below the grid")
@@ -343,6 +332,29 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
               Lx[R, :, :], Ly[R, :, :], Lz[R, :, :], q, qd, ex,
               similar(u), similar(u), similar(u), similar(u), zeros(n - 1, ny, nx), sx2, sy2, zeros(n), zeros(n - 1))
 
+    return pr, u0, Wtot, kc, zr
+end
+
+"""
+    solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
+                   anchor_w = 1.0, logf = s -> nothing)
+
+Gauss–Newton Poisson step from the start pressure P0 (z, y, x slabs; z top first) with the Lorentz force fixed. Solves
+z ≤ zcut (the mean of ln P over the anchor cells, a Bool array like P0 or the bottom plane by default, stays that of
+P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u, reason, gn_decrement,
+grad_norm, cg_its, cg_rel, rms0, rms, phi0_zero, cont_bad): `reason` is :converged, :no_descent or :max_steps;
+`gn_decrement` the relative decrease of Φ predicted by one further Gauss–Newton step (a scale-free stationarity measure)
+and `grad_norm` = ‖Jᵀ W R‖ at the returned state; `cont_bad` the global number of non-finite pressures left by the
+hydrostatic continuation above zcut. The anchor and `ereg` terms act on the increment system only (they damp changes of
+the anchor-cell mean ln P per step; Φ has no anchor term). `S` reuses a cached SlabFFT; `rms_atol` > 0 accepts a start
+with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
+"""
+function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
+                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing, S = nothing,
+                        rms_atol = 0.0, stationarity = true, polish = 0)
+    pr, u0, Wtot, kc, zr = zprob(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut = zcut, anchor = anchor, anchor_w = anchor_w, S = S)
+    nz, ny, nx = size(P0); NX = par.NX; R = kc:nz; n = length(R)
+    u = copy(u0); q = pr.q; qd = pr.qd; ex = pr.ex
     Rx, Ry, Rz = similar(u), similar(u), zeros(n - 1, ny, nx)
     eos!(pr, q, qd, ex, u); resid!(pr, Rx, Ry, Rz, u, q, ex)
     Φ = phi(pr, Rx, Ry, Rz); Φ0 = Φ
@@ -387,6 +399,12 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
         nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps", rtol, nsmall));
                                reason = :converged; break)
     end
+    psteps = 0; pdec = NaN
+    if polish > 0 && !start_ok                                    # to the stationary point the adjoint differentiates
+        psteps, pdec = newton_polish!(pr, u, u0; steps = polish)
+        resid!(pr, Rx, Ry, Rz, u, q, ex); Φ = phi(pr, Rx, Ry, Rz)
+        logf(@sprintf("polish: %d Newton steps, Φ %.6e, Newton decrement %.3e", psteps, Φ, pdec))
+    end
     # stationarity at the returned u (Rx, Ry, Rz and q, qd, ex belong to it): undamped Gauss–Newton step and its predicted
     # relative decrease. Diagnostics only: u is not changed.
     gnd = start_ok ? 0.0 : NaN; gn = start_ok ? 0.0 : NaN; sits = 0; srel = start_ok ? 0.0 : NaN
@@ -420,7 +438,7 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
     cont_bad = gcount(par, count(!isfinite, @view Pfull[1:kc-1, :, :]))
     return (P = Pfull, Φ0 = Φ0, Φ = Φ, steps = steps, kc = kc, u0 = u0, u = u, reason = reason, gn_decrement = gnd,
             grad_norm = gn, cg_its = sits, cg_rel = srel, rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot),
-            phi0_zero = phi0_zero, cont_bad = cont_bad)
+            phi0_zero = phi0_zero, cont_bad = cont_bad, polish_steps = psteps, polish_decrement = pdec)
 end
 
 """ρ, τ₅₀₀ (exp_tail top closure) and z(τ₅₀₀ = 1) for every column of (ln T, P) on the height grid z (top first)."""
@@ -443,5 +461,7 @@ function tau_columns(tab, lnT, P, z; top = :exp_tail, H_max = 5.0e6, mu = 1.0)
     end
     return rho, tau, zt1
 end
+
+include("PoissonZAdjoint.jl")
 
 end # module PoissonZ
