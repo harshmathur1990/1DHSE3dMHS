@@ -1,0 +1,42 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{mhs-poisson-logm: implementation}{Technical notes on \code{run.mode = "mhs-poisson-logm"}. HSEMHS, 25 Nov 2026 (main 9280809).
+The solver of \code{mhs-poisson-ltau} (\code{solve\_tau}, \code{mass = true}); read its notes for everything not listed here.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/mhs-poisson-logm.toml
+\end{verbatim}}
+Driver \code{run\_mhs\_poisson\_ltau} with the mass axis; embedded as \code{prepare\_embedded(comm, :mhs\_poisson\_logm; axis = log10m,
+\dots, poisson = PoissonMassOptions(logm\_cut = -0.5, \dots))}. \code{PoissonMassOptions} wraps \code{PoissonTauOptions}, so that a
+$\tau$ cut cannot reach a mass axis. Keys: those of \code{mhs-poisson-ltau}, with \code{poisson.logm\_cut} ($-0.5$, $\log_{10}m$ in
+kg\,m$^{-2}$) in place of \code{logtau\_cut}; \code{cut\_frame = "vertical"} places it at $\log_{10}m_{\rm LOS}=$ \code{logm\_cut}
+$-\log_{10}\mu$. Input, output and units as \code{column-hse-logm} (\code{/mass\_grid}).
+
+\section{What differs from the $\tau$ axis}
+\begin{itemize}
+\item \code{evaluate!}: $a=\mu m/\rho$ in place of $\mu\tau/\chi$, so the heights $z_{k+1}=z_k-\tfrac12\Delta\ln m_k(a_k+a_{k+1})$
+need $\rho$ only; in the Jacobian the opacity derivative $\partial\ln\chi/\partial\ln P$ is replaced by $\partial\ln\rho/\partial\ln P$
+(\code{pr.mass}: $\rho$ in the place of $\chi$). Residuals, weights, preconditioners, steps, stop rule and status are unchanged.
+\item The start is \code{column\_hse\_tau(\dots; mass = true)}; above the cut $P=\mu gm$ and the start's relative heights.
+\item After the solve, $\log\tau$ by \code{logtau\_mass} and the gauge on it. Per-band diagnostics are by $\log m$
+(bands $[-9,-1)$, $[-1,0)$, $[0,1)$, $[1,2)$, $[2,9)$).
+\end{itemize}
+
+\input{common/parallel.tex}
+
+\adjointpoissontrue
+\input{common/adjoint.tex}
+
+\section{Verification and results}
+\begin{itemize}
+\item \code{test\_logm.jl} (``Jacobian on the mass axis'' at $(\mu,\phi)$ = (1, 0), (0.6, 45$^\circ$), (0.25, 120$^\circ$); ``Poisson
+solve''; viewing angle), \code{mpi/mpi\_view.jl}, \code{test\_adjoint.jl}, \code{mpi/mpi\_adjoint.jl}.
+\item $504^2\times76$ cube, one rank $\times$ 64 threads (\code{HSEMHS/reports/logm\_cut\_2026-11-03}): at the default cut 5 steps,
+converged, 167\,s; $z(\tau{=}1)$ rms 19.3\,km, correlation 0.778, Wilson depression $-82.5$\,km (snapshot $-77.9$\,km), rms
+$\Delta\ln P$ 0.069. Cuts $-2\ldots+0.5$ agree within 0.3\,km in $z(\tau{=}1)$ rms; $-3$ ends \code{max\_iter} at 25 steps.
+\item $252^2$ (\code{IO/tau252/input\_logm\_mu1.0.nc}, \code{paper\_252\_2026-11-10}): 6 steps, converged; $z(\tau{=}1)$ rms
+$56.6\to19.5$\,km. With polish 3 on one Zen\,3 node, 8 ranks $\times$ 8 threads: 168\,s solve, 62\,s adjoint.
+\item The rows are for an input whose $m$ comes from the snapshot's own $\rho$ and $P$; an inversion's $m$ is not that exact.
+\end{itemize}
+\end{document}

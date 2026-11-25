@@ -263,6 +263,17 @@ and the gauge, which needs one global mean. Finally the returned fields are chec
 $\chi$ positive, every evaluated state inside the table, and in every column the heights strictly decreasing with depth.
 The first failed check, if any, is reported.
 
+\section{The line of sight}\label{sec:view}
+An inversion of spectra observed away from disc centre gives $T$ and $\B$ along each ray, on optical depth measured along the ray,
+$\tau_{\rm LOS}$, with $\mu=\cos\theta$ the cosine of the angle to the vertical. The input is one ray per pixel on a common
+$\log\tau_{\rm LOS}$ axis. Along a ray the path through a layer of thickness $dz$ is $dz/\mu$, so $d\tau_{\rm LOS}=\chi\,dz/\mu$, and
+the hydrostatic equation in $\tau_{\rm LOS}$ carries a factor $\mu$: $d\ln P/d\ln\tau_{\rm LOS}=\mu g\tau_{\rm LOS}\rho/(\chi P)$.
+Two geometries: \emph{plane-parallel}, every ray treated as a vertical column with $\tau_{\rm LOS}=\tau/\mu$ (the convention of
+1.5-D radiative transfer); \emph{inclined}, the points of a ray at height $z$ displaced horizontally by $z\tan\theta$ in the
+direction of the azimuth. At $\mu=1$ both are the vertical case exactly.
+In this mode every ray is balanced on its own, so the inclined geometry gives the same result as the plane-parallel one: no
+horizontal balance is claimed.
+
 \section{Three dimensions: what the result does and does not satisfy}
 \begin{itemize}
 \item \textbf{Vertical:} every column obeys $dP/d\tau=g/\kappa$ (hydrostatic equilibrium) to the accuracy of the integration.
@@ -275,6 +286,9 @@ the mode \code{mhs-poisson-ltau} does starting from this result.
 as it ends up in space need not satisfy $\nabla\cdot\B=0$; this mode does not use derivatives of $\B$ and is not affected,
 but any later use of the field should keep it in mind.
 \end{itemize}
+
+\adjointcolumntrue
+\input{common/adjoint.tex}
 
 \section{Summary of the algorithm}
 \begin{enumerate}

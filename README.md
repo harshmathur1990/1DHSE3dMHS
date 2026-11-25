@@ -6,9 +6,10 @@ geometric-height grid (a simulation snapshot such as Bifrost) or on an optical-d
 inversion). The physics goes from independent hydrostatic columns to progressively more coupled magnetohydrostatic (MHS)
 approximations. The Julia package lives in `HSEMHS/`; this file is the entry point.
 
-**Status (2 Nov 2026, `main`, merged from `solver-time`).** All seven modes below are
-implemented and run with MPI + threads. All are documented here, and all but the two column-mass (logm) modes also have
-derivation PDFs ([Documentation](#documentation)). The six fixed-B modes take a viewing angle (μ, azimuth). The
+**Status (25 Nov 2026, `main`).** All seven modes below are implemented and run with MPI + threads, and all have
+derivation and implementation PDFs ([Documentation](#documentation)). The six fixed-B modes have an adjoint
+([Adjoint of the embedded equilibrium](#adjoint-of-the-embedded-equilibrium)), and the Poisson modes thread over all columns
+of a rank ([Running](#running)). The six fixed-B modes take a viewing angle (μ, azimuth). The
 τ-grid and column-mass modes read their input as already along that line of sight, and the height modes compute τ along it (see
 [Viewing angle](#viewing-angle)). That is not the same as scientifically converged results: see
 [Stopping, status and what "finished" means](#stopping-status-and-what-finished-means), the
@@ -278,6 +279,14 @@ slab modes need NX/R ≥ 2.
 `min(32, T)` for its solve and resets it to 1. FFTW: single-threaded plans, applied from Julia threads (FFTW's own
 threading crashes under Julia 1.13). No global environment variable governs all kernels.
 
+**Threads and layout (slab modes, since 25 Nov 2026).** Every loop over columns is threaded over all (y, x) columns of the
+rank (`Slab.@cols`), as are the Poisson operator products, preconditioners and FFT transposes, so a rank with few x columns still
+uses its threads. A hyades node has 8 NUMA domains, each with its own memory controller, and a rank's arrays live in one of them:
+**run one rank per NUMA domain** (8 per node) with its threads on that domain's cores. `test/scripts/numa_bind.sh` pins rank r of
+a node to domain r mod `NUMA_PER_NODE` (`mpiexec … numa_bind.sh julia …`). On one Zen 3 node, 8 ranks × 8 threads run
+`mhs-poisson-ltau` at 252² (25 steps + polish 3) in 67 s instead of 631 s on 1 rank × 64 threads ([Measured
+performance](#poisson-modes-after-the-threading-25-nov-2026)).
+
 **Distributed operations (slab modes).** x-halo planes via `MPI.Sendrecv!`; global sums and dot products by `Allreduce`
 (summation order differs with the rank count, so results agree to rounding, and iterative solvers can amplify that);
 layer medians and quantiles are exact global order statistics (bisection on order-preserving integer keys, no gathering);
@@ -304,7 +313,14 @@ both paths give the same file: the multi-rank tests check every dataset of both 
 Memory: the slab modes hold only their slab; `full-mhs-z` setup (`bif_setup.jl`) reads the **complete** raw input arrays
 on every rank before distributing them.
 
-**Multi-node on hyades (site-specific, not portable).** Used for the timings below; depends on files outside the
+**Multi-node over InfiniBand (hyades, site-specific).** MPI.jl's bundled MPICH (below) has no InfiniBand provider and runs over TCP,
+which gave no gain across nodes. `test/scripts/poisson_scaling_ompi.sh` runs over InfiniBand: OpenMPI 5.0.8 built against the
+nodes' UCX (`--with-ucx=/usr --without-hcoll`, plain `gcc`; loadgcc.sh's `CC=mpicc` links the hcoll OpenMPI), a Julia environment
+whose MPI.jl uses it (`MPIPreferences` system binary; HDF5.jl on the system's serial libhdf5, because HDF5_jll's OpenMPI build loads
+a second libmpi), `mpiexec --mca pml ucx`, one rank per NUMA domain. Details and timings:
+`HSEMHS/reports/poisson_parallel.md`.
+
+**Multi-node on hyades with MPICH over TCP (site-specific, not portable).** Used for the timings of October below; depends on files outside the
 repository (`~/.julia/bin/mhs_rank.sh`, `~/.julia/bin/ssh_bash_launcher`, a node-local Julia in `/tmp/julia-1.13.1`):
 
 ```sh
@@ -526,7 +542,7 @@ adj.status                                                     # :exact, :statio
   mean of ln P (a constraint); on the τ and mass axes the uniform shift of the cut heights (removed by the gauge) and the
   Nyquist modes of the centred horizontal differences. `adj.status` is `:stationary` when one undamped Newton step from the
   returned state predicts a relative decrease of Φ ≤ `stationary_tol` (1e-6; `adj.info["newton_decrement"]`).
-* **`poisson.polish = n`** (`PoissonZOptions`, `PoissonTauOptions`, default 0): up to n Newton steps with the exact
+* **`polish = n`** (`PoissonZOptions`, `PoissonTauOptions`, default 0; embedding API only, not a `[poisson]` key): up to n Newton steps with the exact
   Hessian after the Gauss–Newton solve. The Gauss–Newton solves damp every step, and their own decrement is measured
   with that damping, so a slow direction can remain far from stationary while the decrement is small: on the 11 × 12
   height-grid fixture 1000 steps were not enough, while 30 steps and 4 Newton steps reach a decrement of 1e-25. With
@@ -678,6 +694,21 @@ hyades4 EPYC 7742): Fourier 1 node × 1 rank × 32 threads 164 s, 1 × 3 × 32 1
 4 × 1 × 32 116 s; column blocks 164 / 123 / 87 s on 1 / 2 / 4 nodes × 1 × 32. Two ranks of 16 threads beat one of 32 per
 node.
 
+### Poisson modes after the threading (25 Nov 2026)
+
+252² columns, the adjoint benchmark's settings (25 Gauss–Newton steps + `polish = 3`), Zen 3 nodes, one rank per NUMA domain
+(8 ranks × 8 threads per node); multi-node over InfiniBand. Report: `HSEMHS/reports/poisson_parallel.md`.
+
+| Mode | 1 rank × 64 threads (before): solve / adjoint | 1 node: solve / adjoint | 2 / 4 / 8 nodes: solve + adjoint |
+|---|---|---|---|
+| `mhs-poisson-ltau` | 631 s / 555 s | 63.5–67 s / 51–52 s | 67 / 48 / 42 s (1.7 / 2.4 / 2.7×) |
+| `mhs-poisson-logm` | – | 168 s / 62 s | – |
+| `mhs-poisson-z` | 281 s / 9.5 s | 12.8 s / 2.2 s | – |
+
+The work is the same on every layout. Most of the τ and mass-axis time is the polish. The polish and the adjoint scale across nodes;
+the Gauss–Newton steps do not (2.6 s on 1 node, 4.0 s on 8: their CG is dominated by the preconditioner's `Alltoallv` and the
+scalar reductions, collective cost or imbalance not yet separated).
+
 ### Column-mass modes on the Bifrost cube (2–3 Nov 2026)
 
 `IO/input-mhs-logm.nc`, 76 levels, μ = 1, one rank × 64 threads per run (`column-hse-logm`: 2 Nov, one node), against the snapshot
@@ -725,10 +756,12 @@ were not compared across cuts.
 * Column-mass modes: tested on the full cube only at μ = 1, on one rank, on one snapshot, with m from the snapshot's true ρ and P;
   μ < 1 and multiple ranks only on the test fixture, and no full-cube slanted-ray input exists yet. A cgs axis without
   `units = "g cm-2"` scales every pressure by 10 and cannot be detected. τ₅₀₀ on the mass axis is one trapezoid per level
-  (no substeps), so it is less accurate across coarse hot-over-cool levels. No derivation PDFs yet.
+  (no substeps), so it is less accurate across coarse hot-over-cool levels.
+* Poisson modes across nodes: the polish and the adjoint scale (2.7× on 8 nodes), the Gauss–Newton steps do not scale past
+  2 nodes (MPI-bound CG, see above).
 * `full-mhs-z`: no production run has met its stopping rule; a run on the full cube takes more than a day on 4 nodes.
 * Adjoint: the EOS derivatives are those of the table interpolant; at its slope breaks (table node pairs 1e-9 apart) the
-  derivative is one-sided. The Poisson adjoints are exact only at a stationary state (use `poisson.polish`); the weights'
+  derivative is one-sided. The Poisson adjoints are exact only at a stationary state (use `polish` in the embedding options); the weights'
   dependence on the start goes through one median column per layer (exact away from ties).
 
 **Code follow-ups:** propagate the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping
@@ -745,18 +778,20 @@ fixed-B modes now exist through the embedded API.)
 | `column-hse-ltau` | [PDF](docs/physics/column-hse-ltau.pdf) · [TeX](docs/physics/column-hse-ltau.tex) | [PDF](docs/technical/column-hse-ltau.pdf) · [TeX](docs/technical/column-hse-ltau.tex) |
 | `mhs-poisson-z` | [PDF](docs/physics/mhs-poisson-z.pdf) · [TeX](docs/physics/mhs-poisson-z.tex) | [PDF](docs/technical/mhs-poisson-z.pdf) · [TeX](docs/technical/mhs-poisson-z.tex) |
 | `mhs-poisson-ltau` | [PDF](docs/physics/mhs-poisson-ltau.pdf) · [TeX](docs/physics/mhs-poisson-ltau.tex) | [PDF](docs/technical/mhs-poisson-ltau.pdf) · [TeX](docs/technical/mhs-poisson-ltau.tex) |
+| `column-hse-logm` | [PDF](docs/physics/column-hse-logm.pdf) · [TeX](docs/physics/column-hse-logm.tex) | [PDF](docs/technical/column-hse-logm.pdf) · [TeX](docs/technical/column-hse-logm.tex) |
+| `mhs-poisson-logm` | [PDF](docs/physics/mhs-poisson-logm.pdf) · [TeX](docs/physics/mhs-poisson-logm.tex) | [PDF](docs/technical/mhs-poisson-logm.pdf) · [TeX](docs/technical/mhs-poisson-logm.tex) |
 | `full-mhs-z` | [PDF](docs/physics/full-mhs-z.pdf) · [TeX](docs/physics/full-mhs-z.tex) | [PDF](docs/technical/full-mhs-z.pdf) · [TeX](docs/technical/full-mhs-z.tex) |
 
-Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.log/.out`).
-
-The column-mass modes have no PDFs yet: see [The column-mass modes](#the-column-mass-modes) and
-[Methods in brief](#methods-in-brief).
+Shared sections are in `docs/physics/common/` (the equation of state; the adjoint) and `docs/technical/common/` (the MPI layer,
+threads, NUMA layout and multi-node runs; the adjoint API). The two column-mass documents describe what differs from the τ-axis
+ones. Rebuild with `bash docs/build.sh` (pdflatex, twice per document; removes `.aux/.log/.out`); updated 25 Nov 2026.
 
 ## Repository map
 
 * `HSEMHS/src/` – the package (modes, EOS, operators, parallel layer, solvers); `HSEMHS/scripts/run.jl` – entry point.
 * `HSEMHS/config/` – mode configs (`modes/`), gate0 and EOS-table configs.
-* `HSEMHS/test/`, `HSEMHS/oracles/` – test suite and Python oracles.
+* `HSEMHS/test/`, `HSEMHS/oracles/` – test suite and Python oracles; `HSEMHS/test/scripts/` – parallel test and benchmark
+  launchers (`adjoint_parallel.sh`, `adjoint_benchmark.jl`, `poisson_scaling*.{jl,sh}`, `numa_bind.sh`).
 * `HSEMHS/scripts/m5_bifrost/` – the full-MHS driver (`m5h_fullres.jl`, `bif_setup.jl`) and M5-era experiment and
   analysis scripts; `HSEMHS/scripts/poisson/` – the original Poisson scripts (history; the modes supersede them).
 * `HSEMHS/reports/` – gate reports and earlier write-ups (`mu_mismatch_2026-11-02/`: a vertical-τ cube run at μ = 0.5

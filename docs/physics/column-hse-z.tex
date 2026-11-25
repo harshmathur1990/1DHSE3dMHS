@@ -215,7 +215,10 @@ of absorption lengths crossed. For light leaving vertically the optical depth of
 \tau_{500}(z)=\tau_{\rm top}+\int_z^{z_1}\chi_{500}(z')\,dz' ,\label{eq:tau}
 \end{equation}
 which grows downward. For a viewing angle $\theta$ the path through each layer is longer by $1/\mu$, $\mu=\cos\theta$, and
-the stored value is $\tau/\mu$ (default $\mu=1$). Light emitted at optical depth $\tau$ escapes with probability $e^{-\tau}$, so
+the stored value is $\tau/\mu$ (default $\mu=1$; the \emph{plane-parallel} view). In the \emph{inclined} view the integral
+follows the slanted rays through the cube instead: $\chi$ on each level is shifted horizontally by $z\tan\theta$ toward the azimuth,
+integrated with path $dz/\mu$, and $\tau$ shifted back. The pressure, density and $\chi$ do not depend on the view; only $\tau$
+and the height of $\tau=1$ do. Light emitted at optical depth $\tau$ escapes with probability $e^{-\tau}$, so
 most of the continuum light we see comes from around $\tau_{500}\approx1$, the ``visible surface''.
 
 \subsection{Discretisation}
@@ -289,6 +292,9 @@ $\bar\mu$), and moves the $\tau$ scale accordingly.
 pressure can differ substantially from that of the original simulation.
 \item The optical depth uses continuum extinction only and a model of the gas above the grid.
 \end{itemize}
+
+\adjointcolumntrue
+\input{common/adjoint.tex}
 
 \section{Summary of the algorithm}
 \begin{enumerate}

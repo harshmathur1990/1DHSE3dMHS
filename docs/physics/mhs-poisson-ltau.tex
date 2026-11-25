@@ -204,12 +204,14 @@ from them at the current heights.
 \item \textbf{Best compromise, not equilibrium:} the solution minimises Eq.~\eqref{eq:Phi}.
 \item \textbf{Pressure level from the $\tau$ scale:} the pressure on the cut level is that of the column-hydrostatic solution
 (top closure $P_1=g\tau_1/\kappa_1$); no external reference pressure.
-\item \textbf{Fixed upper atmosphere:} above $\log_{10}\tau=-4$ the columns are $\tau$-hydrostatic and rigid.
+\item \textbf{Fixed upper atmosphere:} above $\log_{10}\tau=-4$ (vertical depth; along a slanted ray $\log_{10}\tau_{\rm LOS}=
+-4-\log_{10}\mu$) the columns are $\tau$-hydrostatic and rigid.
 \item \textbf{Consistent opacity:} the input $\tau$ scale is the vertical 500\,nm continuum optical depth of the same LTE
 equation of state and opacity as the table.
 \item \textbf{Horizontally periodic box}, uniform horizontal spacing.
 \item \textbf{Weights} from the starting state, fixed.
-\item \textbf{LTE ideal gas; constant vertical gravity}; plane-parallel geometry.
+\item \textbf{LTE ideal gas} (the NLTE table is an experimental option); \textbf{constant vertical gravity}; rays vertical
+or slanted as in Sect.~\ref{sec:view}.
 \item \textbf{No condition on $\nabla\cdot\B$:} nothing enforces $\nabla\cdot\B=0$ for the field at its new positions.
 \end{enumerate}
 
@@ -276,7 +278,8 @@ have been checked against finite differences of the residuals.
 
 \subsection{Solving the linear system}
 Equation~\eqref{eq:normal} is symmetric and positive definite and is solved by the preconditioned conjugate-gradient method
-(only matrix--vector products are needed), from $\delta v=0$, to a relative residual of $10^{-3}$ or at most 80 iterations.
+(only matrix--vector products are needed), from $\delta v=0$, to a relative residual of $10^{-3}$ or at most 80 iterations
+(default), or with a tolerance adapted per step (Eisenstat--Walker forcing, \code{forcing = "ew"}).
 
 \subsection{The preconditioner}
 In a horizontally periodic box any function is a sum of horizontal waves, and a centred difference acts on a wave
@@ -300,6 +303,13 @@ B\mathsf Q^{\!\top}=\mathrm{diag}(\lambda)$, so
 for every wave at once. Applying the preconditioner costs a horizontal Fourier transform, two products with the small matrix
 $\mathsf Q$, and an inverse transform.
 
+The layer medians cannot represent columns that differ strongly from their layer, such as strong-field columns. Three alternatives
+are available: \emph{column blocks} (the exact $n\times n$ block of each column, which captures each column's own coupling but
+cannot carry the large horizontal scales), a \emph{hybrid} (the blocks plus the Fourier part on the longest waves), and
+\emph{switch} (the Fourier preconditioner until a linear solve reaches its iteration limit, the blocks after). On the Bifrost cube
+\code{switch} reached the same 25-step budget 1.9--4 times faster. The preconditioner changes only how fast the linear system is
+solved, not its solution.
+
 \subsection{Step control: Levenberg--Marquardt}
 A pure Gauss--Newton step can be too ambitious where the problem is strongly non-linear. Three safeguards keep it reliable:
 \begin{enumerate}
@@ -317,27 +327,35 @@ $10^{-3}$. It starts at \code{lm\_mu0} = 0 (pure Gauss--Newton).
 \end{enumerate}
 
 \subsection{Stopping rule}
-After each accepted step the relative decrease $\Delta\Phi/\Phi=(\Phi_{\rm old}-\Phi_{\rm new})/\Phi_{\rm old}$ is computed. The
-iteration stops when
-\begin{itemize}
-\item $\Delta\Phi/\Phi<\code{rtol}=10^{-4}$ on \code{n\_consec} = 3 consecutive steps (converged); or
-\item the number of steps reaches \code{max\_steps} (100); or
-\item no step is accepted even with the largest damping.
-\end{itemize}
-The stopping rule is on relative decreases of $\Phi$, which does not by itself prove that a minimum has been reached. As a
-diagnostic, one further undamped Gauss--Newton step is computed at the returned state (but not taken), and its predicted
-relative decrease of $\Phi$, the \textbf{Gauss--Newton decrement} $-\delta v^{\top}\mathsf J^{\top}\mathsf W\R/\Phi$, is
-reported together with the gradient norm $\|\mathsf J^{\top}\mathsf W\R\|$ and the stop reason (converged, step limit,
-or no descent). A small decrement means that the linear model sees little left to gain.
-The criterion is on the objective only. A single small decrease is not enough, because $\Phi$ is nearly flat along the
-heights of a few strong-field columns (Sect.~\ref{sec:det}) and an isolated small step can occur long before the minimum. The
-largest height change of each step and the percentiles of $z(\tau=1)$ are logged but not used to stop.
+A relative decrease of $\Phi$ alone is a weak test: $\Phi$ is nearly flat along the heights of a few strong-field columns
+(Sect.~\ref{sec:det}), so a small decrease can occur long before the minimum. The default rule therefore asks the linear model.
+At every step the \textbf{Gauss--Newton decrement}, the relative decrease $-\delta v^{\top}\mathsf J^{\top}\mathsf W\R/\Phi$ that an
+undamped step would predict, is computed. The iteration stops when it is below $10^{-3}$ (\code{gn\_tol}) on two consecutive steps,
+and the stop is then \textbf{qualified} at the returned state: an interval that contains the decrement, from a linear solve with
+the column-block preconditioner, must lie entirely below the tolerance; if the interval cannot be decided within its iteration
+budget the run ends \emph{unresolved}. Other ends: 25 steps (\code{max\_steps}; the run is then valid but not converged), no step
+accepted even with the largest damping, or a state at round-off, where no further decrease can be measured. The earlier rule,
+$\Delta\Phi/\Phi<10^{-4}$ on three consecutive steps, is still available (\code{stop = "phi"}). The heights' changes and the
+percentiles of $z(\tau=1)$ are logged but do not stop the iteration.
+
+The decrement is measured with the damping of the iteration, and a slowly converging direction can remain far from stationary
+while it is small. Where the exact stationary point matters (for the derivative of the result,
+Sect.~\ref{sec:adjoint}), a few Newton steps with the exact Hessian follow the iteration (\code{polish}).
 
 \subsection{After the iteration}
 All columns are shifted together so that the mean height of $\tau_{500}=1$ is zero (the gauge), and $\rho$ and $\chi$ are
 evaluated on all levels. The returned fields are then checked: every state inside the table, all values finite, $P$, $\rho$,
 $\chi$ positive, and the heights strictly decreasing with depth in every column (no folded column). The first failed check,
 if any, is reported.
+
+\section{The line of sight}\label{sec:view}
+An inversion of spectra observed away from disc centre gives $T$ and $\B$ along each ray, on optical depth measured along the ray,
+$\tau_{\rm LOS}$, with $\mu=\cos\theta$ the cosine of the angle to the vertical. The input is one ray per pixel on a common
+$\log\tau_{\rm LOS}$ axis; along a ray $d\tau_{\rm LOS}=\chi\,dz/\mu$. \emph{Plane-parallel}: every ray a vertical column with
+$\tau_{\rm LOS}=\tau/\mu$. \emph{Inclined}: the points of a ray at height $z$ displaced horizontally by $z\tan\theta$ toward the
+azimuth; the horizontal balance is then evaluated at the true positions, so the horizontal derivatives at fixed height carry the
+corresponding shear. At $\mu=1$ both are the vertical case exactly. The cut is placed at the vertical depth $\log_{10}\tau=-4$
+by default, i.e.\ at $\log_{10}\tau_{\rm LOS}=-4-\log_{10}\mu$ on the ray.
 
 \section{What is determined, and what is not}\label{sec:det}
 \begin{itemize}
@@ -363,6 +381,9 @@ being put in by hand, although for a given column the result also depends on its
 compromise balances the forces there. Conversely, hot granules have a high opacity, and their $\tau$ surfaces tend to lie
 higher.
 
+\adjointpoissontrue
+\input{common/adjoint.tex}
+
 \section{Summary of the algorithm}
 \begin{enumerate}
 \item Read $\ell_k$, $x$, $y$, $T$, $\B$. Compute the column-hydrostatic starting state in $\tau$ (top closure, Heun
@@ -372,8 +393,8 @@ pressure. Unknowns: $c$ per column and $\ln P$ below the cut.
 \item Compute the weights $\bar H_k$, $\overline{\Delta z}$ from the starting state; evaluate heights, $\Lv$, residuals and $\Phi$.
 \item Repeat: build and diagonalise the layer-median preconditioner; solve the damped normal equations by preconditioned CG;
 scale the step as a whole to the caps; backtrack; raise the damping if no trial lowers $\Phi$; accept and update the damping.
-Stop after three consecutive steps with $\Delta\Phi/\Phi<10^{-4}$, after 100 steps, or when no step is accepted; report
-the Gauss--Newton decrement at the result.
+Stop when the Gauss--Newton decrement is below $10^{-3}$ on two steps and the qualification confirms it, after 25 steps,
+or when no step is accepted; report the decrement at the result.
 \item Gauge the mean height of $\tau_{500}=1$ to zero; compute $\rho$; check the fields; write $z$, $P$, $\rho$, $T$, $\B$ and $z(\tau=1)$.
 \end{enumerate}
 \end{document}

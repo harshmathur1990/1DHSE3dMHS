@@ -1,0 +1,89 @@
+% Shared section of the technical documents of the six fixed-B modes: the adjoint of the embedded solve.
+% \input by each mode document (after \adjointcolumntrue or \adjointpoissontrue, see ../preamble.tex).
+\section{Adjoint (embedded API)}\label{sec:adjointapi}
+The cotangents of a solve's outputs pulled back to its inputs ($\ln T$ and the cell-centred $\B$), at a cost independent of
+how many inputs a caller varies. Design and decisions: \code{design/adjoint/}; results: \code{HSEMHS/reports/adjoint\_phase1-3.md},
+\code{adjoint\_phase4-6.md}. Code: \code{src/Adjoint.jl} (API), \code{src/ColumnHSEAdjoint.jl}, \code{src/PoissonTauAdjoint.jl},
+\code{src/PoissonZAdjoint.jl}, \code{src/Tau.jl}, \code{src/ViewTau.jl}; the table derivatives are WittBifrostEOS's \code{state\_d}.
+{\footnotesize\begin{verbatim}
+res = solve_embedded!(ws, lnT, Bx, By, Bz; record = true)  # keeps the tape; any later solve ends it
+bar = EquilibriumCotangent(ws)                             # zeros on this rank's slab, (vertical, y, x)
+bar.rho .= ...; bar.z .= ...       # any of Pgas, lnP, rho, ne, chi500, tau500, logtau500, z
+adj = adjoint_embedded!(ws, bar)   # collective; the tape is kept, so several cotangents work
+adj.lnT, adj.Bx, adj.By, adj.Bz    # d(loss)/d ln T and d(loss)/dB on the slab
+adj.status                         # :exact, :stationary or :not_stationary; details in adj.info
+\end{verbatim}}
+\begin{itemize}
+\item The call must follow a valid \code{solve\_embedded!} with \code{record = true} on the same workspace; a workspace without
+a tape, after a later solve, or whose last solve had a given $n_e$ (\code{lnne}) is refused (\code{InvalidInput}, on every rank).
+\code{Pgas} and \code{lnP} cotangents may both be given; they are combined. \code{z\_tau1} is a diagnostic and has no cotangent.
+\item Keywords: \code{cg\_tol} ($10^{-10}$; the Poisson adjoint solves), \code{cg\_maxit} (1000), \code{gauss\_newton} (false; true
+uses the Gauss--Newton Hessian instead, for comparison), \code{stationary\_tol} ($10^{-6}$).
+\ifadjointcolumn
+\item \textbf{Column modes:} reverse sweeps of the recorded integrator (\code{RK4Tape} on the height grid, \code{HeunTape} on the
+$\tau$ and mass axes: substep counts, the bound that set each Heun step and how often it was quartered, table cells), the top
+closure by the implicit function theorem, the alignment with its median reference (\code{gquantile\_vjp}), the gauge, the
+$\tau$ integration (\code{tau\_column\_vjp!}, \code{inclined\_tau\_vjp!} with the transposed shear) and the state at the nodes.
+\code{adj.status = :exact}. No communication except the reductions of the alignment and the gauge.
+\fi
+\ifadjointpoisson
+\item \textbf{Poisson modes:} the implicit-function derivative at the returned state: one CG solve with the exact Hessian of $\Phi$
+(Hessian--vector products by central differences of the exact gradient; relative step $10^{-5}$ on the $\tau$ grid,
+\code{HVP\_STEP}), the transposed mixed derivative in $(\ln T,\B)$, the weights through their layer-median columns, the
+continuation or fixed part above the cut, the gauge, and the column-HSE start. Directions in which $\Phi$ does not change are
+projected out of the solve and their cotangent passed to the start (height grid: the anchor-cell mean of $\ln P$, a bordered
+constraint; $\tau$ and mass axes: the uniform height shift and the Nyquist modes of the centred differences). The solve has its
+own block-Jacobi preconditioner (the exact Gauss--Newton column blocks with no damping on $\ln P$ and the measured curvature
+on $c$); the solver's preconditioners, built for its damped operator, made CG break down. \code{adj.status} is
+\code{:stationary} when one undamped Newton step from the returned state predicts a relative decrease of $\Phi$ at most
+\code{stationary\_tol} (\code{adj.info["newton\_decrement"]}, solved to CG tolerance $10^{-3}$), else \code{:not\_stationary}.
+\item \textbf{\code{polish} = $n$} (\code{PoissonZOptions}, \code{PoissonTauOptions}, default 0; embedding API only, not a
+\code{[poisson]} key of the file driver): up to $n$ Newton
+steps with the exact Hessian after the Gauss--Newton solve, so that the returned state is the stationary point the adjoint
+differentiates. Without it the Gauss--Newton solves can end far from stationarity although their damped decrement is small: on
+the $11\times12$ height-grid fixture 80, 300 and 1000 steps gave finite differences 4.4, 7.8 and 10.0 against the adjoint's
+10.2, and the anchor mean drifted by $5\times10^{-3}$; 30 steps and 4 Newton steps reach a decrement of $10^{-25}$.
+\fi
+\end{itemize}
+
+\textbf{Accuracy} (dot-product check against central differences of \code{solve\_embedded!}, Richardson, best over $h$;
+\code{test/test\_adjoint.jl}, \code{test/mpi/mpi\_adjoint.jl} on 2 and 3 ranks, which also equal rank 0 alone to $10^{-10}$):
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+case & 1 rank & 3 ranks \\ \midrule
+\ifadjointcolumn
+column-hse-ltau (ptot, $\B$); align none, $\B=0$; $\mu$ 0.8 inclined & $3.8\times10^{-10}$; $1.8\times10^{-9}$; $9.4\times10^{-9}$ & the same \\
+column-hse-logm (ptot, $\B$); $\mu$ 0.8 inclined & $9.3\times10^{-10}$; $2.6\times10^{-10}$ & $9.4\times10^{-10}$; $2.5\times10^{-10}$ \\
+column-hse-z anchor bottom / top / height; $\mu$ 0.8 inclined & $3.0\times10^{-8}$ / $5.7\times10^{-10}$ / $4.9\times10^{-9}$; $2.3\times10^{-9}$ & the same \\
+\fi
+\ifadjointpoisson
+mhs-poisson-z (30 Gauss--Newton steps + polish) & $6.4\times10^{-8}$ & $3.5\times10^{-8}$ \\
+mhs-poisson-ltau, default solver + polish & $3.0\times10^{-8}$ & $1.4\times10^{-9}$ \\
+mhs-poisson-ltau $\mu$ 0.8 inclined; block preconditioner & $5.8\times10^{-9}$; $2.3\times10^{-9}$ & $5.8\times10^{-9}$; $2.0\times10^{-9}$ \\
+mhs-poisson-logm, default solver + polish & $3.5\times10^{-9}$ & $3.9\times10^{-9}$ \\
+\fi
+\bottomrule
+\end{tabular}
+\end{center}
+\textbf{Cost} (252$^2$ columns, one rank $\times$ 64 threads, hyades5, \code{test/scripts/adjoint\_benchmark.jl}; the column
+times vary by about 30\,\% between runs):
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+mode & solve & recorded solve & adjoint \\ \midrule
+\ifadjointcolumn
+column-hse-ltau (96 levels) & 0.37\,s & 1.24\,s & 0.60\,s \\
+column-hse-logm (96 levels) & 0.36\,s & 0.79\,s & 0.63\,s \\
+column-hse-z (177 levels) & 0.81\,s & 1.74\,s & 2.51\,s \\
+\fi
+\ifadjointpoisson
+mhs-poisson-ltau (95 levels, polish 3), 1 rank $\times$ 64 threads & 631\,s & 649\,s & 555\,s \\
+the same, 8 ranks $\times$ 8 threads on one Zen\,3 node (Sect.~\ref{sec:parallel}) & 67\,s & -- & 52\,s \\
+mhs-poisson-z (177 levels, polish 3), 1 $\times$ 64 / 8 $\times$ 8 & 281\,s / 12.8\,s & 275\,s / -- & 9.5\,s / 2.2\,s \\
+\fi
+\bottomrule
+\end{tabular}
+\end{center}
+Limits: the derivatives at the table's slope breaks (node pairs $10^{-9}$ apart in $\ln T$) are those of the cell the point
+falls in, so a finite difference straddling a break does not match; the median weights are exact away from ties.

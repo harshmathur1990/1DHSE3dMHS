@@ -1,0 +1,66 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{mhs-poisson-logm: magnetohydrostatic correction on a column-mass grid}{Physics and method of
+\code{run.mode = "mhs-poisson-logm"} in HSEMHS, 25 Nov 2026. The solver of \code{mhs-poisson-ltau} on a mass axis: read that document
+for the derivations; this one gives the differences.}
+
+\begin{abstract}
+\noindent With $T$ and $\B$ given on surfaces of constant column mass $m$, this mode computes the gas pressure on every surface and
+the height of every surface in every column so that pressure, gravity and the Lorentz force of the given field balance as well as
+possible in all three directions, below a cut in $m$; above the cut the columns keep the hydrostatic pressure $P=gm$. It is the
+least-squares problem of \code{mhs-poisson-ltau} with the optical depth replaced by the column mass.
+\end{abstract}
+
+\section{From the optical-depth axis to the mass axis}
+The mass above a point changes as $dm=-\rho\,dz$, the optical depth as $d\tau=-\chi\,dz$. Every equation of \code{mhs-poisson-ltau}
+that involves the axis therefore holds with $\tau\to m$ and $\chi\to\rho$:
+\begin{itemize}
+\item \textbf{Heights:} $z_{k+1}=z_k-\tfrac12\Delta\ln m_k\,(a_k+a_{k+1})$ with $a=\mu m/\rho$ (on the $\tau$ axis $a=\mu\tau/\chi$).
+\item \textbf{Vertical balance along the axis:} with the Lorentz force, $dP/dz=-\rho g+L_z$ becomes
+$d\ln P/d\ln m=\mu m\,(g-L_z/\rho)/P$; without a field the solution is $P=\mu g m_{\rm LOS}$ exactly.
+\item \textbf{Horizontal balance on tilted surfaces, the Lorentz force in these coordinates, the objective $\Phi$, its weights, the
+unknowns} (the pressures below the cut and one height per column), \textbf{the Gauss--Newton iteration, its preconditioners and
+step control, and the stopping rule} are those of \code{mhs-poisson-ltau}; only $a$ and its derivative with respect to $\ln P$
+differ: $\partial\ln a/\partial\ln P=-\partial\ln\rho/\partial\ln P$, from the equation of state alone.
+\end{itemize}
+The opacity enters nowhere in the solve. The optical depth is computed afterwards, $d\tau=(\chi/\rho)\,m\,d\ln m$ (as in
+\code{column-hse-logm}), and the gauge sets the mean height of $\tau_{500}=1$ to zero.
+
+\section{The cut}
+\code{poisson.logm\_cut} $=-0.5$ (default; $m$ in kg\,m$^{-2}$) is the counterpart of $\log\tau=-4$ on the $\tau$ axis: on the Bifrost
+snapshot $\log\tau=-4$ has a median $\log_{10}(P/g)=-0.49$, and $\log_{10}m=-0.5$ a median $\log\tau=-3.98$. The two surfaces agree
+only in the median, since the opacity varies with $T$. In the snapshot the cut lies about 544\,km above the median $\tau=1$ surface,
+near the temperature minimum. With \code{cut\_frame = "vertical"} (default) it is placed at the vertical mass,
+$\log_{10}m_{\rm LOS}=$ \code{logm\_cut} $-\log_{10}\mu$ on the ray. Above the cut nothing is solved: $P=gm$ and the levels keep the
+hydrostatic heights of the starting state, so the chromosphere is not force-balanced.
+
+\section{The pressure level}
+On the $\tau$ axis the pressure level comes from the opacity through the top closure. On the mass axis it is fixed by the axis
+itself: at the cut level $P=gm$, which the solve keeps. No reference pressure and no opacity are needed; in exchange the result is
+only as good as the input $m$.
+
+\section{What the result means}
+On the Bifrost snapshot with $m$ from its own $\rho$ and $P$ (which an inversion does not have), $252^2$ columns at $\mu=1$: the heights
+of $\tau=1$ have an rms error of 19.5\,km against the snapshot (column HSE on the same axis: 56.6\,km); the magnetic depression is
+$-73.2$\,km against the snapshot's $-76.7$\,km; the run converged in 6 steps. On the $504^2$ cube, cuts from $-2$ to $+0.5$ give almost
+the same $z(\tau=1)$ (rms 19.2--19.6\,km), and at $-3$, where 89\,\% of the cube has $\beta<1$, the solve neither converges nor improves.
+
+\section{Assumptions}
+Those of \code{mhs-poisson-ltau} (static gas, $T$ and $\B$ fixed on their levels, best compromise rather than equilibrium, rigid
+atmosphere above the cut, periodic box, fixed weights, LTE, no condition on $\nabla\cdot\B$), with ``the input $\tau$ scale is
+consistent with the table's opacity'' replaced by: \textbf{the input mass axis is correct} (a cgs axis not marked
+\code{g cm-2} scales every pressure by 10).
+
+\adjointpoissontrue
+\input{common/adjoint.tex}
+
+\section{Summary of the algorithm}
+\begin{enumerate}
+\item Read $\log_{10}m$, $x$, $y$, $T$, $\B$. Column HSE on the mass axis (\code{column-hse-logm}) gives the start: $P=gm$, heights,
+alignment, gauge.
+\item Cut at $\log_{10}m=-0.5$ (vertical). Unknowns: $\ln P$ below the cut and the cut-level height of each column.
+\item Minimise $\Phi$ with the Gauss--Newton iteration of \code{mhs-poisson-ltau} ($a=\mu m/\rho$); stop on the qualified
+Gauss--Newton decrement, after 25 steps, or when no step is accepted.
+\item $\tau_{500}$ from $\kappa\,dm$; gauge the mean $z(\tau{=}1)$ to zero; check the fields; write.
+\end{enumerate}
+\end{document}
