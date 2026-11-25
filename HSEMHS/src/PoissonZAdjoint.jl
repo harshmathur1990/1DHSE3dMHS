@@ -16,8 +16,8 @@ end
 function gnop!(pr::Prob, out, v)
     jx = similar(v); jy = similar(v); jz = zeros(pr.n - 1, pr.ny, pr.nx)
     sddx!(jx, v, pr.dx, pr.par); sddy!(jy, v, pr.dy)
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny
+    @cols i j pr.nx pr.ny begin
+        @inbounds begin
             for k in 1:pr.n
                 e = pr.ex[k, j, i] * v[k, j, i]
                 jx[k, j, i] = -jx[k, j, i] - pr.lx[k, j, i] * e
@@ -42,17 +42,17 @@ function gradphi_a(pr::Prob, u)
     Rx, Ry, Rz = similar(u), similar(u), zeros(n - 1, ny, nx)
     eos!(pr, pr.q, pr.qd, pr.ex, u); resid!(pr, Rx, Ry, Rz, u, pr.q, pr.ex)
     Xb = zeros(n, ny, nx); Lxb = similar(u); Lyb = similar(u); Lzb = zeros(n, ny, nx)
-    sc = zeros(n, nx); sf = zeros(n - 1, nx)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    sc = zeros(n, ny, nx); sf = zeros(n - 1, ny, nx)     # per column (threads split the columns of one x)
+    @cols i j nx ny begin
+        @inbounds begin
             for k in 1:n
                 Lxb[k, j, i] = 2 * pr.wc[k] * Rx[k, j, i] * pr.ex[k, j, i]
                 Lyb[k, j, i] = 2 * pr.wc[k] * Ry[k, j, i] * pr.ex[k, j, i]
-                sc[k, i] += Rx[k, j, i]^2 + Ry[k, j, i]^2
+                sc[k, j, i] = Rx[k, j, i]^2 + Ry[k, j, i]^2
             end
             for f in 1:n-1
                 r = 2 * pr.wf[f] * Rz[f, j, i]
-                sf[f, i] += Rz[f, j, i]^2
+                sf[f, j, i] = Rz[f, j, i]^2
                 for (k, s) in ((f, 1), (f + 1, 1))
                     Lzb[k, j, i] += r * pr.ex[k, j, i] / 2
                     rX = H.state_d(pr.tab, pr.lT[k, j, i], u[k, j, i])[4]
@@ -61,14 +61,14 @@ function gradphi_a(pr::Prob, u)
             end
         end
     end
-    return Xb, Lxb, Lyb, Lzb, gsum(pr.par, vec(sum(sc; dims = 2))), gsum(pr.par, vec(sum(sf; dims = 2)))
+    return Xb, Lxb, Lyb, Lzb, gsum(pr.par, vec(sum(sc; dims = (2, 3)))), gsum(pr.par, vec(sum(sf; dims = (2, 3))))
 end
 
 """Transpose of `ddz!` (np.gradient-type ∂/∂z on a nonuniform top-first axis), added into `o`."""
 function ddz_t!(o, f, z)
     mz, my, mx = size(f)
-    Threads.@threads for i in 1:mx
-        @inbounds for j in 1:my
+    @cols i j mx my begin
+        @inbounds begin
             a = f[1, j, i] / (z[2] - z[1]); o[2, j, i] += a; o[1, j, i] -= a
             b = f[mz, j, i] / (z[mz] - z[mz-1]); o[mz, j, i] += b; o[mz-1, j, i] -= b
             for k in 2:mz-1
@@ -105,8 +105,8 @@ from u_{k+1}): moves ū on levels 1…kc−1 onto ū[kc] and adds the ln T cotan
 """
 function continuation_vjp!(Xb, ub, lT, u, z, tab, g, kc)
     nz, ny, nx = size(u)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny, k in 1:kc-1
+    @cols i j nx ny begin
+        @inbounds for k in 1:kc-1
             Δz = z[k] - z[k+1]
             r0, _, _, rX0, rY0, _, _, _, _, _ = H.state_d(tab, lT[k, j, i], u[k, j, i])
             r1, _, _, rX1, rY1, _, _, _, _, _ = H.state_d(tab, lT[k+1, j, i], u[k+1, j, i])

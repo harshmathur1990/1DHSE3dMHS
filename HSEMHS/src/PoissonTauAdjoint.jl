@@ -174,9 +174,10 @@ Adjoint of `logtau_mass` (all (nt, ny, nx)): adds ∂ℓ/∂(ln T) and ∂ℓ/�
 function logtau_mass_vjp!(Xbar, Ybar, lbar, lT, lnP, lm, tab)
     nt, ny, nx = size(lT)
     lnm = LN10 .* lm
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         f = zeros(nt); fX = zeros(nt); fY = zeros(nt); τ = zeros(nt); fb = zeros(nt)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             for k in 1:nt
                 r, _, c, rX, rY, _, _, cX, cY, _ = H.state_d(tab, lT[k, j, i], lnP[k, j, i])
                 f[k] = exp(c - r + lnm[k]); fX[k] = f[k] * (cX - rX); fY[k] = f[k] * (cY - rY)
@@ -232,16 +233,16 @@ function align_ptot_vjp!(par, zbar, ubar, Xbar, Bbar, z_col, lnP, lT, Bx, By, Bz
     end
     bottoms = [lpt(nt, j, i) for j in 1:ny, i in 1:nx][:]
     ref = gquantiles(par, [bottoms], 0.5)[1]
-    refbar = zeros(nx)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    refbar = zeros(ny, nx)                             # per column: the columns of one x run on different threads
+    @cols i j nx ny begin
+        @inbounds begin
             zrb = -sum(@view zbar[:, j, i])                  # z_out = z_col − z_r
             lb = lpt(nt, j, i)
             if lb < ref
                 r, _, _, rX, rY, _, _, _, _, _ = H.state_d(tab, lT[nt, j, i], lnP[nt, j, i])
                 q = exp(r - lnP[nt, j, i]); d = (ref - lb) / (g * q)
                 zbar[nt, j, i] += zrb
-                refbar[i] -= zrb / (g * q)
+                refbar[j, i] -= zrb / (g * q)
                 lpt_vjp!(zrb / (g * q), nt, j, i)
                 Xbar[nt, j, i] += zrb * d * rX; ubar[nt, j, i] += zrb * d * (rY - 1)
             else
@@ -255,7 +256,7 @@ function align_ptot_vjp!(par, zbar, ubar, Xbar, Bbar, z_col, lnP, lT, Bx, By, Bz
                     l0 = lpt(k - 1, j, i); l1 = lpt(k, j, i); D = l1 - l0; θ = (ref - l0) / D
                     dz = z_col[k, j, i] - z_col[k-1, j, i]
                     zbar[k-1, j, i] += zrb * (1 - θ); zbar[k, j, i] += zrb * θ
-                    refbar[i] += zrb * dz / D
+                    refbar[j, i] += zrb * dz / D
                     lpt_vjp!(zrb * dz * (θ - 1) / D, k - 1, j, i)
                     lpt_vjp!(-zrb * dz * θ / D, k, j, i)
                 end
@@ -294,8 +295,8 @@ end
 """Adjoint of `dzcol!` (o = ∂f/∂z down each column): adds to f̄ and z̄ for the cotangent ō."""
 function dzcol_vjp!(fb, zb, ob, f, z)
     nt, ny, nx = size(f)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny, k in 1:nt
+    @cols i j nx ny begin
+        @inbounds for k in 1:nt
             a, b = k == 1 ? (1, 2) : k == nt ? (nt - 1, nt) : (k - 1, k + 1)
             D = z[a, j, i] - z[b, j, i]; o = (f[a, j, i] - f[b, j, i]) / D; w = ob[k, j, i]
             fb[a, j, i] += w / D; fb[b, j, i] -= w / D
@@ -311,33 +312,51 @@ B̄z) and adds the height cotangent to `zb` (the curvilinear derivatives ∂/∂
 derivative depend on z).
 """
 function lorentz_tau_vjp(pr::TP, Lxb, Lyb, Lzb, zb)
-    z = pr.z; par = pr.par; tx = pr.tx; ty = pr.ty; sl = inclined(pr)
-    zx = sddx!(similar(z), z, pr.dx, par); zy = sddy!(similar(z), z, pr.dy)
-    function d(B)
-        fz = dzcol!(similar(B), B, z); fx = sddx!(similar(B), B, pr.dx, par); fy = sddy!(similar(B), B, pr.dy)
-        @. fx -= zx * fz; @. fy -= zy * fz
-        return fx, fy, sl ? (@. fz - tx * fx - ty * fy) : copy(fz), fz
-    end
+    z = pr.z; par = pr.par; tx = pr.tx; ty = pr.ty; sl = inclined(pr); dims = size(z)
+    zx = sddx!(buf(pr, :lv_zx, dims...), z, pr.dx, par); zy = sddy!(buf(pr, :lv_zy, dims...), z, pr.dy)
     Bx, By, Bz = pr.Bx, pr.By, pr.Bz
-    (Bxx, Bxy, Bxv, _), (Byx, Byy, Byv, _), (Bzx, Bzy, Bzv, _) = d(Bx), d(By), d(Bz)
-    Jx = (Bzy .- Byv) ./ MU0; Jy = (Bxv .- Bzx) ./ MU0; Jz = (Byx .- Bxy) ./ MU0
-    Bbx = Jz .* Lyb .- Jy .* Lzb; Bby = Jx .* Lzb .- Jz .* Lxb; Bbz = Jy .* Lxb .- Jx .* Lyb
-    Jxb = (By .* Lzb .- Bz .* Lyb) ./ MU0; Jyb = (Bz .* Lxb .- Bx .* Lzb) ./ MU0; Jzb = (Bx .* Lyb .- By .* Lxb) ./ MU0
-    Z() = zeros(size(z))
-    # (f̄x, f̄y, f̄v) of each component's derivatives
-    fbx = (Z(), -Jzb, Jyb); fby = (Jzb, Z(), -Jxb); fbz = (-Jyb, Jxb, Z())
-    zxb = Z(); zyb = Z(); t = Z()
-    for (B, Bb, (fxb, fyb, fvb)) in ((Bx, Bbx, fbx), (By, Bby, fby), (Bz, Bbz, fbz))
-        fz = dzcol!(similar(B), B, z)
-        fzb = copy(fvb)
-        if sl
-            fxb = fxb .- tx .* fvb; fyb = fyb .- ty .* fvb
+    # raw derivatives of each component (ray, x|τ, y|τ); the curvilinear ones are formed pointwise below
+    fz = ntuple(c -> dzcol!(buf(pr, (:lv_fz1, :lv_fz2, :lv_fz3)[c], dims...), (Bx, By, Bz)[c], z), 3)
+    fx = ntuple(c -> sddx!(buf(pr, (:lv_fx1, :lv_fx2, :lv_fx3)[c], dims...), (Bx, By, Bz)[c], pr.dx, par), 3)
+    fy = ntuple(c -> sddy!(buf(pr, (:lv_fy1, :lv_fy2, :lv_fy3)[c], dims...), (Bx, By, Bz)[c], pr.dy), 3)
+    Bbx = similar(z); Bby = similar(z); Bbz = similar(z)
+    xb = ntuple(c -> buf(pr, (:lv_xb1, :lv_xb2, :lv_xb3)[c], dims...), 3)     # f̄x, f̄y (slant folded in), f̄z per component
+    yb = ntuple(c -> buf(pr, (:lv_yb1, :lv_yb2, :lv_yb3)[c], dims...), 3)
+    zbc = ntuple(c -> buf(pr, (:lv_zb1, :lv_zb2, :lv_zb3)[c], dims...), 3)
+    zxb = buf(pr, :lv_zxb, dims...); zyb = buf(pr, :lv_zyb, dims...)
+    nk = dims[1]
+    @cols i j dims[3] dims[2] begin
+        @inbounds for k in 1:nk
+            sx = zx[k, j, i]; sy = zy[k, j, i]
+            dx_ = ntuple(c -> fx[c][k, j, i] - sx * fz[c][k, j, i], 3)            # ∂/∂x|_z, ∂/∂y|_z
+            dy_ = ntuple(c -> fy[c][k, j, i] - sy * fz[c][k, j, i], 3)
+            dv = ntuple(c -> sl ? fz[c][k, j, i] - tx * dx_[c] - ty * dy_[c] : fz[c][k, j, i], 3)   # ∂_ray, or ∂/∂z
+            Jx = (dy_[3] - dv[2]) / MU0; Jy = (dv[1] - dx_[3]) / MU0; Jz = (dx_[2] - dy_[1]) / MU0
+            lx = Lxb[k, j, i]; ly = Lyb[k, j, i]; lz = Lzb[k, j, i]; bx = Bx[k, j, i]; by = By[k, j, i]; bz = Bz[k, j, i]
+            Bbx[k, j, i] = Jz * ly - Jy * lz; Bby[k, j, i] = Jx * lz - Jz * lx; Bbz[k, j, i] = Jy * lx - Jx * ly
+            Jxb = (by * lz - bz * ly) / MU0; Jyb = (bz * lx - bx * lz) / MU0; Jzb = (bx * ly - by * lx) / MU0
+            # (f̄x, f̄y, f̄v) of each component's derivatives
+            fb = ((0.0, -Jzb, Jyb), (Jzb, 0.0, -Jxb), (-Jyb, Jxb, 0.0))
+            ax = 0.0; ay = 0.0
+            for c in 1:3
+                fxb, fyb, fvb = fb[c]
+                if sl
+                    fxb -= tx * fvb; fyb -= ty * fvb
+                end
+                xb[c][k, j, i] = fxb; yb[c][k, j, i] = fyb
+                zbc[c][k, j, i] = fvb - sx * fxb - sy * fyb
+                ax -= fxb * fz[c][k, j, i]; ay -= fyb * fz[c][k, j, i]
+            end
+            zxb[k, j, i] = ax; zyb[k, j, i] = ay
         end
-        sddx!(t, fxb, pr.dx, par); Bb .-= t; @. zxb -= fxb * fz; @. fzb -= zx * fxb
-        sddy!(t, fyb, pr.dy); Bb .-= t; @. zyb -= fyb * fz; @. fzb -= zy * fyb
-        dzcol_vjp!(Bb, zb, fzb, B, z)
     end
-    sddx!(t, zxb, pr.dx, par); zb .-= t; sddy!(t, zyb, pr.dy); zb .-= t
+    t = buf(pr, :lv_t, dims...)
+    for (c, Bb) in enumerate((Bbx, Bby, Bbz))
+        sddx!(t, xb[c], pr.dx, par); tmap!(-, Bb, Bb, t)
+        sddy!(t, yb[c], pr.dy); tmap!(-, Bb, Bb, t)
+        dzcol_vjp!(Bb, zb, zbc[c], (Bx, By, Bz)[c], z)
+    end
+    sddx!(t, zxb, pr.dx, par); tmap!(-, zb, zb, t); sddy!(t, zyb, pr.dy); tmap!(-, zb, zb, t)
     return Bbx, Bby, Bbz
 end
 
@@ -354,20 +373,26 @@ function resid_vjp(pr::TP, u, c)
     bad == 0 || H.invalid("resid_vjp: the state is outside the EOS table")
     nt, kc, n1, ny, nx = pr.nt, pr.kc, pr.n1, pr.ny, pr.nx
     tx = pr.tx; ty = pr.ty; sl = inclined(pr); vt = vertical(pr); g = pr.g; par = pr.par
-    rx = pr.wc .* pr.Rx .* 2; ry = pr.wc .* pr.Ry .* 2
-    rz = zeros(n1, ny, nx); @views rz[1:n1-1, :, :] .= 2 .* pr.wf .* pr.Rz[1:n1-1, :, :]
-    Z3() = zeros(nt, ny, nx); Zn() = zeros(n1, ny, nx)
-    ub = Z3(); Xb = Z3(); zb = Z3(); cb = zeros(ny, nx)
-    Lxb = Z3(); Lyb = Z3(); Lzb = Z3()
-    Wb = Zn(); ab = Zn(); eb = Zn(); qb = Zn()
-    un = u[kc:nt, :, :]; zn = pr.z[kc:nt, :, :]
-    zx = sddx!(similar(zn), zn, pr.dx, par); zy = sddy!(similar(zn), zn, pr.dy)
-    sc = zeros(n1, nx); sf = zeros(n1, nx)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    rx = buf(pr, :rv_rx, n1, ny, nx); ry = buf(pr, :rv_ry, n1, ny, nx); rz = buf(pr, :rv_rz, n1, ny, nx)
+    wc = pr.wc; wf = pr.wf
+    @cols i j nx ny begin
+        @inbounds for m in 1:n1
+            rx[m, j, i] = wc[m] * pr.Rx[m, j, i] * 2; ry[m, j, i] = wc[m] * pr.Ry[m, j, i] * 2
+            rz[m, j, i] = m < n1 ? 2 * wf[m] * pr.Rz[m, j, i] : 0.0
+        end
+    end
+    ub = zeros(nt, ny, nx); Xb = zeros(nt, ny, nx); zb = zbuf(pr, :rv_zb, nt, ny, nx); cb = zeros(ny, nx)
+    Lxb = zbuf(pr, :rv_Lxb, nt, ny, nx); Lyb = zbuf(pr, :rv_Lyb, nt, ny, nx); Lzb = zbuf(pr, :rv_Lzb, nt, ny, nx)
+    Wb = zbuf(pr, :rv_Wb, n1, ny, nx); ab = zbuf(pr, :rv_ab, n1, ny, nx); eb = zbuf(pr, :rv_eb, n1, ny, nx)
+    qb = zbuf(pr, :rv_qb, n1, ny, nx)
+    zn = levels!(buf(pr, :rv_zn, n1, ny, nx), pr.z, kc:nt)
+    zx = sddx!(buf(pr, :rv_zx, n1, ny, nx), zn, pr.dx, par); zy = sddy!(buf(pr, :rv_zy, n1, ny, nx), zn, pr.dy)
+    sc = zbuf(pr, :rv_sc, n1, ny, nx); sf = zbuf(pr, :rv_sf, n1, ny, nx)   # per column (threads split one x's columns)
+    @cols i j nx ny begin
+        @inbounds begin
             for m in 1:n1
-                sc[m, i] += pr.Rx[m, j, i]^2 + pr.Ry[m, j, i]^2
-                m < n1 && (sf[m, i] += pr.Rz[m, j, i]^2)
+                sc[m, j, i] = pr.Rx[m, j, i]^2 + pr.Ry[m, j, i]^2
+                m < n1 && (sf[m, j, i] = pr.Rz[m, j, i]^2)
             end
             if vt                                       # R_v = R_z − Δz t·R̄_h
                 for f in 1:n1-1
@@ -399,15 +424,20 @@ function resid_vjp(pr::TP, u, c)
         end
     end
     # the differences: −Dₓu and −W Dₓz (Dᵀ = −D)
-    t = similar(un)
-    sddx!(t, rx, pr.dx, par); @views ub[kc:nt, :, :] .+= t
-    sddy!(t, ry, pr.dy); @views ub[kc:nt, :, :] .+= t
-    sddx!(t, rx .* pr.W, pr.dx, par); @views zb[kc:nt, :, :] .+= t
-    sddy!(t, ry .* pr.W, pr.dy); @views zb[kc:nt, :, :] .+= t
+    t = buf(pr, :rv_t, n1, ny, nx); w = buf(pr, :rv_w, n1, ny, nx)
+    addlev!(A, t) = @cols i j nx ny begin                    # A[kc:nt, :, :] .+= t
+        @inbounds for m in 1:n1
+            A[kc+m-1, j, i] += t[m, j, i]
+        end
+    end
+    sddx!(t, rx, pr.dx, par); addlev!(ub, t)
+    sddy!(t, ry, pr.dy); addlev!(ub, t)
+    sddx!(t, tmap!(*, w, rx, pr.W), pr.dx, par); addlev!(zb, t)
+    sddy!(t, tmap!(*, w, ry, pr.W), pr.dy); addlev!(zb, t)
     Bb = lorentz_tau_vjp(pr, Lxb, Lyb, Lzb, zb)
     zrelb = zeros(kc, ny, nx)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             for k in 1:kc-1                              # z_k = c + zrel_k above the cut
                 cb[j, i] += zb[k, j, i]; zrelb[k, j, i] = zb[k, j, i]
             end
@@ -428,7 +458,7 @@ function resid_vjp(pr::TP, u, c)
         end
     end
     return (phi = Φ, ubar = ub, cbar = cb, Xbar = Xb, Bbar = Bb, zrelbar = zrelb,
-            Sc = gsum(par, vec(sum(sc; dims = 2))), Sf = gsum(par, vec(sum(sf; dims = 2)))[1:n1-1])
+            Sc = gsum(par, vec(sum(sc; dims = (2, 3)))), Sf = gsum(par, vec(sum(sf; dims = (2, 3))))[1:n1-1])
 end
 
 """Relative step of the central differences that give Hessian–vector and mixed products on the τ grid."""
@@ -454,9 +484,10 @@ height cotangent zb (nt): returns (c̄, z̄rel, ū, X̄).
 function heights_vjp(pr::TP, u, zb)
     nt, kc, n1, ny, nx = pr.nt, pr.kc, pr.n1, pr.ny, pr.nx
     cb = zeros(ny, nx); zrelb = zeros(kc, ny, nx); ub = zeros(nt, ny, nx); Xb = zeros(nt, ny, nx)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         ab = zeros(n1)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             fill!(ab, 0.0)
             for k in 1:kc-1
                 cb[j, i] += zb[k, j, i]; zrelb[k, j, i] = zb[k, j, i]
@@ -627,9 +658,10 @@ function tau_stationary_vjp(pr::TP, u, c, xb, u_start, c_start; cg_tol = 1e-10, 
     end
     Hw = [reshape(gquantile_vjp(par, vec(Hq[mm, :, :]), 0.5, Hbb[mm]), ny, nx) for mm in 1:n1]
     Zw = [reshape(gquantile_vjp(par, vec(dz[f, :, :]), 0.5, dzfb[f]), ny, nx) for f in 1:n1-1]
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         ab = zeros(n1)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             fill!(ab, 0.0)
             for f in 1:n1-1                             # Δz_f = Δℓ/2 (a_f + a_f+1) at the start
                 w = Zw[f][j, i]; w == 0 && continue

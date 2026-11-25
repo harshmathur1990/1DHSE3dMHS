@@ -123,8 +123,8 @@ function align_ptot!(par, z, lnP, lT, Bx, By, Bz, tab, g)
     lpt(k, j, i) = log(exp(lnP[k, j, i]) + (Bx[k, j, i]^2 + By[k, j, i]^2 + Bz[k, j, i]^2) / (2MU0))
     ref = gquantiles(par, [Float64[lpt(nt, j, i) for j in 1:ny, i in 1:nx][:]], 0.5)[1]
     nbelow = Threads.Atomic{Int}(0)
-    Threads.@threads for i in 1:nx
-        for j in 1:ny
+    @cols i j nx ny begin
+        begin
             if lpt(nt, j, i) < ref                                 # reference below the column: hydrostatic extrapolation
                 q, _ = q_chi(tab, lT[nt, j, i], lnP[nt, j, i])
                 zr = z[nt, j, i] - (ref - lpt(nt, j, i)) / (g * q)
@@ -151,8 +151,8 @@ function logtau_mass(lT, lnP, lm, tab)
     nt, ny, nx = size(lT)
     out = zeros(nt, ny, nx)
     lnm = LN10 .* lm
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             r, _, c, _ = H.state(tab, lT[1, j, i], lnP[1, j, i])
             f = exp(c - r + lnm[1]); τ = f
             out[1, j, i] = log10(τ)
@@ -182,8 +182,8 @@ end
 """Every owned column by `hse_tau!` (threaded), recording into `tapes` (a matrix of HeunTape) unless it is `nothing`."""
 function hse_columns!(lnP, z, lT, lt, tab, g, mu, mass, tapes, nfail, bar)
     nt, ny, nx = size(lT)
-    Threads.@threads for i in 1:nx
-        for j in 1:ny
+    @cols i j nx ny begin
+        begin
             hse_tau!(@view(lnP[:, j, i]), @view(z[:, j, i]), @view(lT[:, j, i]), lt, tab, g; mu = mu, mass = mass,
                      tape = tapes === nothing ? nothing : tapes[j, i]) ||
                 Threads.atomic_add!(nfail, 1)
@@ -301,6 +301,30 @@ mutable struct TP
     mlm::Float64                                    # Marquardt damping: the operator adds mlm · dlm
     fdamp::Bool                                     # :hybrid: the Fourier part includes mlm × the layer medians of dlm
     mass::Bool                                      # the axis is log10 m: a = μ m/ρ (else log10 τ: a = μ τ/χ)
+    tmp::Vector{Array{Float64,3}}                   # scratch (n1, ny, nx) of the operator kernels, see `scratch`
+    bufs::Dict{Symbol,Array{Float64,3}}             # named scratch of the residual kernels and their adjoints, see `buf`
+end
+
+"""Named scratch array of size `dims` (allocated on first use and reused; contents undefined on entry). Each kernel uses
+its own names, so a kernel's buffers survive the kernels it calls."""
+function buf(pr::TP, name::Symbol, dims::Vararg{Int,3})
+    a = get(pr.bufs, name, nothing)
+    if a === nothing || size(a) != dims
+        a = Array{Float64,3}(undef, dims); pr.bufs[name] = a
+    end
+    return a
+end
+
+"""`buf` filled with zeros (threaded)."""
+zbuf(pr::TP, name::Symbol, dims::Vararg{Int,3}) = tmap!(() -> 0.0, buf(pr, name, dims...))
+
+"""Scratch array number `s` (n1, ny, nx) of the operator kernels: allocated on first use, then reused (contents
+undefined on entry). Slots: Aop! 1–3, Jop! 4–7, JTop! 8–13, vertical_weights 14–15."""
+function scratch(pr::TP, s::Int)
+    while length(pr.tmp) < s
+        push!(pr.tmp, zeros(pr.n1, pr.ny, pr.nx))
+    end
+    return pr.tmp[s]
 end
 
 inclined(pr::TP) = pr.tx != 0 || pr.ty != 0
@@ -308,11 +332,22 @@ vertical(pr::TP) = pr.vert && inclined(pr)
 
 node(pr, m) = pr.kc + m - 1
 
+"""o .= A[ks, :, :] for a (k, j, i) array (threaded; a plain `A[ks, :, :]` runs on one thread)."""
+function levels!(o, A, ks)
+    nj, ni = size(A, 2), size(A, 3); k0 = first(ks) - 1
+    @cols i j ni nj begin
+        @inbounds for m in eachindex(ks)
+            o[m, j, i] = A[k0+m, j, i]
+        end
+    end
+    return o
+end
+
 """∂f/∂z down each column (centred in level index, one-sided at the ends), z top first."""
 function dzcol!(o, f, z)
     nt, ny, nx = size(f)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             o[1, j, i] = (f[1, j, i] - f[2, j, i]) / (z[1, j, i] - z[2, j, i])
             o[nt, j, i] = (f[nt-1, j, i] - f[nt, j, i]) / (z[nt-1, j, i] - z[nt, j, i])
             for k in 2:nt-1
@@ -329,14 +364,17 @@ J×B on the τ levels at heights z: ∂_ray along the column, ∂/∂x|_z = ∂/
 ∂z/∂y|_τ for the Jacobian.
 """
 function lorentz_tau!(pr::TP)
-    z = pr.z; par = pr.par; tx = pr.tx; ty = pr.ty; sl = inclined(pr)
-    zx = sddx!(similar(z), z, pr.dx, par); zy = sddy!(similar(z), z, pr.dy)
-    function d(B)
-        fz = dzcol!(similar(B), B, z); fx = sddx!(similar(B), B, pr.dx, par); fy = sddy!(similar(B), B, pr.dy)
-        @. fx -= zx * fz; @. fy -= zy * fz
-        return fx, fy, sl ? (@. fz - tx * fx - ty * fy) : fz, fz
+    z = pr.z; par = pr.par; tx = pr.tx; ty = pr.ty; sl = inclined(pr); dims = size(z)
+    zx = sddx!(buf(pr, :lt_zx, dims...), z, pr.dx, par); zy = sddy!(buf(pr, :lt_zy, dims...), z, pr.dy)
+    function d(B, nz, nx_, ny_, nv)
+        fz = dzcol!(buf(pr, nz, dims...), B, z); fx = sddx!(buf(pr, nx_, dims...), B, pr.dx, par)
+        fy = sddy!(buf(pr, ny_, dims...), B, pr.dy)
+        tmap!((a, b, c) -> a - b * c, fx, fx, zx, fz); tmap!((a, b, c) -> a - b * c, fy, fy, zy, fz)
+        return fx, fy, sl ? tmap!((a, b, c) -> a - tx * b - ty * c, buf(pr, nv, dims...), fz, fx, fy) : fz, fz
     end
-    (Bxx, Bxy, Bxv, Bxz), (Byx, Byy, Byv, Byz), (Bzx, Bzy, Bzv, Bzz) = d(pr.Bx), d(pr.By), d(pr.Bz)
+    (Bxx, Bxy, Bxv, Bxz) = d(pr.Bx, :lt_xz, :lt_xx, :lt_xy, :lt_xv)
+    (Byx, Byy, Byv, Byz) = d(pr.By, :lt_yz, :lt_yx, :lt_yy, :lt_yv)
+    (Bzx, Bzy, Bzv, Bzz) = d(pr.Bz, :lt_zz, :lt_zxx, :lt_zyy, :lt_zv)
     Bx, By, Bz = pr.Bx, pr.By, pr.Bz
     Threads.@threads for idx in eachindex(z)
         @inbounds begin
@@ -354,9 +392,9 @@ bad = the global number of cells whose state or opacity-derivative probes (ln P 
 function evaluate!(pr::TP, u, c)
     nt, kc, n1, ny, nx = pr.nt, pr.kc, pr.n1, pr.ny, pr.nx
     bad = Threads.Atomic{Int}(0); ε = EPS_PROBE; g = pr.g
-    ρu = similar(pr.a)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    ρu = buf(pr, :ev_ru, n1, ny, nx)
+    @cols i j nx ny begin
+        @inbounds begin
             for m in 1:n1
                 k = node(pr, m); lT = pr.lT[k, j, i]; lp = u[k, j, i]
                 r, dr, _ = H.lnrho_dY(pr.tab, lT, lp)
@@ -380,8 +418,8 @@ function evaluate!(pr::TP, u, c)
     nbad = gcount(pr.par, bad[]); nbad > 0 && return Inf, nbad
     Bxz, Byz, Bzz, zxf, zyf = lorentz_tau!(pr)
     tx = pr.tx; ty = pr.ty; sl = inclined(pr)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny, m in 1:n1
+    @cols i j nx ny begin
+        @inbounds for m in 1:n1
             k = node(pr, m); e = exp(-u[k, j, i]); bx = pr.Bx[k, j, i]; by = pr.By[k, j, i]; bz = pr.Bz[k, j, i]
             xz = Bxz[k, j, i]; yz = Byz[k, j, i]; zz = Bzz[k, j, i]; sx = zxf[k, j, i]; sy = zyf[k, j, i]
             cr(a1, a2, a3) = (a2 * bz - a3 * by, a3 * bx - a1 * bz, a1 * by - a2 * bx)
@@ -405,11 +443,11 @@ function evaluate!(pr::TP, u, c)
             pr.zden[m, j, i] = k < nt ? pr.z[k-1, j, i] - pr.z[k+1, j, i] : pr.z[nt-1, j, i] - pr.z[nt, j, i]
         end
     end
-    un = u[kc:nt, :, :]; zn = pr.z[kc:nt, :, :]
-    ux = sddx!(similar(un), un, pr.dx, pr.par); uy = sddy!(similar(un), un, pr.dy)
-    zx = sddx!(similar(zn), zn, pr.dx, pr.par); zy = sddy!(similar(zn), zn, pr.dy)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    un = levels!(buf(pr, :ev_un, n1, ny, nx), u, kc:nt); zn = levels!(buf(pr, :ev_zn, n1, ny, nx), pr.z, kc:nt)
+    ux = sddx!(buf(pr, :ev_ux, n1, ny, nx), un, pr.dx, pr.par); uy = sddy!(buf(pr, :ev_uy, n1, ny, nx), un, pr.dy)
+    zx = sddx!(buf(pr, :ev_zx, n1, ny, nx), zn, pr.dx, pr.par); zy = sddy!(buf(pr, :ev_zy, n1, ny, nx), zn, pr.dy)
+    @cols i j nx ny begin
+        @inbounds begin
             for m in 1:n1
                 k = node(pr, m); e = exp(-u[k, j, i]); q = pr.q[m, j, i]; a = pr.a[m, j, i]
                 Ln = sl ? pr.Lz[k, j, i] + tx * pr.Lx[k, j, i] + ty * pr.Ly[k, j, i] : pr.Lz[k, j, i]
@@ -508,10 +546,10 @@ Global.
 """
 function phi_floor(pr::TP, u)
     ε = ROUNDOFF_K * eps(Float64); tx = abs(pr.tx); ty = abs(pr.ty); vt = vertical(pr)
-    s = zeros(pr.nx)
-    Threads.@threads for i in 1:pr.nx
+    s = zeros(pr.ny, pr.nx)
+    @cols i j pr.nx pr.ny begin
         acc = 0.0
-        @inbounds for j in 1:pr.ny
+        @inbounds begin
             for m in 1:pr.n1
                 k = node(pr, m); e = exp(-u[k, j, i]); au = abs(u[k, j, i]); az = abs(pr.z[k, j, i]); aW = abs(pr.W[m, j, i])
                 sx = au / pr.dx + aW * az / pr.dx + abs(pr.Lx[k, j, i] * e)
@@ -529,16 +567,16 @@ function phi_floor(pr::TP, u)
                 acc += pr.wf[f] * (ε * sz)^2
             end
         end
-        s[i] = acc
+        s[j, i] = acc
     end
     return gsum(pr.par, sum(s))
 end
 
 function phi(pr::TP)
-    s = zeros(pr.nx)
-    Threads.@threads for i in 1:pr.nx
+    s = zeros(pr.ny, pr.nx)
+    @cols i j pr.nx pr.ny begin
         acc = 0.0
-        @inbounds for j in 1:pr.ny
+        @inbounds begin
             for m in 1:pr.n1
                 acc += pr.wc[m] * (pr.Rx[m, j, i]^2 + pr.Ry[m, j, i]^2)
             end
@@ -546,7 +584,7 @@ function phi(pr::TP)
                 acc += pr.wf[f] * pr.Rz[f, j, i]^2
             end
         end
-        s[i] = acc
+        s[j, i] = acc
     end
     return gsum(pr.par, sum(s))
 end
@@ -554,10 +592,11 @@ end
 """(jx, jy, jz) = J v; v slot 1 = δc, slots 2… = δ ln P."""
 function Jop!(pr::TP, jx, jy, jz, v)
     n1, ny, nx = pr.n1, pr.ny, pr.nx
-    du = copy(v); du[1, :, :] .= 0.0
-    dz = similar(v)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    du = scratch(pr, 4); dz = scratch(pr, 5); t = scratch(pr, 6); t2 = scratch(pr, 7)
+    @cols i j nx ny begin
+        @inbounds begin
+            du[1, j, i] = 0.0
+            for m in 2:n1; du[m, j, i] = v[m, j, i]; end
             dz[1, j, i] = v[1, j, i]
             for f in 1:n1-1
                 h = pr.dl[node(pr, f)] / 2
@@ -567,18 +606,13 @@ function Jop!(pr::TP, jx, jy, jz, v)
             jz[n1, j, i] = 0.0
         end
     end
-    t = similar(v)
     sddx!(jx, du, pr.dx, pr.par); sddx!(t, dz, pr.dx, pr.par)
-    Threads.@threads for idx in eachindex(jx)
-        @inbounds jx[idx] = -jx[idx] - pr.W[idx] * t[idx] + pr.lx[idx] * du[idx]
-    end
-    sddy!(jy, du, pr.dy); t2 = sddy!(similar(v), dz, pr.dy)
-    Threads.@threads for idx in eachindex(jy)
-        @inbounds jy[idx] = -jy[idx] - pr.W[idx] * t2[idx] + pr.ly[idx] * du[idx]
-    end
+    tmap!((a, W, b, l, d) -> -a - W * b + l * d, jx, jx, pr.W, t, pr.lx, du)
+    sddy!(jy, du, pr.dy); sddy!(t2, dz, pr.dy)
+    tmap!((a, W, b, l, d) -> -a - W * b + l * d, jy, jy, pr.W, t2, pr.ly, du)
     # Lorentz force through the heights: t = ∂_xδz, t2 = ∂_yδz, ζ from the vertical neighbours
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             Tp = 0.0
             for m in 1:n1
                 zm = m == 1 ? dz[1, j, i] : dz[m-1, j, i]          # δz above the cut = δc
@@ -594,8 +628,8 @@ function Jop!(pr::TP, jx, jy, jz, v)
     end
     if vertical(pr)                                    # δR_v = δR_ray − δΔz t·R̄_h − Δz t·δR̄_h
         tx = pr.tx; ty = pr.ty
-        Threads.@threads for i in 1:nx
-            @inbounds for j in 1:ny, f in 1:n1-1
+        @cols i j nx ny begin
+            @inbounds for f in 1:n1-1
                 jz[f, j, i] -= (dz[f, j, i] - dz[f+1, j, i]) * pr.vq[f, j, i] +
                                pr.vd[f, j, i] * 0.5 * (tx * (jx[f, j, i] + jx[f+1, j, i]) + ty * (jy[f, j, i] + jy[f+1, j, i]))
             end
@@ -605,9 +639,9 @@ end
 
 """Horizontal weights of JᵀR with the R̄_h part of the vertical-balance residual added (inclined, D0)."""
 function vertical_weights(pr::TP, rx0, ry0, rz)
-    rx = copy(rx0); ry = copy(ry0)
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, f in 1:pr.n1-1
+    rx = tmap!(identity, scratch(pr, 14), rx0); ry = tmap!(identity, scratch(pr, 15), ry0)
+    @cols i j pr.nx pr.ny begin
+        @inbounds for f in 1:pr.n1-1
             h = -0.5 * pr.vd[f, j, i] * rz[f, j, i]
             rx[f, j, i] += h * pr.tx; rx[f+1, j, i] += h * pr.tx
             ry[f, j, i] += h * pr.ty; ry[f+1, j, i] += h * pr.ty
@@ -620,14 +654,13 @@ end
 function JTop!(pr::TP, out, rx0, ry0, rz)
     n1, ny, nx = pr.n1, pr.ny, pr.nx; par = pr.par
     rx, ry = vertical(pr) ? vertical_weights(pr, rx0, ry0, rz) : (rx0, ry0)   # one assignment: no boxed captures
-    a = similar(out); b = similar(out)
+    a = scratch(pr, 8); b = scratch(pr, 9); t = scratch(pr, 10); gX = scratch(pr, 11); gY = scratch(pr, 12); gζ = scratch(pr, 13)
     sddx!(out, rx, pr.dx, par); sddy!(a, ry, pr.dy)            # (−D)ᵀ = D
-    @. out += a + pr.lx * rx + pr.ly * ry
-    @. a = pr.W * rx; @. b = pr.W * ry
-    t = similar(out); sddx!(t, a, pr.dx, par); sddy!(a, b, pr.dy); t .+= a   # gradient with respect to δz on the nodes
-    gX = similar(out); gY = similar(out); gζ = similar(out)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny, m in 1:n1
+    tmap!((o, a, lx, x, ly, y) -> o + (a + lx * x + ly * y), out, out, a, pr.lx, rx, pr.ly, ry)
+    tmap!(*, a, pr.W, rx); tmap!(*, b, pr.W, ry)
+    sddx!(t, a, pr.dx, par); sddy!(a, b, pr.dy); tmap!(+, t, t, a)   # gradient with respect to δz on the nodes
+    @cols i j nx ny begin
+        @inbounds for m in 1:n1
             sm = (m >= 2 ? pr.dl[node(pr, m - 1)] / 2 * rz[m-1, j, i] : 0.0) + (m < n1 ? pr.dl[node(pr, m)] / 2 * rz[m, j, i] : 0.0)
             X = rx[m, j, i]; Y = ry[m, j, i]
             gζ[m, j, i] = (pr.px[m, j, i] * X + pr.py[m, j, i] * Y + pr.zζ[m, j, i] * sm) / pr.zden[m, j, i]
@@ -635,9 +668,9 @@ function JTop!(pr::TP, out, rx0, ry0, rz)
             gY[m, j, i] = pr.pYx[m, j, i] * X + pr.pYy[m, j, i] * Y + pr.zY[m, j, i] * sm
         end
     end
-    sddx!(a, gX, pr.dx, par); t .-= a; sddy!(a, gY, pr.dy); t .-= a     # Dᵀ = −D
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    sddx!(a, gX, pr.dx, par); tmap!(-, t, t, a); sddy!(a, gY, pr.dy); tmap!(-, t, t, a)     # Dᵀ = −D
+    @cols i j nx ny begin
+        @inbounds begin
             for m in 1:n1-1
                 gg = gζ[m, j, i]
                 t[m == 1 ? 1 : m - 1, j, i] += gg; t[m+1, j, i] -= gg
@@ -651,8 +684,8 @@ function JTop!(pr::TP, out, rx0, ry0, rz)
             end
         end
     end
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             G = 0.0; tc = t[1, j, i]
             for f in n1-1:-1:1
                 h = pr.dl[node(pr, f)] / 2
@@ -671,25 +704,36 @@ end
 
 """Σ w (Jδ)² of Jop! output (the weights of Φ)."""
 function wnorm2(pr::TP, jx, jy, jz)
-    acc = zeros(size(jx, 3))
-    Threads.@threads for i in axes(jx, 3)
+    acc = zeros(size(jx, 2), size(jx, 3))
+    @cols i j size(jx, 3) size(jx, 2) begin
         a = 0.0
-        @inbounds for j in axes(jx, 2), m in 1:pr.n1
+        @inbounds for m in 1:pr.n1
             a += pr.wc[m] * (jx[m, j, i]^2 + jy[m, j, i]^2)
             m < pr.n1 && (a += pr.wf[m] * jz[m, j, i]^2)
         end
-        acc[i] = a
+        acc[j, i] = a
     end
     return gsum(pr.par, sum(acc))
 end
 
 function Aop!(pr::TP, out, v)
-    jx = similar(v); jy = similar(v); jz = similar(v)
+    jx = scratch(pr, 1); jy = scratch(pr, 2); jz = scratch(pr, 3)
     Jop!(pr, jx, jy, jz, v)
-    jx .*= pr.wc; jy .*= pr.wc; jz .*= vcat(pr.wf, 0.0)
+    n1 = pr.n1; wc = pr.wc; wf = pr.wf
+    @cols i j pr.nx pr.ny begin
+        @inbounds for m in 1:n1
+            jx[m, j, i] *= wc[m]; jy[m, j, i] *= wc[m]; jz[m, j, i] *= m < n1 ? wf[m] : 0.0
+        end
+    end
     JTop!(pr, out, jx, jy, jz)
-    @. out += pr.ereg * v
-    pr.mlm > 0 && (@. out += pr.mlm * pr.dlm * v)
+    ereg = pr.ereg; mlm = pr.mlm; dlm = pr.dlm
+    @cols i j pr.nx pr.ny begin
+        @inbounds for m in 1:n1
+            o = out[m, j, i] + ereg[m] * v[m, j, i]
+            mlm > 0 && (o += mlm * dlm[m, j, i] * v[m, j, i])
+            out[m, j, i] = o
+        end
+    end
     return out
 end
 
@@ -744,14 +788,19 @@ function fourier_minv!(pr::TP, out, r)
     T = fwd!(pr.S, pr.par, r)
     X = reshape(T, n1, :)
     size(pr.Yh) == size(X) || (pr.Yh = similar(X))
-    mul!(pr.Yh, pr.Q, X)
-    Threads.@threads for col in axes(pr.Yh, 2)
-        s = pr.s2[col]; w = pr.wk[col]
-        @inbounds for m in 1:n1
-            pr.Yh[m, col] *= w / (1 + s * pr.λ[m])
+    Y = pr.Yh; Q = pr.Q; Qt = pr.Qt; s2 = pr.s2; wk = pr.wk; λ = pr.λ
+    nc = size(X, 2); len = cld(nc, max(1, min(nc, 4 * Threads.nthreads())))
+    Threads.@threads :dynamic for c0 in 1:len:nc                  # Q X, the modal scaling and Qᵀ Y per chunk of modes
+        cr = c0:min(c0 + len - 1, nc)
+        @views mul!(Y[:, cr], Q, X[:, cr])
+        @inbounds for col in cr
+            s = s2[col]; w = wk[col]
+            for m in 1:n1
+                Y[m, col] *= w / (1 + s * λ[m])
+            end
         end
+        @views mul!(X[:, cr], Qt, Y[:, cr])
     end
-    mul!(X, pr.Qt, pr.Yh)
     bwd!(pr.S, pr.par, out)
     return out
 end
@@ -774,11 +823,12 @@ function colblocks!(pr::TP)
     Wh = xhalo(par, pr.W); Xxh = xhalo(par, pr.pXx); Xyh = xhalo(par, pr.pXy); zXh = xhalo(par, pr.zX); vdh = xhalo(par, pr.vd)
     hf = [pr.dl[node(pr, f)] / 2 for f in 1:n1-1]
     nfail = Threads.Atomic{Int}(0)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         Zm = zeros(n1, n1); Zt = zeros(n1, n1)                  # δz = Zm v; ζ = Zt v
         Jx = zeros(n1, n1); Jy = zeros(n1, n1); Jz = zeros(n1, n1 - 1); T = zeros(n1, n1)   # rows stored as columns
         cW = zeros(n1); c1 = zeros(n1); c2 = zeros(n1); cT = zeros(n1); cV = zeros(n1)        # neighbour coefficients
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             B = @view pr.blk[:, :, j, i]; fill!(B, 0.0)
             fill!(Zm, 0.0); Zm[1, 1] = 1.0                      # Zm[:, m] = row m of the δz map (transposed)
             for f in 1:n1-1
@@ -892,8 +942,8 @@ end
 """out = (L Lᵀ)⁻¹ r per column, L the factors of `colblocks!`."""
 function block_solve!(out, F, r)
     n1 = size(F, 1)
-    Threads.@threads for i in axes(r, 3)
-        @inbounds for j in axes(r, 2)
+    @cols i j size(r, 3) size(r, 2) begin
+        @inbounds begin
             L = @view F[:, :, j, i]
             for m in 1:n1; out[m, j, i] = r[m, j, i]; end
             for k in 1:n1                                       # L y = r
@@ -984,7 +1034,8 @@ function tp_setup(par, tab, g, lt, lT, Bx, By, Bz, z0, dx, dy; logtau_cut = -4.0
             ones(n1), ones(n1 - 1), zeros(n1), zeros(ComplexF64, 0, 0), zeros(ComplexF64, 0, 0), Float64[], s2,
             zeros(ComplexF64, n1, NX * length(jr)), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), Z(), ones(n1, ny, nx),
             Float64(mu), Float64(slant[1]), Float64(slant[2]), balance == :vertical, Z(), Z(),
-            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0, true, mass)
+            prec, zeros(0, 0, 0, 0), wk, zeros(0, 0, 0), 0.0, true, mass, Array{Float64,3}[],
+            Dict{Symbol,Array{Float64,3}}())
     return pr, c
 end
 

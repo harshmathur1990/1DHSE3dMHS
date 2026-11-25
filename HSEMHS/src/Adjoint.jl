@@ -137,8 +137,8 @@ function column_tau_core!(X̄, B̄, ws::EmbeddedWorkspace, ū, z̄, lnP; l̄ = n
     ws.column.align == "ptot" && PoissonTau.align_ptot_vjp!(par, z̄, ū, X̄, B̄, rec.z_col, lnP, lT, t.Bx, t.By, t.Bz,
                                                             ws.eos, ws.g)
     mu = ws.view.mu
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             PoissonTau.hse_tau_vjp!(@view(X̄[:, j, i]), @view(ū[:, j, i]), @view(z̄[:, j, i]), @view(lT[:, j, i]), ws.axis,
                                     ws.eos, ws.g, rec.tapes[j, i]; mu = mu, mass = mass)
         end
@@ -213,9 +213,10 @@ function height_tau_vjp!(χ̄, τ̄, ws::EmbeddedWorkspace, chi)
     o = ws.column; z = ws.axis; nk, ny, nx = size(chi)
     t = slant(ws.view)
     if t == (0.0, 0.0)
-        Threads.@threads for i in 1:nx
+        @cols i j nx ny begin
             tc = zeros(nk)
-            @inbounds for j in 1:ny
+        end begin
+            @inbounds begin
                 m = tau_column!(tc, @view(chi[:, j, i]), z; top = o.tau_top, H_max = o.H_max, mu = o.mu)
                 tau_column_vjp!(@view(χ̄[:, j, i]), @view(τ̄[:, j, i]), @view(chi[:, j, i]), z, m; mu = o.mu)
             end
@@ -237,8 +238,8 @@ function column_z_adjoint!(X̄, ws::EmbeddedWorkspace, bar)
     ū = zeros(size(lT))
     state_vjp!(X̄, ū, bar, lT, res.lnP, ws.eos; chibar = χ̄)     # the state at ln P (ln P_ref at the anchor node)
     o = hse_opts(ws.column, ws.g)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             hse_column_vjp!(@view(X̄[:, j, i]), @view(ū[:, j, i]), @view(lT[:, j, i]), ws.axis, ws.eos, o, rec.rk4[j, i];
                             u = @view(res.lnP[:, j, i]))      # the recorded ln P (the replay's, bit for bit)
         end
@@ -288,8 +289,8 @@ function poisson_z_adjoint!(X̄, B̄, ws, bar, info; cg_tol, cg_maxit, gauss_new
     end
     oo = hse_opts(ws.column, ws.g)
     lnP0 = log.(res.Pgas_start)                                       # the column-HSE start (to rounding)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             hse_column_vjp!(@view(X̄[:, j, i]), @view(ū0[:, j, i]), @view(lT[:, j, i]), z, ws.eos, oo, rec.rk4[j, i];
                             u = @view(lnP0[:, j, i]))
         end

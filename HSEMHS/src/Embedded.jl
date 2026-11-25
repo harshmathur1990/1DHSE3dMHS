@@ -612,8 +612,8 @@ end
 τ and z: heights are the axis on the height grid (τ integrated on them); on the τ grid z = ∫ μ dτ/χ₅₀₀, gauged to mean z(τ = 1) = 0."""
 function ne_given!(ws::EmbeddedWorkspace, lT, lnne, st)
     par = ws.par; res = ws.res; nk, ny, nx = size(lT)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny, k in 1:nk
+    @cols i j nx ny begin
+        @inbounds for k in 1:nk
             lp = lnP_from_lnne(ws.eos, lT[k, j, i], lnne[k, j, i])
             res.lnP[k, j, i] = lp; res.Pgas[k, j, i] = exp(lp)
         end
@@ -630,8 +630,8 @@ function ne_given!(ws::EmbeddedWorkspace, lT, lnne, st)
         height_state!(ws, lT)
     else
         τ = exp10.(ws.axis); mu = ws.view.mu
-        Threads.@threads for i in 1:nx
-            @inbounds for j in 1:ny
+        @cols i j nx ny begin
+            @inbounds begin
                 res.z[1, j, i] = 0.0
                 g0 = τ[1] / exp(state(ws.eos, lT[1, j, i], res.lnP[1, j, i])[3])
                 for k in 1:nk-1
@@ -704,9 +704,10 @@ per node, as `PoissonZ.tau_columns`)."""
 function height_state!(ws::EmbeddedWorkspace, lT)
     res = ws.res; z = ws.axis; o = ws.column
     nk, ny, nx = size(lT)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         chi = zeros(nk); tc = zeros(nk)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             for k in 1:nk
                 r, n, c, s = state(ws.eos, lT[k, j, i], log(res.Pgas[k, j, i]))
                 res.rho[k, j, i] = exp(r); res.ne[k, j, i] = exp(n); chi[k] = exp(c)
@@ -760,8 +761,8 @@ function tau_state!(ws::EmbeddedWorkspace, lT)
     res = ws.res; lt = ws.axis
     nk, ny, nx = size(lT)
     lτ = mass_mode(ws.mode) ? PoissonTau.logtau_mass(lT, res.lnP, lt, ws.eos) : nothing
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             for k in 1:nk
                 r, n, c, s = state(ws.eos, lT[k, j, i], res.lnP[k, j, i])
                 res.rho[k, j, i] = exp(r); res.ne[k, j, i] = exp(n); res.chi500[k, j, i] = exp(c)

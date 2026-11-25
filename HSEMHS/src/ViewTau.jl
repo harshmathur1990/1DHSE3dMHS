@@ -40,8 +40,8 @@ function shear_levels(par::ParCtx, A::AbstractArray{Float64,3}, z, dx, dy, t, s)
     for k in 1:nz
         G = allgather_plane(par, view(A, k, :, :))
         fx = s * t[1] * z[k] / dx; fy = s * t[2] * z[k] / dy
-        Threads.@threads for i in 1:nx
-            @inbounds for j in 1:ny
+        @cols i j nx ny begin
+            @inbounds begin
                 out[k, j, i] = pbilin(G, b.j0 + j - 2 + fy, b.i0 + i - 2 + fx)
             end
         end
@@ -59,9 +59,10 @@ the ray through each owned footprint.
 function inclined_tau!(tau, zt1, ttm, par::ParCtx, chi, z, dx, dy, mu, t; top::Symbol = :exp_tail, H_max::Float64 = 5.0e6)
     nz, ny, nx = size(chi)
     sh = shear_levels(par, chi, z, dx, dy, t, 1.0)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         tc = zeros(nz)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             ttm[j, i] = tau_column!(tc, @view(sh[:, j, i]), z; top = top, H_max = H_max, mu = mu)
             zt1[j, i] = z_tau1(tc, z)
             sh[:, j, i] .= tc
@@ -112,8 +113,8 @@ function inclined_tau_vjp!(chibar, taubar, par::ParCtx, chi, z, dx, dy, mu, t, t
     sh = shear_levels(par, chi, z, dx, dy, t, 1.0)
     tcbar = shear_levels_t(par, taubar, z, dx, dy, t, -1.0)
     shbar = zeros(nz, ny, nx)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             tau_column_vjp!(@view(shbar[:, j, i]), @view(tcbar[:, j, i]), @view(sh[:, j, i]), z, ttm[j, i]; mu = mu)
         end
     end

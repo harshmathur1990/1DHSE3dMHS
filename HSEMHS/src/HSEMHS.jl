@@ -48,6 +48,7 @@ include("ColumnHSE.jl")
 include("ColumnHSEAdjoint.jl")
 include("RunColumnHSE.jl")
 include("Slab.jl")
+using .Slab: @cols, tmap!, tsum, tdot
 include("ViewTau.jl")
 include("PoissonZ.jl")
 include("PoissonTau.jl")

@@ -35,8 +35,8 @@ end
 """np.gradient-type ∂/∂z on a (z, y, x) array, z top first (local: columns are complete on every rank)."""
 function ddz!(o, f, z)
     mz, my, mx = size(f)
-    Threads.@threads for i in 1:mx
-        @inbounds for j in 1:my
+    @cols i j mx my begin
+        @inbounds begin
             o[1, j, i] = (f[2, j, i] - f[1, j, i]) / (z[2] - z[1])
             o[mz, j, i] = (f[mz, j, i] - f[mz-1, j, i]) / (z[mz] - z[mz-1])
             for k in 2:mz-1
@@ -65,8 +65,8 @@ function resid!(pr::Prob, Rx, Ry, Rz, u, q, ex)
     sddx!(Rx, u, pr.dx, pr.par); sddy!(Ry, u, pr.dy)
     @. Rx = pr.lx * ex - Rx; @. Ry = pr.ly * ex - Ry
     h = pr.h; lz = pr.lz; g = pr.g
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, f in 1:pr.n-1
+    @cols i j pr.nx pr.ny begin
+        @inbounds for f in 1:pr.n-1
             Rz[f, j, i] = -(u[f, j, i] - u[f+1, j, i]) / h[f] - g * (q[f, j, i] + q[f+1, j, i]) / 2 +
                           (lz[f, j, i] * ex[f, j, i] + lz[f+1, j, i] * ex[f+1, j, i]) / 2
         end
@@ -74,10 +74,10 @@ function resid!(pr::Prob, Rx, Ry, Rz, u, q, ex)
 end
 
 function phi(pr::Prob, Rx, Ry, Rz)
-    part = zeros(pr.nx); wc = pr.wc; wf = pr.wf
-    Threads.@threads for i in 1:pr.nx
+    part = zeros(pr.ny, pr.nx); wc = pr.wc; wf = pr.wf
+    @cols i j pr.nx pr.ny begin
         a = 0.0
-        @inbounds for j in 1:pr.ny
+        @inbounds begin
             for k in 1:pr.n
                 a += wc[k] * (Rx[k, j, i]^2 + Ry[k, j, i]^2)
             end
@@ -85,7 +85,7 @@ function phi(pr::Prob, Rx, Ry, Rz)
                 a += wf[f] * Rz[f, j, i]^2
             end
         end
-        part[i] = a
+        part[j, i] = a
     end
     return gsum(pr.par, sum(part))
 end
@@ -98,17 +98,17 @@ end
 """out = Jᵀ W (Rx, Ry, Rz)."""
 function JtW!(pr::Prob, out, Rx, Ry, Rz)
     wc = pr.wc; wf = pr.wf
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, k in 1:pr.n
+    @cols i j pr.nx pr.ny begin
+        @inbounds for k in 1:pr.n
             pr.tx[k, j, i] = wc[k] * Rx[k, j, i]; pr.ty[k, j, i] = wc[k] * Ry[k, j, i]
         end
     end
     sddx!(out, pr.tx, pr.dx, pr.par); sddy!(pr.jx, pr.ty, pr.dy)               # (−D)ᵀ = D
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, k in 1:pr.n
+    @cols i j pr.nx pr.ny begin
+        @inbounds for k in 1:pr.n
             out[k, j, i] += pr.jx[k, j, i] - pr.ex[k, j, i] * (pr.lx[k, j, i] * pr.tx[k, j, i] + pr.ly[k, j, i] * pr.ty[k, j, i])
         end
-        @inbounds for j in 1:pr.ny, f in 1:pr.n-1
+        @inbounds for f in 1:pr.n-1
             r = wf[f] * Rz[f, j, i]
             out[f, j, i] -= coef_a(pr, f, j, i) * r
             out[f+1, j, i] -= coef_b(pr, f, j, i) * r
@@ -120,10 +120,10 @@ end
 """out = (Jᵀ W J + damping + anchor) v."""
 function Aop!(pr::Prob, out, v)
     sddx!(pr.jx, v, pr.dx, pr.par); sddy!(pr.jy, v, pr.dy)
-    part = zeros(pr.nx)                                   # anchor: Σ v over the anchor cells, per x slice
-    Threads.@threads for i in 1:pr.nx
+    part = zeros(pr.ny, pr.nx)                                   # anchor: Σ v over the anchor cells, per x slice
+    @cols i j pr.nx pr.ny begin
         sa = 0.0
-        @inbounds for j in 1:pr.ny
+        @inbounds begin
             for k in 1:pr.n
                 e = pr.ex[k, j, i] * v[k, j, i]
                 pr.jx[k, j, i] = -pr.jx[k, j, i] - pr.lx[k, j, i] * e
@@ -134,12 +134,12 @@ function Aop!(pr::Prob, out, v)
                 pr.jz[f, j, i] = -(coef_a(pr, f, j, i) * v[f, j, i] + coef_b(pr, f, j, i) * v[f+1, j, i])
             end
         end
-        part[i] = sa
+        part[j, i] = sa
     end
     JtW!(pr, out, pr.jx, pr.jy, pr.jz)
     as = pr.Aanc * gsum(pr.par, sum(part))
-    Threads.@threads for i in 1:pr.nx                    # damping and anchor (threaded: masked indexing allocates)
-        @inbounds for j in 1:pr.ny, k in 1:pr.n
+    @cols i j pr.nx pr.ny begin # damping and anchor (threaded: masked indexing allocates)
+        @inbounds for k in 1:pr.n
             out[k, j, i] += pr.ereg[k] * v[k, j, i] + (pr.anc[k, j, i] ? as : 0.0)
         end
     end
@@ -183,10 +183,11 @@ function Minv!(pr::Prob, out, r)
     n = pr.n; S = pr.S; par = pr.par; Ncol = pr.ny * pr.NX
     T = fwd!(S, par, r)
     nyhl = size(T, 3)
-    Threads.@threads for jl in 1:nyhl
+    @cols jl kx nyhl S.nx begin                                   # every (kx, local ky) mode
         cp = zeros(n); dp = zeros(ComplexF64, n)
+    end begin
         ky = S.jr[par.rank+1][1] + jl - 1
-        for kx in 1:S.nx
+        begin
             x = @view T[:, kx, jl]
             thomas!(x, cp, dp, pr, pr.sx2[kx] + pr.sy2[ky])
             if kx == 1 && ky == 1
@@ -419,8 +420,8 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
 
     # ---- full column: solved region below z_cut, hydrostatic integration above it ----
     Pfull = copy(P0); Pfull[R, :, :] .= exp.(u)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             for k in kc-1:-1:1
                 Δz = z[k] - z[k+1]
                 ub = log(Pfull[k+1, j, i]); lrb, _, _ = H.lnrho_dY(tab, lnT[k+1, j, i], ub); qb = exp(lrb - ub)
@@ -445,9 +446,10 @@ end
 function tau_columns(tab, lnT, P, z; top = :exp_tail, H_max = 5.0e6, mu = 1.0)
     nz, ny, nx = size(P)
     rho = similar(P); tau = similar(P); zt1 = zeros(ny, nx)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         chi = zeros(nz); tc = zeros(nz)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             for k in 1:nz
                 r, _, c, _ = H.state(tab, lnT[k, j, i], log(P[k, j, i]))
                 rho[k, j, i] = exp(r); chi[k] = exp(c)
