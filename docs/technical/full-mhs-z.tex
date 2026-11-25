@@ -1,6 +1,7 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{full-mhs-z: implementation}{Technical notes on \code{run.mode = "full-mhs-z"} (the M5 joint Gauss--Newton driver, M5i defaults). HSEMHS, 24 Oct 2026.}
+\doctitle{full-mhs-z: implementation}{Technical notes on \code{run.mode = "full-mhs-z"} (the M5 joint Gauss--Newton driver, M5i defaults). HSEMHS, 24 Oct 2026; checked 25 Nov 2026 (the driver is
+unchanged; the EOS code is now WittBifrostEOS's, with identical results).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
@@ -16,8 +17,9 @@ Run directly (\code{julia --project=. scripts/m5\_bifrost/m5h\_fullres.jl OUTDIR
 environment variables with its own defaults: 5\,\% relative $\sigma$, trust region on, height stop (\code{dz}): the M5h
 configuration. The environment constants are read once, at include time.
 
-\textbf{Forwarded keys.} Only \code{input.file}, \code{eos.table\_file}, \code{run.output} (a directory) and
-\code{full\_mhs.*}. Not forwarded: \code{physics.g} (gravity from the file attribute), \code{[column\_hse]}, \code{[mhs]},
+\textbf{Forwarded keys.} Only \code{input.file}, \code{eos.table\_file} (or, with \code{eos.model = "nlte"},
+\code{eos.nlte\_table\_file}: the path only, without the model check; never run with the NLTE table), \code{run.output} (a
+directory) and \code{full\_mhs.*}. It rejects $\mu\ne1$ and has no adjoint and no embedded API. Not forwarded: \code{physics.g} (gravity from the file attribute), \code{[column\_hse]}, \code{[mhs]},
 \code{[parallel]} (the process grid is chosen by \code{bif\_problem}), \code{[tau]}, \code{[output]},
 \code{run.overwrite}, the input dataset names. $P_{\rm ref}$ comes from the attribute \code{P\_ref\_Pa}.
 

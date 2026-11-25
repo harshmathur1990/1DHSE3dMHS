@@ -1,6 +1,7 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-ltau: implementation}{Technical notes on \code{run.mode = "column-hse-ltau"}. HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
+\doctitle{column-hse-ltau: implementation}{Technical notes on \code{run.mode = "column-hse-ltau"}. HSEMHS, 25 Nov 2026 (main 9280809:
+viewing angle, given $n_e$, NLTE EOS, exit codes, adjoint).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
@@ -19,6 +20,9 @@ Key & Default & Meaning \\ \midrule
 \code{input.x}, \code{input.y} & \code{x}, \code{y} & names of the coordinate datasets \\
 \code{physics.g} & \code{"from\_input"} & number, or the file attribute \code{gravity\_m\_s2} (error if absent) \\
 \code{eos.table\_file} & \code{cache/}\allowbreak\code{eos\_table\_fullz.h5} & EOS and opacity table \\
+\code{eos.model}, \code{nlte\_table\_file} & \code{lte}, \code{cache/}\allowbreak\code{eos\_table\_nlte.h5} & \code{nlte} (experimental): the NLTE table in place of \code{table\_file} \\
+\code{view.mu}, \code{azimuth\_deg}, \code{geometry} & 1, 0, \code{plane\_parallel} & line of sight of the input rays (below) \\
+\code{output.parallel\_hdf5}, \code{parallel\_fs} & false, (list) & collective MPI-IO output on a parallel file system \\
 \code{tau\_grid.align} & \code{ptot} & \code{ptot}: equal $P+B^2/2\mu_0$ at one height; \code{none}: $z(\tau{=}1)=0$ per column \\
 \code{run.output}, \code{run.overwrite} & required, false & output file \\
 \bottomrule
@@ -27,7 +31,8 @@ The key \code{tau\_grid.cap\_per\_dex} no longer exists (removed in c8bf91e); a 
 an unknown key.
 
 \section{Input layout and checks}
-\code{IO/input-mhs-ltau.nc}: \code{log10tau500} ($n_\tau$, increasing: top level first), \code{x} ($N_x$), \code{y} ($N_y$),
+\code{IO/tau252/input\_*.nc} (built with their truth by \code{scripts/inputs/make\_tau\_input.jl}; the former
+\code{IO/input-mhs-ltau.nc} had an x/y-swapped $\tau$ and was deleted on 10 Nov 2026): \code{log10tau500} ($n_\tau$, increasing: top level first), \code{x} ($N_x$), \code{y} ($N_y$),
 \code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z} with h5py shape $(x,y,\tau)$, i.e.\ Julia $(\tau,y,x)$. The driver
 first reads the coordinates (\code{tau\_coords}) on every rank, then each rank reads only its $x$ hyperslab
 (\code{read\_tau\_input}). The reader also accepts the \code{make\_tau\_input.py} test layout (\code{logtau500}, \code{x\_m},
@@ -56,11 +61,11 @@ hot-over-cool levels: with the start slope alone, one step covered a whole 0.1-d
 ${\sim}10^3$-fold, giving $\Delta\ln P\approx21$ ($P\times10^9$) in some columns of a $504^2$ MURaM run.
 \item \textbf{No cap on the rise of $\ln P$} (c8bf91e). The former \code{cap\_per\_dex} limit (50 per dex) also stopped the
 substep loop without advancing $z$, which left adjacent levels at the same height (1683 columns of
-\code{IO/input-mhs-ltau.nc}). Since $P=gm$ and $dz=-dm/\rho$, heights now strictly decrease.
+the former \code{IO/input-mhs-ltau.nc}). Since $P=gm$ and $dz=-dm/\rho$, heights now strictly decrease.
 \item \textbf{Failure:} if $f_1$ or $f_2$ is non-finite or the new $\ln P$ exceeds \code{tab.Y[end]}$-1$, the column's $\ln P$
 from that level down and all its $z$ are set to NaN and \code{hse\_tau!} returns \code{false}. \code{column\_hse\_tau} counts
 failed columns and non-finite levels globally; if there are any it skips the alignment and gauge (they would spread the
-NaNs), the status becomes \code{:eos\_out\_of\_envelope}, and the file driver raises an error (non-zero exit, no output).
+NaNs), the status becomes \code{:eos\_out\_of\_envelope}, and the file driver exits 3 without writing the output.
 \item $z$ is shifted so that $z(\log\tau=0)=0$ (linear in $\log\tau$, \code{interp\_lt}, extrapolated from the end
 segments).
 \item \code{align\_ptot!}: reference $\ln(P+B^2/2\mu_0)$ = global median over the bottom level (exact distributed median);
@@ -71,30 +76,27 @@ applied to the total pressure, an approximation. The column is shifted by that h
 \item \code{tau\_state!}: $\rho$, $n_e$, $\chi_{500}$ and the EOS flags from one table call per node; $z(\tau{=}1)$.
 \item \code{check\_fields!}: EOS flags clean, all fields finite, $P,\rho,\chi>0$, $z$ strictly decreasing and $\tau$ strictly
 increasing down every column. The first failed check becomes the status reason (\code{:nonfinite}, \code{:nonpositive},
-\code{:folded}). Note: the file driver errors only on \code{:eos\_out\_of\_envelope}; a result failing a later check is
-still written and the run exits 0 (code follow-up). On \code{IO/input-mhs-ltau.nc}: 0 failed, 0 folded columns.
+\code{:folded}). Any failed check is an invalid result: logged, not written, exit 3 (since 29 Oct 2026; before, only the
+envelope failure stopped the driver).
 \end{enumerate}
 The field values are carried unchanged to the new heights; nothing enforces $\nabla\cdot\B=0$ in physical space.
 
-\section{MPI layer (\code{Slab.jl}, \code{Parallel.jl})}
-Shared with the two Poisson modes.
-\begin{itemize}
-\item \code{slab\_par(comm, NX, NY, n)} $\to$ \code{init\_parallel(comm, \dots; px = R, py = 1)}: each rank owns a contiguous
-range of $x$ columns (\code{block\_range}) and all of $y$. The parent communicator is \emph{duplicated} (\code{Comm\_dup})
-and the Cartesian communicator built from the duplicate, so HSEMHS messages cannot match the caller's; both are owned by
-the \code{ParCtx} and released by \code{free\_parallel!}. The standalone \code{slab\_par(NX, NY, n)} initialises MPI if
-needed and uses \code{COMM\_WORLD}. Arrays are $(k,j,i)$ = (vertical, $y$, $x$), columns contiguous.
-\item Reductions: \code{gsum}, \code{gdot}, \code{gnorm}, \code{gmax}, \code{gcount} (Allreduce).
-\item \code{gquantiles}/\code{gmedians}: \emph{exact} global order statistics without gathering. Each Float64 is mapped
-to an order-preserving Int64 key; per set the $k$-th smallest key is found by bisection on the key range, one Allreduce of
-the per-set counts per round (at most 64 rounds), all sets at once. Type-7 quantiles as \code{Statistics.quantile}.
-\item \code{coop\_write}: rank 0 creates every dataset at its global size (Julia $(x,\dots)$, h5py $(\dots,x)$) and the
-attributes, then the ranks write their $x$ hyperslabs in turn between barriers (no parallel HDF5).
-\item The column integration has no communication; the alignment and gauge use global reductions (median exact, mean to
-rounding), so results agree across rank counts to rounding (measured $\le3\times10^{-12}$ relative, Sect.~\ref{sec:ver}).
-\end{itemize}
-Threads: owned columns in a threaded loop over $x$. \code{scripts/run.jl} sets BLAS to one thread (HSEMHS itself no
-longer touches BLAS or FFTW threads on load).
+\section{Viewing angle}
+The input is one ray per pixel on a common $\log\tau_{\rm LOS}$ axis. Each ray is balanced on its own:
+$d\ln P/d\ln\tau_{\rm LOS}=\mu g\tau\rho/(\chi P)$, heights vertical, $dz=-\mu\,d\tau_{\rm LOS}/\chi$. An inclined input gives
+exactly the plane-parallel result (no horizontal balance is claimed); $\mu=1$ is bitwise the vertical code path. About 1\,min for
+the $504^2\times95$ cube on one node.
+
+\section{Given electron density, NLTE EOS}
+\code{solve\_embedded!(ws, lnT, \dots; lnne)} (embedding only) takes $n_e$ as the truth: at every level $P$ is the pressure at
+which the EOS gives that $n_e$ at that $T$ (\code{lnP\_from\_lnne}), $\rho$ and $\chi_{500}$ follow, $z=\int\mu\,d\tau/\chi_{500}$
+gauged to mean $z(\tau{=}1)=0$; no hydrostatic integration, $\B$ and the alignment unused; forward only (no adjoint). With
+\code{eos.model = "nlte"} every call uses the NLTE table (WittBifrostEOS's NLTE correction; README, ``NLTE equation of state'').
+
+\input{common/parallel.tex}
+
+The column integration has no communication; the alignment and the gauge use global reductions (median exact, mean to
+rounding), so results agree across rank counts to rounding (measured $\le3\times10^{-12}$ relative).
 
 \section{Embedded API}\label{sec:api}
 For callers that own MPI (e.g.\ an inversion code): \code{ws = prepare\_embedded(comm, :column\_hse\_ltau; axis = log10tau,
@@ -106,7 +108,11 @@ $y$, $x$) order; rank $r$ owns \code{slab\_range(NX, R, r)}. The result (\code{E
 (\code{EquilibriumStatus}, identical on all ranks) carries \code{valid}, \code{reason}, \code{counts}, \code{messages} and
 \code{stats} (\code{columns\_failed}, \code{align\_total\_pressure\_Pa}, \code{align\_extrapolated\_columns}). Nothing in the
 API initialises MPI, uses \code{COMM\_WORLD}, sets threads, prints or touches files (except loading a table given as a
-path).
+path). Further keywords: \code{view = ViewOptions(mu, azimuth\_deg, geometry)} and \code{eos\_model} in \code{prepare\_embedded};
+\code{lnne} and \code{record} in \code{solve\_embedded!}.
+
+\adjointcolumntrue
+\input{common/adjoint.tex}
 
 \section{Output}
 \code{/tau\_grid/\{logtau500, z\_m, Pgas, rho, T, Bx, By, Bz, z\_tau1\_m\}} and \code{/coords/\{x\_m, y\_m\}}; arrays Julia
@@ -127,8 +133,11 @@ in b73c863).
 \item On the $504^2$ MURaM run with the end-slope rule (from the commit record): max $P$ $9.7\times10^8\to9.4\times10^4$\,Pa,
 0 columns above $10^6$\,Pa, 0 failed columns; $\ln P$ agrees with a 10$\times$ tighter step limit to $4\times10^{-3}$ (median)
 and 0.05 (max) per column.
-\item Full production cube timing (24 Oct, 13666b7, still with the cap): 8 ranks $\times$ 32 threads on 4 nodes, 95\,s wall,
-mostly start-up and I/O. The current code has not been timed on the full cube; the end-slope rule adds substeps only in
-the steep intervals.
+\item \code{test\_view.jl}, \code{mpi/mpi\_view.jl} (viewing angle), \code{test\_ne\_given.jl} (given $n_e$), \code{test\_nlte.jl}
+(NLTE table), \code{test\_adjoint.jl}, \code{mpi/mpi\_adjoint.jl} (Sect.~\ref{sec:adjointapi}).
+\item Timing: $504^2\times95$ cube at $\mu$ 1, 0.5, 0.3, 0.2, 53--54\,s on one node (3 ranks $\times$ 32 threads, 2.9\,GB per rank,
+29 Oct 2026, mostly start-up and I/O); the solve alone at $252^2\times96$ 0.37\,s on one rank of 64 threads (25 Nov 2026).
+\item Consistent $\tau$ inputs ($252^2$, \code{HSEMHS/reports/paper\_252\_2026-11-10}): $z(\tau{=}1)$ rms against the snapshot
+20.7\,km ($\mu=1$), 21.6\,km ($\mu=0.707$), 23.2\,km ($\mu=0.5$); magnetic depression $-56.8$\,km against Bifrost's $-76.7$\,km.
 \end{itemize}
 \end{document}

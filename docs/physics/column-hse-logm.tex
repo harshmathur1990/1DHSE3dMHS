@@ -1,0 +1,93 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{column-hse-logm: hydrostatic columns on a column-mass grid}{Physics and method of \code{run.mode = "column-hse-logm"} in
+HSEMHS, 25 Nov 2026. Built on the $\tau$-grid mode: read the \code{column-hse-ltau} document for the parts shared with it.}
+
+\begin{abstract}
+\noindent Some inversions return the temperature and the magnetic field on surfaces of constant column mass $m$ (the mass per unit
+area above a point) instead of constant optical depth. This mode computes, for every pixel column, the gas pressure, density,
+electron density, the 500\,nm extinction and optical depth, and the geometric height of every surface. On a mass axis hydrostatic
+equilibrium is exact and needs no opacity: $P=gm$. The heights follow from the density, the optical depth becomes an output, and
+the columns are placed against each other as in the $\tau$-grid mode.
+\end{abstract}
+
+\section{Introduction}
+Write $m(z)=\int_z^\infty\rho\,dz'$ [kg\,m$^{-2}$], the mass above height $z$ per unit area. Its differential is
+\begin{equation}
+dm=-\rho\,dz ,\label{eq:dm}
+\end{equation}
+which has the same form as the optical depth, $d\tau=-\chi\,dz$: $\tau$ counts absorbers, $m$ counts mass. Everything the
+\code{column-hse-ltau} document derives on the $\tau$ axis therefore holds on the mass axis with $\tau\to m$ and $\chi\to\rho$. The
+one physical difference: the pressure of a column in hydrostatic equilibrium is simply the weight of the gas above,
+\begin{equation}
+\frac{dP}{dz}=-\rho g\quad\Longrightarrow\quad\frac{dP}{dm}=g\quad\Longrightarrow\quad P=g\,m ,\label{eq:pgm}
+\end{equation}
+with no reference to temperature, composition or opacity, provided no mass lies above the top level beyond its $m_1$ (the top
+closure $P_1=gm_1$). \textbf{Input:} $\log_{10}m$ (common to all columns), $x$, $y$, $T$, $\B$. \textbf{Output:} $P$, $\rho$, $n_e$,
+$\chi_{500}$, $\tau_{500}$ and the heights $z$ of every level of every column.
+
+\section{Notation}
+\begin{tabularx}{\linewidth}{l Y l}
+\toprule
+symbol & meaning & unit \\ \midrule
+$m$ & column mass above a level (along the line of sight on input) & kg\,m$^{-2}$ \\
+$\ell=\log_{10}m$ & the axis; levels $k=1\dots n$, top first & -- \\
+$\rho$, $P$, $T$ & density, gas pressure, temperature & kg\,m$^{-3}$, Pa, K \\
+$\chi=\chi_{500}$, $\kappa=\chi/\rho$ & extinction at 500\,nm, opacity per unit mass & m$^{-1}$, m$^2$\,kg$^{-1}$ \\
+$g$, $\mu$ & gravity, cosine of the viewing angle & m\,s$^{-2}$, -- \\
+\bottomrule
+\end{tabularx}
+
+\input{common/eos.tex}
+
+\section{The equations solved}
+\textbf{Pressure.} Equation~\eqref{eq:pgm}. Along a ray at $\mu=\cos\theta<1$ the input axis is the mass along the ray,
+$m_{\rm LOS}=m/\mu$, and $P=\mu g\,m_{\rm LOS}$. The code integrates the same two equations as on the $\tau$ axis,
+\begin{equation}
+\frac{d\ln P}{d\ln m}=\frac{\mu g\,m}{P},\qquad \frac{dz}{d\ln m}=-\frac{\mu\,m}{\rho},
+\end{equation}
+by Heun's method with the substeps of the $\tau$ mode; the first has the exact solution $P=\mu gm$ (its slope is 1 at every
+substep), so only the heights need the equation of state: $\rho(T,P)$ from the table.
+
+\textbf{Heights.} $z$ decreases strictly downward (Eq.~\ref{eq:dm}); one constant per column remains free, fixed by the alignment.
+
+\textbf{Optical depth} is an output: $d\tau=\kappa\,dm$, i.e.\ $d\tau=(\chi/\rho)\,m\,d\ln m$, integrated level by level with the
+trapezoidal rule (one interval per level, no substeps), from $\tau_1=\kappa_1m_1$ at the top (the closure of the $\tau$ axis:
+$\kappa$ constant above the top level). Across a coarse level where the gas is hot above cool gas, this single trapezoid is less
+accurate than the substepped integration of the $\tau$ mode.
+
+\section{Where the columns sit}
+As in \code{column-hse-ltau}: \code{align = "ptot"} shifts each column so that the total pressure $P+B^2/2\mu_0$ is equal at one
+height (magnetic tension neglected); \code{align = "none"} puts $z=0$ at $\log_{10}m=0$ in every column. Then a global gauge sets the
+mean height of $\tau_{500}=1$, computed from the output $\tau$, to zero. Absolute heights are relative to that gauge.
+
+\section{The line of sight}
+As on the $\tau$ axis: one ray per pixel on a common $\log_{10}m_{\rm LOS}$ axis; \emph{plane-parallel} rays are vertical columns
+with $m_{\rm LOS}=m/\mu$; in the \emph{inclined} geometry the points of a ray are displaced by $z\tan\theta$, which does not change a
+column-by-column balance, so both give the same result. $\mu=1$ is the vertical case exactly.
+
+\section{Assumptions}
+\begin{enumerate}[label=\textbf{A\arabic*.},leftmargin=2.2em]
+\item \textbf{Static gas, constant vertical gravity, no mass above the top level beyond $m_1$.}
+\item \textbf{Each column on its own.} No horizontal force balance; the alignment is a modelling choice.
+\item \textbf{The mass axis is known.} An inversion that returns $m$ must get it right: $m$ fixes $P$ directly. A cgs axis
+(g\,cm$^{-2}$) not marked as such scales every pressure by 10 and cannot be detected.
+\item \textbf{LTE equation of state} (the NLTE table is an experimental option); $T$ and $\B$ fixed on the mass levels.
+\end{enumerate}
+
+\section{What the result means}
+On the Bifrost snapshot (en024048, 385; input with $m$ from the snapshot's own $\rho$ and $P$, which an inversion does not have)
+the heights of $\tau=1$ come out with an rms error of 56.6\,km against the snapshot, against 20.7\,km for \code{column-hse-ltau} on
+the same columns; the reason is not yet understood. \code{mhs-poisson-logm} brings it to 19.5\,km.
+
+\adjointcolumntrue
+\input{common/adjoint.tex}
+
+\section{Summary of the algorithm}
+\begin{enumerate}
+\item Read $\log_{10}m$, $x$, $y$, $T$, $\B$ (converting a cgs axis marked \code{units = "g cm-2"}).
+\item Per column: $P=\mu g\,m_{\rm LOS}$; heights by Heun substeps of $dz/d\ln m=-\mu m/\rho$; $\rho$, $n_e$, $\chi$ from the table.
+\item Align the columns (total pressure, or $z=0$ at $\log m=0$); $\tau_{500}$ by trapezoids of $\kappa\,dm$; gauge the mean
+$z(\tau{=}1)$ to zero; check the fields; write.
+\end{enumerate}
+\end{document}

@@ -1,6 +1,7 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{column-hse-z: implementation}{Technical notes on \code{run.mode = "column-hse-z"} (alias \code{column\_hse}). HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
+\doctitle{column-hse-z: implementation}{Technical notes on \code{run.mode = "column-hse-z"} (alias \code{column\_hse}). HSEMHS, 25 Nov 2026 (main 9280809: viewing angle,
+given $n_e$, NLTE EOS, parallel HDF5, adjoint).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
@@ -20,9 +21,12 @@ Key & Default & Meaning \\ \midrule
 \code{column\_hse.P\_ref} & required & Pa, or \code{"from\_input"} (attribute \code{P\_ref\_Pa}) \\
 \code{column\_hse.z\_ref\_m} & 0 & anchor height for \code{height} \\
 \code{column\_hse.n\_sub}, \code{adapt}, \code{rk\_tol}, \code{n\_sub\_max} & 4, true, $10^{-6}$, 64 & RK4 substeps and doubling \\
-\code{tau.top}, \code{H\_max\_m}, \code{mu} & \code{exp\_tail}, $5\times10^6$, 1 & $\tau$ top closure and viewing angle \\
+\code{eos.model}, \code{nlte\_table\_file} & \code{lte}, \code{cache/}\allowbreak\code{eos\_table\_nlte.h5} & \code{nlte} (experimental): the NLTE table \\
+\code{tau.top}, \code{H\_max\_m} & \code{exp\_tail}, $5\times10^6$ & $\tau$ top closure \\
+\code{view.mu}, \code{azimuth\_deg}, \code{geometry} & 1, 0, \code{plane\_parallel} & line of sight of $\tau$ (\code{tau.mu}: deprecated alias of \code{view.mu}) \\
 \code{parallel.px}, \code{py} & 0, 0 & process grid (0: \code{MPI.Dims\_create}) \\
 \code{output.compression} & 4 & deflate level of the output datasets \\
+\code{output.parallel\_hdf5}, \code{parallel\_fs} & false, (list) & collective MPI-IO output on a parallel file system \\
 \bottomrule
 \end{tabularx}
 
@@ -53,6 +57,10 @@ embedded slab path (below), so both run identical arithmetic.
 \item \code{tau\_column!} (\code{Tau.jl}): top-first trapezoid of $\chi$; \code{exp\_tail} closure
 $\tau_{\rm top}=\chi_1H_\chi$ if $\chi_2>\chi_1$ and $0<H_\chi<H_{\max}$, else half cell; method per column.
 \code{z\_tau1}: crossing of $\log\tau=0$, linear in $\log\tau$.
+\item \textbf{Viewing angle:} only $\tau$ changes. \code{plane\_parallel}: $\tau_{\rm LOS}=\tau/\mu$ per column;
+\code{inclined}: $\chi$ on each level shifted to the footprint grid (periodic bilinear), each footprint column integrated with path
+$dz/\mu$ and the same top closure, $\tau$ shifted back (\code{src/ViewTau.jl}); $z(\tau{=}1)$ on the footprints. $P$, $\rho$,
+$\chi_{500}$ do not depend on the view.
 \item \code{column\_residual}: diagnostic $R_x=\partial_xP$, $R_y=\partial_yP$, $R_z=\partial_zP+\rho g$ with the
 collocated second-order operators of \code{Operators.jl} (halo exchange of $P$ first).
 \end{itemize}
@@ -73,14 +81,21 @@ The file driver keeps the 2-D block decomposition and its full diagnostics. For 
 available in memory: \code{prepare\_embedded(comm, :column\_hse\_z; axis = z, x, y, eos, g,
 column = ColumnZOptions(anchor, P\_ref, \dots))}, \code{solve\_embedded!(ws, lnT)}, \code{free\_embedded!(ws)}, on $x$ slabs
 in (vertical, $y$, $x$) order. \code{ColumnZOptions} mirrors \code{[column\_hse]} and \code{[tau]}; \code{P\_ref} must be a
-resolved number (\code{"from\_input"} is a file-driver feature). The result has $\ln P$, $P$, $\rho$, $n_e$,
+resolved number (\code{"from\_input"} is a file-driver feature). Also \code{view}, \code{eos\_model}; in
+\code{solve\_embedded!} \code{lnne} (a given $n_e$: $P$ from the EOS at that $T$ and $n_e$, no integration, forward only) and
+\code{record} (the adjoint, below). The result has $\ln P$, $P$, $\rho$, $n_e$,
 $\chi_{500}$, $\tau_{500}$, $z(\tau{=}1)$ and the EOS flags (no column mass, $P_e$, $\bar\mu$ or residual diagnostics); a
 column leaving the table gives the status \code{:eos\_out\_of\_envelope} rather than an exception. The slab path reproduces
 \code{column\_hse} bitwise and is bitwise independent of the rank count (2, 3, 4 ranks tested).
 
+\adjointcolumntrue
+\input{common/adjoint.tex}
+The embedded slab path is the one differentiated (the file driver's 2-D blocks have no adjoint); its MPI layer is that of the slab
+modes (\code{src/Slab.jl}).
+
 \section{Output}
-HDF5 without parallel HDF5: \code{create\_output} on rank 0, then \code{write\_fields} writes the ranks' hyperslabs in a
-token ring. Groups:
+\code{create\_output} on rank 0, then \code{write\_fields} writes the ranks' hyperslabs in a token ring, or, with
+\code{output.parallel\_hdf5} on a listed parallel file system and more than one rank, collectively with MPI-IO (same file). Groups:
 \begin{itemize}
 \item \code{/input}: copies of \code{temperature}, \code{B\_x}, \code{B\_y}, \code{B\_z}, \code{x}, \code{y}, \code{z};
 \item \code{/output}: \code{Pgas}, \code{rho}, \code{ne}, \code{Pe}, \code{nH\_total}, \code{mu\_bar}, \code{colmass},
@@ -99,6 +114,9 @@ iterative convergence question; check \code{column\_status} (refinement, toleran
 \begin{itemize}
 \item \code{test\_embedded.jl}, \code{mpi/mpi\_embedded.jl}: slab path against stored \code{column\_hse} outputs on two
 windows of the production input ($\le10^{-12}$; bitwise in the comparison script) and across 1--4 ranks (bitwise).
+\item \code{test\_view.jl}, \code{mpi/mpi\_view.jl} (viewing angle: on the $504^2\times177$ cube $P$, $\rho$, $\chi$ bitwise
+identical for $\mu$ 1, 0.5 plane-parallel and inclined; an independent implementation of the inclined $\tau$ to $4\times10^{-13}$),
+\code{test\_ne\_given.jl}, \code{test\_nlte.jl}, \code{test\_adjoint.jl}, \code{mpi/mpi\_adjoint.jl}.
 \item Gate 2 (\code{test/test\_gate2.jl}): isothermal ideal gas to $10^{-12}$; $\ln T$-linear ideal gas against the
 analytic solution, fourth order under substep halving; $\tau$ closure and second order; Wittmann table on Bifrost
 columns; bitwise thread/rank invariance.

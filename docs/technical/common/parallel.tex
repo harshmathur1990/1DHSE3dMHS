@@ -1,0 +1,83 @@
+% Shared section of the technical documents of the slab modes (column-hse-ltau, column-hse-logm, mhs-poisson-z,
+% mhs-poisson-ltau, mhs-poisson-logm, and the embedded column-hse-z): MPI layer, threads, layout, multi-node runs.
+\section{Parallelisation}\label{sec:parallel}
+\textbf{MPI layer} (\code{src/Slab.jl}, \code{src/Parallel.jl}).
+\begin{itemize}
+\item \code{slab\_par(comm, NX, NY, n)}: each rank owns a contiguous range of $x$ columns (\code{slab\_range(NX, R, r)}) and all of
+$y$ and the vertical; arrays are (vertical, $y$, $x$), columns contiguous; at least two $x$ columns per rank. The caller's
+communicator is duplicated (\code{Comm\_dup}), so HSEMHS messages cannot match the caller's; \code{free\_embedded!} releases it.
+MPI runs as \code{THREAD\_FUNNELED}: every MPI call is on the main task, outside threaded loops.
+\item $x$ halo planes for every $D_x$ (\code{MPI.Sendrecv!}); global sums, dot products and norms by \code{Allreduce}
+(\code{gsum}, \code{gdot}, \code{gnorm}, \code{gmax}).
+\item \code{gquantiles}/\code{gmedians}: \emph{exact} global order statistics without gathering. Each Float64 is mapped to an
+order-preserving Int64 key; for all sets at once the $k$-th smallest key is found by bisection on the key range, one
+\code{Allreduce} of the per-set counts per round (at most 64 rounds). The layer sets are formed in one threaded pass over the
+columns and sorted in parallel; the per-round counts stay serial (a threaded loop in each round doubled the allocation of a
+column solve).
+\item Distributed FFT (\code{SlabFFT}, the Fourier preconditioners): real FFT along $y$, \code{Alltoallv} transpose to slabs of
+$k_y$, complex FFT along $x$, and back. Transforms run per (vertical plane, chunk of \code{FFT\_ROWS} = 4 rows), so a rank with
+few planes still uses all its threads; the chunking depends only on the grid. FFTW plans are single-threaded, applied from Julia
+threads (FFTW's own threading crashed under Julia 1.13).
+\item Output: cooperative (rank 0 creates every dataset and attribute, the ranks then write their $x$ hyperslabs in turn), or
+parallel HDF5 with collective MPI-IO when \code{output.parallel\_hdf5 = true}, the run has more than one rank, the HDF5
+library has MPI-IO and the output directory is on a file system listed in \code{output.parallel\_fs} (Lustre, GPFS, BeeGFS,
+\dots; not NFS or StorNext); otherwise the cooperative path. Rank 0 decides, and both paths give the same file.
+\end{itemize}
+
+\textbf{Threads} (25 Nov 2026, commit 653a8f5). Every loop over columns is \code{Slab.@cols i j nx ny}: a threaded loop over all
+$(j,i)$ columns of the slab, split into 8 chunks per thread, the body a closure behind a function barrier. Earlier the threads only
+split the rank's own $x$ columns (252 on one rank, 8 on 32 ranks), so 64--256 threads had little to do. \code{tmap!}, \code{tsum},
+\code{tdot} thread element-wise updates and sums in fixed chunks, so a sum has the same value on any thread count. In the Poisson
+solvers the operator products (\code{Aop!}, \code{Jop!}, \code{JTop!}), the dense products of the Fourier preconditioner (in column
+chunks), the per-mode blocks of the height-grid preconditioner (every $(k_x,k_y)$ a work item) and the pack/unpack of the
+transposes are threaded, and the operator and residual buffers are pooled on the solver state instead of allocated per product.
+Results and work counters (CG iterations, operator products) are unchanged by the threading. BLAS: one thread by default
+(\code{scripts/run.jl}); the standalone $\tau$-grid driver raises it to \code{min(32, T)} around the solve; the embedded API
+leaves it to the caller.
+
+\textbf{Layout: one rank per NUMA domain.} A hyades node has 8 NUMA domains (Zen\,2 EPYC 7742: 16 cores each; Zen\,3 EPYC 7543:
+8 cores each), each with its own memory controller. A rank's arrays live in one domain (first touch by its main thread), so its
+threads share one controller: one rank of 16 threads in one domain is as fast as 64 threads unpinned. Run one rank per domain
+with its threads on that domain's cores; \code{test/scripts/numa\_bind.sh} pins rank $r$ of a node to domain
+$r \bmod$ \code{NUMA\_PER\_NODE} (\code{numactl --cpunodebind --membind}; local rank from MPICH or OpenMPI). Short
+\code{mhs-poisson-ltau} solve at $252^2$ (3 Gauss--Newton steps, no polish), hyades2 (Zen\,2):
+\begin{center}\small
+\begin{tabular}{lc}
+\toprule
+layout & solve \\ \midrule
+before the threading, 1 rank $\times$ 64 threads & 23.8\,s \\
+1 rank $\times$ 16 threads in one domain & 15.9\,s \\
+2 / 4 / 8 ranks $\times$ 16, one domain each & 9.8 / 5.8 / 3.8\,s \\
+\bottomrule
+\end{tabular}
+\end{center}
+Full solves (polish 3, the adjoint benchmark's settings), one Zen\,3 node, 8 ranks $\times$ 8 threads: \code{mhs-poisson-ltau}
+67\,s solve / 52\,s adjoint (was 631 / 555\,s on 1 $\times$ 64), \code{mhs-poisson-logm} 168 / 62\,s, \code{mhs-poisson-z}
+12.8 / 2.2\,s (was 281 / 9.5\,s). Most of the $\tau$ and mass-axis time is the polish (3 Newton steps, CG to $10^{-10}$).
+
+\textbf{Across nodes.} MPI.jl's bundled MPICH has no InfiniBand provider and runs over TCP (151\,$\mu$s one-way latency on the
+IPoIB interface); across hyades nodes it gave no gain. \code{test/scripts/poisson\_scaling\_ompi.sh} runs over InfiniBand:
+OpenMPI 5.0.8 built against the nodes' UCX (\code{--with-ucx=/usr --without-hcoll}, with plain \code{gcc}), a Julia environment
+whose MPI.jl uses it (\code{MPIPreferences} system binary; HDF5.jl on the system's serial libhdf5, since HDF5\_jll's OpenMPI build
+loads a second libmpi), \code{mpiexec --mca pml ucx}, one rank per domain through \code{numa\_bind.sh}; ping-pong 1.2\,$\mu$s one
+way, 24\,GB/s. \code{mhs-poisson-ltau} at $252^2$ (25 Gauss--Newton steps + polish 3), 8 ranks $\times$ 8 threads per Zen\,3 node:
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+nodes (ranks) & solve & adjoint & total & speed-up \\ \midrule
+1 (8) & 63.5\,s & 51.0\,s & 114\,s & 1 \\
+2 (16) & 35.6\,s & 31.2\,s & 67\,s & 1.7 \\
+4 (32) & 28.1\,s & 20.0\,s & 48\,s & 2.4 \\
+8 (64) & 23.6\,s & 18.1\,s & 42\,s & 2.7 \\
+\bottomrule
+\end{tabular}
+\end{center}
+The work is the same on every layout (76 CG iterations, 6 evaluations). The polish and the adjoint scale; the Gauss--Newton steps
+do not (2.6\,s on 1 node, 4.0\,s on 8): a profile of rank 0 on 8 nodes spends their CG almost entirely in MPI, in the
+\code{Alltoallv} of the preconditioner's transposes ($\sim$13\,ms each) and the scalar reductions of CG ($\sim$5\,ms each). Whether
+that is the collectives at 64 ranks or waiting on slower ranks has not been separated (open). Report:
+\code{HSEMHS/reports/poisson\_parallel.md}.
+
+\textbf{Reproducibility.} Medians are exact, but sums are reduced in a rank-dependent order, so results on different rank counts
+agree to rounding, and an unconverged iterative solve can amplify that along its path. The column modes have no such
+amplification.

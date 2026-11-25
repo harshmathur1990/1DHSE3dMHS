@@ -364,7 +364,8 @@ A small relative decrease does not by itself prove that a minimum has been reach
 Gauss--Newton step is computed at the returned state (but not taken), and its predicted relative decrease of $\Phi$, the
 \textbf{Gauss--Newton decrement} $-\delta u^{\top}\mathsf J^{\top}\mathsf W\R/\Phi$, is reported together with the gradient
 norm $\|\mathsf J^{\top}\mathsf W\R\|$ and the stop reason. A small decrement means that the linear model sees little left to
-gain.
+gain. It is measured with the damping of the iteration, though, and a slowly converging direction can remain far from
+stationary while it is small; the Newton polish of Sect.~\ref{sec:adjoint} removes that.
 
 \section{\texorpdfstring{Above $z_{\rm cut}$}{Above z\_cut}}\label{sec:above}
 Above the solved region each column is integrated hydrostatically upward from the solved pressure at level $k_c$, with the
@@ -385,7 +386,8 @@ is integrated from the top with the trapezoidal rule. The gas above the grid is 
 $\chi_{500}$ with the scale height $H_\chi=(z_1-z_2)/\ln(\chi_2/\chi_1)$ of the top two levels, $\tau_{\rm top}=\chi_1H_\chi$
 (half a grid cell, $\tfrac12\chi_1(z_1-z_2)$, if $\chi$ does not decrease upward there or $H_\chi$ exceeds 5000\,km). The height
 of $\tau_{500}=1$ is interpolated linearly in $\log_{10}\tau$ between the bracketing levels. Since the opacity grows with
-density, any change of pressure moves it.
+density, any change of pressure moves it. A viewing angle ($\mu=\cos\theta<1$) changes only this optical depth, not the pressure: $\tau/\mu$ per column
+(plane-parallel), or the integral along the slanted rays through the cube (inclined), as in \code{column-hse-z}.
 
 \section{Validity checks}
 The solve is attempted only if every column of the starting state stayed inside the equation-of-state table. The returned
@@ -403,6 +405,9 @@ structure that the given field cannot hold up, would require the field (or the t
 \item The pressure level rests on $P_{\rm ref}$ at the bottom of the starting state; the anchor penalty damps, but does not
 prevent, a drift of the bottom-plane mean during the solve.
 \end{itemize}
+
+\adjointpoissontrue
+\input{common/adjoint.tex}
 
 \section{Summary of the algorithm}
 \begin{enumerate}

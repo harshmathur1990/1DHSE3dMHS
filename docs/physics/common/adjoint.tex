@@ -1,0 +1,71 @@
+% Shared section of the physics documents of the six fixed-B modes: derivatives of the result (the adjoint).
+% \input by each mode document after \adjointcolumntrue (column modes) or \adjointpoissontrue (Poisson modes).
+\section{Derivatives of the result: the adjoint}\label{sec:adjoint}
+An inversion that fits observed spectra changes $T$ (and $\B$) and asks how a misfit $\ell$ that depends on the atmosphere,
+through $P$, $\rho$, $n_e$, $\chi_{500}$, $\tau_{500}$ and the heights $z$, changes with them. It needs the gradient
+$\partial\ell/\partial\ln T$ at every grid point, often $10^6$ numbers. Perturbing each input in turn and solving again would
+cost one or two solves per number. The \textbf{adjoint} gives all of them for the cost of about one solve.
+
+\subsection{The idea}
+Write the solve as a map from the inputs $x=(\ln T,\B)$ to the outputs $y$, and the misfit as $\ell(y)$. By the chain rule
+\begin{equation}
+\frac{\partial\ell}{\partial x}=\Big(\frac{\partial y}{\partial x}\Big)^{\!\top}\bar y,\qquad \bar y\equiv\frac{\partial\ell}{\partial y}.
+\label{eq:adj}
+\end{equation}
+$\bar y$ (the \emph{cotangent} of the outputs) is given by the caller. The Jacobian $\partial y/\partial x$ is never formed:
+the transposed product is evaluated by running the computation backwards, each step passing the cotangent of its outputs
+to its inputs. This is reverse-mode differentiation, and its cost does not depend on how many inputs there are.
+
+\subsection{What is differentiated}
+\ifadjointcolumn
+The column integration is a fixed sequence of arithmetic steps (substeps, table look-ups, the top closure, the alignment and
+the gauge), so its adjoint is the derivative of exactly that computation: the \textbf{discrete adjoint}. Its discrete choices
+are recorded during the solve and held fixed: the number of substeps of each interval, the table cell of each look-up, the
+branch of the $\tau$ top closure, the alignment level and its median column, and the interpolation brackets. Away from the
+points where one of these choices switches, the map is smooth and this is its exact derivative; at a switch no derivative
+exists. Where a step length depends on the state (the Heun substeps of the $\tau$ and mass axes), the length is
+differentiated too. An implicitly defined quantity (the hydrostatic top closure) is differentiated by the implicit function
+theorem. The equation-of-state derivatives are those of the table interpolant (its bicubic Hermite polynomials), not of the model behind the table.
+\fi
+\ifadjointpoisson
+The Poisson solve is iterative: its result is the state $v^*$ at which the gradient of $\Phi$ vanishes,
+$G(v^*,x)\equiv\partial\Phi/\partial v=0$. Differentiating this condition (the \textbf{implicit function theorem}) gives
+\begin{equation}
+\frac{\partial v^*}{\partial x}=-\mathsf H^{-1}\,\frac{\partial G}{\partial x},\qquad
+\mathsf H=\frac{\partial^2\Phi}{\partial v^2},\label{eq:ift}
+\end{equation}
+so the adjoint solves one linear system with the Hessian $\mathsf H$, $\mathsf H\lambda=\bar v$, and returns
+$-(\partial G/\partial x)^{\top}\lambda$, plus the contributions of everything else that depends on $x$: the starting
+column-hydrostatic state (which sets the weights of $\Phi$ through their layer medians), the part above the cut and the
+gauge. The iterations themselves (damping, step scaling, preconditioners, warm starts) only steer the solver toward $v^*$
+and are not differentiated. Two points matter:
+\begin{itemize}
+\item \textbf{The full Hessian.} With $\B$ fixed the residual does not vanish at the solution (the Lorentz force is in general
+not a gradient), so the Gauss--Newton matrix $\mathsf J^{\top}\mathsf W\mathsf J$ of the solver is not the Hessian: the second
+derivatives of the residuals contribute too. The adjoint uses the full $\mathsf H$, applied to vectors by differences of the
+exact gradient, and solves for $\lambda$ by preconditioned conjugate gradients.
+\item \textbf{Directions $\Phi$ does not see.} Some changes of the unknowns leave $\Phi$ unchanged and $\mathsf H$ singular along
+them. They keep their starting values, so the derivative passes through to the start along them: on the height grid the mean
+$\ln P$ of the anchor plane; on the $\tau$ and mass axes a uniform shift of all heights (fixed by the gauge) and the shortest
+horizontal waves of the centred differences, which the differences cannot see.
+\end{itemize}
+Equation~\eqref{eq:ift} holds only at a stationary point. The Gauss--Newton iteration damps every step and measures its own
+progress with that damping, so a slowly converging direction can stay far from stationary while the iteration reports
+little left to gain. The option \code{polish} therefore adds up to $n$ \textbf{Newton steps with the exact Hessian} after the
+solve, which bring the returned state to $v^*$ (on a small test cube four steps lower the undamped Newton decrement to
+$10^{-25}$). The adjoint reports how stationary the returned state was: \code{:stationary} when one undamped Newton step
+would lower $\Phi$ by at most a relative $10^{-6}$, \code{:not\_stationary} otherwise, in which case the result is the
+derivative of the point the solver was approaching.
+\fi
+
+\subsection{How exact it is}
+The adjoint is checked against finite differences of the solve itself: $\langle\bar y,\,[y(x+h\,\delta x)-y(x-h\,\delta x)]/2h\rangle$
+against $\langle\partial\ell/\partial x,\,\delta x\rangle$ for random $\delta x$ and $\bar y$, on 1, 2 and 3 MPI ranks and every
+viewing geometry.
+\ifadjointcolumn
+The two agree to $3\times10^{-10}$--$3\times10^{-8}$ (relative) on all three axes.
+\fi
+\ifadjointpoisson
+With \code{polish} they agree to $10^{-9}$--$10^{-7}$ (relative).
+\fi
+A solve with a given electron density (no hydrostatic integration) is forward only and has no adjoint.

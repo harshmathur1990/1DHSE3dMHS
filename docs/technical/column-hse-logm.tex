@@ -1,0 +1,56 @@
+\input{../preamble.tex}
+\begin{document}
+\doctitle{column-hse-logm: implementation}{Technical notes on \code{run.mode = "column-hse-logm"}. HSEMHS, 25 Nov 2026 (main 9280809).
+The code is that of \code{column-hse-ltau} with \code{mass = true}; read its notes for everything not listed here.}
+
+\section{Running it}
+{\footnotesize\begin{verbatim}
+[mpiexec -n R] julia --project=. -t T scripts/run.jl config/modes/column-hse-logm.toml
+\end{verbatim}}
+Driver \code{run\_column\_hse\_ltau} in \code{src/RunModes.jl} with the mass axis (\code{mass\_mode}); physics in
+\code{src/PoissonTau.jl}: \code{column\_hse\_tau(\dots; mass = true)}, \code{hse\_tau!}, \code{logtau\_mass}; embedded as
+\code{prepare\_embedded(comm, :column\_hse\_logm; axis = log10m, \dots, column = ColumnMassOptions(align))}
+(\code{ColumnMassOptions} = \code{ColumnTauOptions}). Keys: those of \code{column-hse-ltau} (\code{input.\{file, x, y\}},
+\code{physics.g}, \code{[eos]}, \code{tau\_grid.align}, \code{[view]}, \code{[output]}, \code{run.*}). \code{align = "none"}: $z=0$ at
+$\log_{10}m=0$ per column before the gauge.
+
+\section{Input}
+The $\tau$-grid layout with \code{log10m} ($n_m$, increasing, top first, spacing free) in place of \code{log10tau500}; h5py
+$(x,y,m)$. $m$ in kg\,m$^{-2}$ unless \code{log10m} has a \code{units} attribute \code{"g cm-2"} ($+1$\,dex; any other unit is refused,
+\code{InvalidInput}). \textbf{A cgs axis without that attribute scales every pressure by 10 and is not detectable.} Gravity from the
+file attribute \code{gravity\_m\_s2} or a numeric \code{physics.g}. With $\mu<1$ the axis is $m$ along the line of sight. Default input
+\code{IO/tau252/input\_logm\_mu1.0.nc} ($252^2\times76$, $\log_{10}m$ $-4.9\ldots2.6$), built by
+\code{scripts/inputs/make\_logm\_input.py --multi3d} ($m$ from the snapshot's $\rho$ and top $P$).
+
+\section{Algorithm}
+\begin{enumerate}
+\item \code{hse\_tau!(\dots; mass = true)}: top $\ln P=\ln(\mu g m_1)$ (no closure iteration); Heun substeps of
+$(\ln P, z)$ with slope $\mu g m/P$ and $-\mu m/\rho$ (\code{q\_chi} returns $\rho$ in place of $\chi$); the pressure slope is 1 at
+every substep, so $P=\mu gm$ exactly and the substeps resolve only the heights.
+\item Alignment (\code{align\_ptot!}) and the gauge as on the $\tau$ axis; the gauge uses $\log\tau$ from \code{logtau\_mass}:
+$d\tau=(\chi/\rho)\,m\,d\ln m$, one trapezoid per level, $\tau_1=(\chi/\rho)_1m_1$.
+\item \code{tau\_state!}, \code{check\_fields!} (folded columns, finiteness, table flags) as on the $\tau$ axis.
+\end{enumerate}
+
+\section{Output}
+\code{/mass\_grid/\{log10m, z\_m, Pgas, rho, T, Bx, By, Bz, logtau500, z\_tau1\_m\}}, \code{/coords/\{x\_m, y\_m\}}; h5py $(m,y,x)$.
+\code{log10m} is the axis in kg\,m$^{-2}$ (also for a cgs input), \code{logtau500} a field. Status attributes and exit codes as
+\code{column-hse-ltau}.
+
+\input{common/parallel.tex}
+
+\adjointcolumntrue
+\input{common/adjoint.tex}
+
+\section{Verification and performance}
+\begin{itemize}
+\item \code{test\_logm.jl}: validation; $P=\mu gm$ at $\mu$ 1 and 0.6; $\int\rho\,dz=\Delta m$; the isothermal scale height; the $\tau$
+and mass axes converge to one atmosphere as the levels are refined (second order: $T$ is linear in a different coordinate); the
+viewing angle; file input in SI and cgs and the output. \code{mpi/mpi\_view.jl} on 2--4 ranks; \code{test\_adjoint.jl},
+\code{mpi/mpi\_adjoint.jl}.
+\item $504^2\times76$ Bifrost cube, one rank $\times$ 64 threads, 14\,s wall; $z(\tau{=}1)$ rms 56.5\,km against the snapshot, Wilson
+depression $-61.7$\,km (snapshot $-77.9$\,km), rms $\Delta\ln P$ 0.091 (\code{HSEMHS/reports/logm\_2026-11-02}). $252^2\times96$: solve
+0.36\,s, adjoint 0.63\,s on one rank of 64 threads.
+\item Tested on the full cube only at $\mu=1$, on one snapshot, with $m$ from the snapshot's true $\rho$ and $P$.
+\end{itemize}
+\end{document}

@@ -1,6 +1,7 @@
 \input{../preamble.tex}
 \begin{document}
-\doctitle{mhs-poisson-ltau: implementation}{Technical notes on \code{run.mode = "mhs-poisson-ltau"}. HSEMHS, 26 Oct 2026 (after the embedding-API merge, 9d89191).}
+\doctitle{mhs-poisson-ltau: implementation}{Technical notes on \code{run.mode = "mhs-poisson-ltau"}. HSEMHS, 25 Nov 2026 (main 9280809:
+viewing angle, qualified stop, preconditioners, adjoint and polish, threading).}
 
 \section{Running it}
 {\footnotesize\begin{verbatim}
@@ -8,35 +9,45 @@
 \end{verbatim}}
 Driver \code{run\_mhs\_poisson\_ltau} (\code{src/RunModes.jl}): read, \code{prepare\_embedded(COMM\_WORLD,
 :mhs\_poisson\_ltau, \dots)}, \code{solve\_embedded!}, write, \code{free\_embedded!} (\code{src/Embedded.jl}); solver
-\code{PoissonTau.solve\_tau}
-(\code{src/PoissonTau.jl}); MPI layer \code{src/Slab.jl}; PCG and threaded vector updates from \code{PoissonZ}. Input and
-\code{[tau\_grid]} keys as \code{column-hse-ltau}; in addition:
+\code{PoissonTau.solve\_tau} (\code{src/PoissonTau.jl}); MPI layer \code{src/Slab.jl}. Input, \code{[eos]}, \code{[view]} and
+\code{[tau\_grid]} as \code{column-hse-ltau}; in addition \code{[poisson]} (\code{src/Config.jl}; \code{PoissonTauOptions} in the
+embedding API):
 
-\begin{tabularx}{\linewidth}{L{4.8cm} L{3.4cm} Y}
+\begin{tabularx}{\linewidth}{L{4.6cm} L{2.6cm} Y}
 \toprule
 Key & Default & Meaning \\ \midrule
-\code{poisson.logtau\_cut} & $-4$ & solved levels $\log\tau\ge$ cut (nearest level $k_c$) \\
-\code{poisson.max\_steps} & 100 & Levenberg--Marquardt steps \\
-\code{poisson.rtol}, \code{n\_consec} & $10^{-4}$, 3 & stop when $(\Phi_{\rm prev}-\Phi)/\Phi_{\rm prev}<$ rtol on \code{n\_consec} consecutive accepted steps (objective only) \\
-\code{poisson.cg\_tol}, \code{cg\_maxit} & $10^{-3}$, 80 & PCG per trial \\
-\code{poisson.dc\_cap\_m} & $3\times10^5$ & largest height change of a column per step (whole-step scaling) \\
-\code{poisson.lm\_mu0} & 0 & initial damping \\
+\code{logtau\_cut}, \code{cut\_frame} & $-4$, \code{vertical} & solved levels $\log\tau\ge$ cut (nearest level $k_c$); \code{vertical}: the cut at the vertical depth, $\log\tau_{\rm LOS}=$ cut $-\log\mu$; \code{los}: on the line-of-sight axis \\
+\code{max\_steps} & 25 (0 = this) & outer Gauss--Newton steps \\
+\code{stop}, \code{gn\_tol}, \code{gn\_consec} & \code{gn}, $10^{-3}$, 2 & stopping rule (Sect.~\ref{sec:stop}) \\
+\code{rtol}, \code{n\_consec} & $10^{-4}$, 3 & \code{stop = "phi"}: $\Delta\Phi/\Phi<$ rtol on \code{n\_consec} steps \\
+\code{qual\_maxit} & 400 & CG budget of the stop qualification \\
+\code{lm}, \code{lm\_mu0} & \code{alpha}, 0 & damping update (\code{alpha}, \code{gain}, \code{fixed}) and its start \\
+\code{forcing} & \code{fixed} & CG accuracy: \code{fixed} (\code{cg\_tol} $10^{-3}$, \code{cg\_maxit} 80) or \code{ew} (Eisenstat--Walker, $\eta\in$ [\code{eta\_min}, \code{eta\_max}] = [0.005, 0.1], at most \code{cg\_cap} = 200) \\
+\code{precond}, \code{klow}, \code{damping} & \code{fourier}, 8, \code{reg} & preconditioner (Sect.~\ref{sec:prec}); \code{damping = "marquardt"} needs \code{block} or \code{hybrid} \\
+\code{dc\_cap\_m} & $3\times10^5$ & largest height change of a column per step (whole-step scaling) \\
 \bottomrule
 \end{tabularx}
+Embedding only (\code{PoissonTauOptions}): \code{du\_cap} (2, largest change of $\ln P$ per step), \code{rms\_atol} (0; accept a
+start with $\sqrt{\Phi_0/W}\le$ \code{rms\_atol} in zero steps), \code{polish} (0, Sect.~\ref{sec:adjointapi}); and
+\code{solve\_embedded!(\dots; start = :column\_hse | :previous, record)}. The release (``D2'') settings of the measured runs are
+\code{lm = "gain"}, \code{forcing = "ew"}, \code{precond = "switch"} (or \code{fourier}); they are not the defaults.
 
 \section{Flow}
-\code{column\_hse\_tau} (aligned, gauged; the current column integrator without a cap on the rise of $\ln P$ and with the
-end-slope substep rule, see the \code{column-hse-ltau} notes) gives $u=\ln P$ and $z_0$ on all levels. If any column fails
-there (pressure outside the table), the solve is not attempted and the driver raises an error. \code{solve\_tau} solves
-for $u$ on levels $k>k_c$ and $c=z_{k_c}$ per column, with $u_{k\le k_c}$ and $z_k-z_{k_c}$ ($k<k_c$) fixed; a start state
-outside the table returns \code{reason = :eos\_out\_of\_envelope} (driver error) instead of throwing. Then \code{gauge!}
-(mean $z(\tau{=}1)=0$), \code{tau\_state!} ($\rho$, $n_e$, $\chi$ per node), \code{check\_fields!} (as in
-\code{column-hse-ltau}), output in the \code{column-hse-ltau} layout.
+\code{column\_hse\_tau} (aligned, gauged; see the \code{column-hse-ltau} notes) gives $u=\ln P$ and $z_0$ on all levels; a failed
+column ends the solve with \code{:eos\_out\_of\_envelope} (exit 3, no output). With \code{start = :previous} (embedding) the solved
+region starts from the workspace's last valid solution instead; the objective's weights then come from that start, so a warm and
+a cold solve of the same cube minimise slightly different objectives. \code{solve\_tau} solves for $u$ on levels $k>k_c$ and
+$c=z_{k_c}$ per column, with $u_{k\le k_c}$ and $z_k-z_{k_c}$ ($k<k_c$) fixed. Then \code{gauge!} (mean $z(\tau{=}1)=0$),
+\code{tau\_state!} ($\rho$, $n_e$, $\chi$ per node), \code{check\_fields!} (as in \code{column-hse-ltau}), and the output in the
+\code{column-hse-ltau} layout with the status attributes (Sect.~\ref{sec:stop}).
 
-Option checks in \code{prepare\_embedded}, identical on all ranks: \code{logtau\_cut} inside the axis; the cut level
-$k_c\ge2$ (the height stencil at $k_c$ uses level $k_c-1$); at least 3 solved levels; \code{max\_steps}, \code{n\_consec},
-\code{cg\_maxit} $\ge1$; \code{rtol} $>0$; $0<$ \code{cg\_tol} $<1$; \code{dc\_cap\_m} $>0$; \code{lm\_mu0} $\ge0$. The
-distributed FFT plan (\code{SlabFFT}) is built once in \code{prepare\_embedded} and reused by every solve.
+\textbf{Viewing angle.} The input is one ray per pixel on a common $\log\tau_{\rm LOS}$ axis (contract in the README). With
+\code{geometry = "inclined"} the nodes of a ray sit at $x=\xi+t_xz$, $y=\eta+t_yz$, $t=\tan\theta(\cos\phi,\sin\phi)$, and the
+horizontal derivatives at fixed height carry the corresponding shear terms; \code{plane\_parallel} keeps every column vertical
+with $\tau_{\rm LOS}=\tau/\mu$. $\mu=1$ is exactly the vertical code path.
+
+Option checks in \code{prepare\_embedded}, identical on all ranks: the cut inside the axis, $k_c\ge2$, at least 3 solved
+levels, and the ranges of every option in the table. The \code{SlabFFT} plan is built once and reused by every solve.
 
 \section{State, heights and residuals (\code{evaluate!})}
 Nodes $m=1\ldots n_1$ are levels $k=k_c\ldots n_\tau$. The unknown vector per column has $n_1$ slots: slot 1 $=c$, slots
@@ -76,99 +87,100 @@ $Jv$ against central differences of $\R$ to $10^{-9}$ (with $\B$), $10^{-10}$ (w
 directional error was 100\,\% in magnetic regions and the solve stalled after one step.
 \end{itemize}
 
-\section{Linear solve and preconditioner}
+\section{Linear solve and preconditioner}\label{sec:prec}
 Normal equations $(J^\top WJ+E+\mu D)\,\delta=-J^\top W\R$ by PCG with global inner products; $E=10^{-2}\kappa^2D$,
-$D=(\sum w_c\bar W^2,\ w_{c,2},\dots)$ (the damping shape; slot 1 for $c$, which no vertical equation sees).
+$D=(\sum w_c\bar W^2,\ w_{c,2},\dots)$ (the damping shape; slot 1 for $c$, which no vertical equation sees). \code{damping =
+"marquardt"} replaces $\mu D$ by $\mu\,{\rm diag}(J^\top WJ)$ (with the block preconditioners). CG accuracy: \code{forcing =
+"fixed"} (\code{cg\_tol}, \code{cg\_maxit}) or \code{"ew"} (Eisenstat--Walker forcing: the relative CG tolerance $\eta$ adapted per
+step within [\code{eta\_min}, \code{eta\_max}], at most \code{cg\_cap} iterations). Reaching the CG cap does not stop
+the outer iteration.
 
-\textbf{Preconditioner} (\code{setprec!}, \code{Minv!}): the operator with layer-median coefficients
+\textbf{\code{precond = "fourier"}} (\code{setprec!}, \code{Minv!}): the operator with layer-median coefficients
 ($\overline{a\chi_u}$, $\overline{w'}$, $\bar W$) is, per horizontal mode, $M(s^2)=A+s^2B$ with $s^2$ as in
 \code{mhs-poisson-z}; $A=G_z^\top W_fG_z+E+\mu D$ (vertical rows), $B=G_h^\top W_cG_h$, $G_h=-(I+\bar W\,S)$ the
-horizontal symbol divided by $ik$ including the triangular matrix $S$. Both are dense $n_1\times n_1$ ($n_1=55$). Once per
+horizontal symbol divided by $ik$ including the triangular matrix $S$. Both are dense $n_1\times n_1$. Once per
 step: Cholesky $A=LL^\top$, eigen-decomposition $L^{-1}BL^{-\top}=V\Lambda V^\top$, $Q=V^\top L^{-1}$; then
-$M(s^2)^{-1}=Q^\top\,{\rm diag}(1/(1+s^2\lambda))\,Q$ for every mode: two complex GEMMs over all local modes of the
-transposed FFT layout (\code{SlabFFT}, as in \code{mhs-poisson-z}), BLAS threaded during the solve.
+$M(s^2)^{-1}=Q^\top\,{\rm diag}(1/(1+s^2\lambda))\,Q$ for every mode: dense products over all local modes of the transposed FFT
+layout (\code{SlabFFT}), in column chunks over the threads.
+
+\textbf{\code{"block"}}: block Jacobi with the exact column blocks of $J^\top WJ$ (Cholesky per column, $n_1\times n_1$). It
+captures each column's own coupling (strong-field columns), but cannot propagate the large horizontal scales.
+\textbf{\code{"hybrid"}}: the blocks plus the Fourier part on the modes with $|k|\le$ \code{klow} only. \textbf{\code{"switch"}}:
+Fourier until the first step whose CG ends at its iteration limit, column blocks after (\code{stats["work"]["switch\_step"]}); on
+the Bifrost cube 1.9--4$\times$ faster for the same 25-step budget, about $+1.5$\,GB per rank. A warm start restarts this policy.
 
 \section{Steps}
 Levenberg--Marquardt: for $\mu$ (start \code{lm\_mu0}) solve, scale the \emph{whole} step by
-$\min(1,\ 2/\max|\delta u|,\ $\code{dc\_cap}$/\max|\delta c|)$, try up to 4 halvings on the true $\Phi$ (EOS status
-checked); if none decreases $\Phi$, $\mu\leftarrow\max(4\mu,1)$ and re-solve (up to 8 times). After acceptance (source rule):
-$\mu\leftarrow\mu/3$ if the accepted step length factor is exactly $\alpha=1$; unchanged if $\alpha\ge s_c/2$ ($s_c$ the
-whole-step scale); $\times2$ otherwise; $\mu<10^{-3}\to0$. When the whole-step scaling is active ($s_c<1$), a full scaled
-step ($\alpha=s_c$) therefore does \emph{not} lower $\mu$; whether that was intended is a code question (follow-up). Element-wise clamping
-of $\delta c$ (the first version) turned the direction into an ascent direction where the step asked for $>1$\,Mm in a few
-columns: $\Phi$ rose linearly with the step length.
+$s_c=\min(1,\ $\code{du\_cap}$/\max|\delta u|,\ $\code{dc\_cap\_m}$/\max|\delta c|)$, and backtrack on the true $\Phi$ (EOS
+status checked; a trial with cells outside the table backtracks further); if none decreases $\Phi$, $\mu\leftarrow\max(4\mu,1)$
+and re-solve (up to 8 times). Damping update after acceptance: \code{lm = "alpha"} (the earlier rule: $\mu/3$ after a full step
+$\alpha=1$, unchanged if $\alpha\ge s_c/2$, $\times2$ otherwise, 0 below $10^{-3}$); \code{"gain"} (gain ratio of actual to model
+decrease, model $2\alpha g\cdot\delta-\alpha^2|J\delta|_W^2$); \code{"fixed"}. Element-wise clamping of $\delta c$ (the first
+version) turned the direction into an ascent direction where the step asked for $>1$\,Mm in a few columns, hence the whole-step
+scaling.
 
-\textbf{Termination.} (a) $(\Phi_{\rm prev}-\Phi)/\Phi_{\rm prev}<$ \code{rtol} on \code{n\_consec} consecutive accepted
-steps (log line \code{converged: \dots}); (b) no damping level gives a decrease (\code{no decrease up to $\mu$ = \dots;
-stopping}); (c) \code{max\_steps} reached (no message). The reason (\code{:converged}, \code{:no\_descent}, \code{:max\_steps}) is
-returned in the status and written as the output attribute \code{stop\_reason}. Stopping uses the objective only. Two earlier rules are gone: a
-single small step (it stopped one run after 17 steps while strong-field columns still moved 80\,km per step), and a
-height shortcut (one small step plus $\max|\delta c|<100$\,m), removed on 24 Oct 2026 in line with the $\Phi$-only policy. The
-logged $\max|\delta c|$ is the largest change of a column's \emph{cut-level} height in the step, not the change of its
-$\tau=1$ height (which also depends on the changed layer thicknesses). The file driver still returns \code{converged}, exit 0, in all
-three cases: read \code{stop\_reason} or the log (code follow-up: propagate the termination into the exit status). A met
-rule does not certify small residuals.
+\section{Stopping, status and the decrement}\label{sec:stop}
+\textbf{\code{stop = "gn"}} (default): the predicted relative decrease of a Gauss--Newton step falls below \code{gn\_tol} on
+\code{gn\_consec} consecutive steps; the stop is then \textbf{qualified} at the returned state: an interval $[L,U]$ for the
+regularised Gauss--Newton decrement is computed (solved with the column-block preconditioner, at most \code{qual\_maxit} CG
+iterations) and must lie below \code{gn\_tol}; an undecided qualification ends \code{unresolved}. \textbf{\code{stop = "phi"}}: the
+earlier rule, $\Delta\Phi/\Phi<$ \code{rtol} on \code{n\_consec} steps. Both end at \code{max\_steps} (\code{max\_iter}), when no
+damping level gives a decrease (\code{no\_descent}, or \code{domain\_limited} at the table edge), or when the state is at
+round-off (\code{phi\_floor}: each residual's terms replaced by their magnitudes times machine precision).
 
-\textbf{Stationarity diagnostic.} After the iteration, at the returned state and with $\mu=0$, one more system
-$(J^\top WJ+E)\,\delta=-J^\top W\R$ is solved by PCG (diagnostic only; $u$, $z$ unchanged); logged as
-\code{stationarity: Gauss--Newton decrement \dots} and written as \code{gn\_decrement} $=\delta\cdot(-J^\top W\R)/\Phi$, the
-relative decrease a further undamped step would predict (0 at a stationary point); $\|J^\top W\R\|$ and the final $\mu$ are in
-the embedded status. Option \code{rms\_atol} (embedded API only, default 0) accepts a start with $\sqrt{\Phi_0/W}\le$
-\code{rms\_atol} in zero steps.
+The status (embedding: \code{EquilibriumStatus}; file: attributes \code{status}, \code{stop\_reason}, \code{qual\_outcome},
+\code{qual\_lower}, \code{qual\_upper}, \code{gn\_decrement}, \code{gn\_decrement\_source}, \code{roundoff}, \code{phi\_floor},
+\code{work\_*}, \code{solve\_seconds}, \code{ranks}, \code{threads}) says which. \code{gn\_decrement} is always an estimate
+($b^\top x/\Phi$ of an inexact solve), and \code{gn\_decrement\_source} says from where (the qualification, a converged or capped
+final solve, or \code{not\_evaluated}). Exit status of \code{scripts/run.jl}: 0 converged, 2 valid but not converged
+(\code{max\_iter}, \code{stalled}), 3 invalid result (no output written), 4 invalid input. A met rule does not certify small
+residuals; the logged $\max|\delta c|$ (the largest change of a column's cut-level height) and $z(\tau{=}1)$ are diagnostics only.
 
-\section{Parallelisation}
-$x$ slabs; halo exchange in $x$ for every $D_x$ (heights, $u$, $\B$, and in the Jacobian); global sums; exact global
-medians for the weights and the preconditioner (bisection on order-preserving integer keys); the distributed FFT
-(rfft in $y$, \code{Alltoallv} transpose, FFT in $x$) and GEMMs on the local $k_y$ slab. Threads in all node loops; the standalone driver raises BLAS to \code{min(32, nthreads)} around the solve and resets it to
-1 (the embedded API leaves BLAS to the caller); FFTW plans are single-threaded, applied from Julia threads. The solve is
-\emph{step-path sensitive}: on a $24\times18$ crop the same one-rank solve changes by O(1) in a few strong-field column heights
-between 1 and 4 BLAS threads (different accepted LM steps), while $\Phi/\Phi_0$ agrees ($8.473\times10^{-3}$ vs
-$8.474\times10^{-3}$).
+\input{common/parallel.tex}
 
 The field values on the $\tau$ levels are used unchanged at the new heights; no discrete $\nabla\cdot\B=0$ is imposed (the
 staggered construction of \code{full-mhs-z} needs a fixed geometry). Above the cut the levels stay at their column-HSE
-pressures and relative heights and move rigidly with $c$; the global height offset is fixed only by the final gauge.
+pressures and relative heights and move rigidly with $c$; the global height offset is fixed only by the final gauge. The solve
+is \emph{step-path sensitive}: on a $24\times18$ crop the same one-rank solve changes by O(1) in a few strong-field column
+heights between 1 and 4 BLAS threads (different accepted steps), while $\Phi/\Phi_0$ agrees to $10^{-4}$.
 
-\section{Verification and performance}
+\adjointpoissontrue
+\input{common/adjoint.tex}
+
+\section{Verification}
 \begin{itemize}
-\item Automated tests: \code{test\_embedded.jl} (stored standalone outputs on two windows of the production input,
-$24\times18$ and $11\times12$ columns, reproduced to $\le10^{-12}$; reason in \{converged, max\_steps, no\_descent\}; finite,
-non-negative GN decrement; a balanced start accepted in zero steps; 1 vs 30 steps gives a larger decrement after 1);
-\code{mpi/mpi\_embedded.jl}: on the converged $11\times12$ window (5 steps) 2, 3, 4 ranks agree with one rank to
-$\le9\times10^{-11}$ (asserted $10^{-9}$); on the $24\times18$ window (24 steps) the differences are O(1) in a few heights
-(step-path sensitivity, above) and only recorded.
-\item $96^2$ magnetic crop (manual), ranks $\times$ threads $1\times8$, $1\times32$, $4\times8$,
-consecutive-step rule: 37 steps each; $z(\tau{=}1)$ differences median 1\,m, 99th percentile 12--24\,m, max 150\,m
-(weakly determined strong-field columns). Agreement to rounding only; identical trajectories across layouts are not
-promised. After the removal of the height shortcut (commit 813a3af) the $1\times32$ run again took 37 steps.
-\item Against the original script \code{scripts/poisson/poisson\_tau\_direct.jl} (single-step rule) on the same crop:
-$z(\tau{=}1)$ differences median 3.6\,m, 99th percentile 95\,m, max 1\,km, because the two stopped one step apart while
-some columns were still moving.
-\item Full cube ($504\times504\times95$, 54 solved $\ln P$ levels + 1 height per column, $1.4\times10^7$ unknowns), with the
-superseded single-step rule: one node, 96 threads, 17 steps, 14\,min, 11\,GB (commit b96bb4e); 8 ranks on 4 nodes, 8.3\,min,
-3.1\,GB per rank, same summary statistics (commit 13666b7, log \code{out/modes/mhs-poisson-ltau.log} in the cluster
-worktree \code{MHS\_modes}). These runs predate the removal of the $\ln P$ cap in the starting state; the current code has not been run on the full
-cube. PCG reaches its
-80-iteration cap in every step (relative residual $10^{-2}$--$2\times10^{-1}$): the next speed-up is a better preconditioner.
+\item \code{test\_embedded.jl}: stored standalone outputs on two windows ($24\times18$, $11\times12$) reproduced to $\le10^{-12}$;
+reasons, decrement, zero-step acceptance. The windows were cropped from the former \code{IO/input-mhs-ltau.nc} (x/y-swapped
+$\tau$, deleted on 10 Nov 2026); they remain valid as numerical-regression fixtures.
+\item \code{test\_view.jl} (viewing angle: $\mu=1$ bitwise, plane-parallel shift, inclined Jacobians), \code{test\_block.jl}
+(preconditioners, PCG outcomes, stop qualification, round-off acceptance, \code{switch}), \code{test\_warm.jl} (warm start),
+\code{test\_adjoint.jl}; multi-rank \code{mpi/mpi\_embedded.jl}, \code{mpi/mpi\_view.jl}, \code{mpi/mpi\_adjoint.jl} on 2--4 ranks
+(converged windows agree with one rank to $10^{-10}$; unconverged ones differ along the step path and are only recorded).
+\item The exact Jacobian: adjoint identity to $4\times10^{-16}$, $Jv$ against central differences to $10^{-9}$. With $\Lv$ held fixed
+in the Jacobian the directional error was 100\,\% in magnetic regions and the solve stalled after one step.
 \end{itemize}
 
-\section{Result on the production cube}
-$z(\tau{=}1)$ relative to the cube mean, median [5\,\%, 95\,\%] in km, by $|\B|$ at $\tau=1$ (fixed-point = the superseded scheme;
-24 Oct 2026, starting state still with the $\ln P$ cap, single-step stop rule):
+\section{Results}
+\textbf{Consistent $\tau$ inputs} ($252^2\times95$, \code{IO/tau252}, \code{HSEMHS/reports/paper\_252\_2026-11-10}; release settings
+with \code{max\_steps} 100; 3 ranks $\times$ 32 threads per hyades node). $z(\tau{=}1)$ rms against the snapshot, column HSE
+$\to$ MHS, and the magnetic depression (Bifrost's in brackets):
 \begin{center}\small
 \begin{tabular}{lccc}
 \toprule
-$|\B|$ at $\tau=1$ & column HSE in $\tau$ & fixed-point scheme & \textbf{mhs-poisson-ltau} \\ \midrule
-0--200\,G & $-38$ [$-85$, 187] & $-55$ [$-257$, 380] & $-10$ [$-35$, 73] \\
-200--500\,G & $-68$ [$-88$, 58] & $+120$ [$-180$, 549] & $-26$ [$-52$, 24] \\
-500--1000\,G & $-86$ [$-104$, $-36$] & $+183$ [$-198$, 587] & $-51$ [$-89$, $-17$] \\
-1000--1500\,G & $-121$ [$-144$, $-92$] & $+314$ [$-117$, 563] & $-96$ [$-125$, $-63$] \\
-1500--3000\,G & $-156$ [$-175$, $-140$] & $+402$ [58, 568] & $-130$ [$-167$, $-104$] \\
+case & $z(\tau{=}1)$ rms & depression & steps \\ \midrule
+$\mu=1$, own $\tau$ & 20.7 $\to$ 22.6\,km & $-56.8\to-71.2$ ($-76.7$)\,km & 16, converged \\
+$\mu=1$, MULTI3D $\tau$ & 20.7 $\to$ 22.9\,km & $-60.1\to-71.1$ ($-76.8$)\,km & 8, converged \\
+$\mu=0.707$ inclined & 21.6 $\to$ 22.0\,km & $-31.9\to-53.5$ ($-58.7$)\,km & 33, converged \\
+$\mu=0.5$ inclined & 23.2 $\to$ 28.4\,km & $-15.4\to-50.4$ ($-49.3$)\,km & 34, converged \\
 \bottomrule
 \end{tabular}
 \end{center}
-Force imbalance after the solve, RMS in units of $\rho g$: 0.04--0.09 horizontal and 0.04--0.06 vertical for $\log\tau<0$
-(start 0.3--0.8).
+Horizontal force, $|F_h|/\rho g$ at $\log\tau$ $-3\ldots0$: column HSE 0.072, MHS 0.018, Bifrost 0.058. Cuts at $\mu=1$: $-5$ ends
+invalid (one folded column), $-6$ and no cut stall.
+
+\textbf{Full $504^2\times95$ cube} (29 Oct 2026, release table in the README): every $\mu$ tested gives a valid atmosphere but ends
+\code{max\_iter} at 25 steps; 6.5--11.4\,min with \code{switch}, 20--26\,min with \code{fourier}, on one node (3 ranks $\times$ 32
+threads), 6--8\,GB per rank. Timings at $252^2$ after the threading of 25 Nov: Sect.~\ref{sec:parallel}.
 
 \section{Design history}
 \begin{enumerate}
