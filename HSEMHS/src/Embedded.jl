@@ -54,6 +54,7 @@ Base.@kwdef struct PoissonZOptions
     cg_tol::Float64 = 1e-3
     cg_maxit::Int = 80
     rms_atol::Float64 = 0.0
+    polish::Int = 0                   # Newton steps (exact Hessian, anchor mean held) after the solve, to the stationary point the adjoint differentiates
 end
 
 """
@@ -87,6 +88,7 @@ Base.@kwdef struct PoissonTauOptions
     klow::Int = 8
     damping::Symbol = :reg            # :reg | :marquardt (block or hybrid only)
     qual_maxit::Int = 400             # CG budget of the stop qualification (stop = :gn)
+    polish::Int = 0                   # Newton steps (exact Hessian) after the solve, to the stationary point the adjoint differentiates
 end
 
 """
@@ -198,6 +200,7 @@ cut_levels(o::PoissonTauOptions, lt, mu = 1.0) = (kc = argmin(abs.(lt .- los_cut
 function option_errors(o::PoissonZOptions, z::AbstractVector)
     e = solver_errors(String[], o)
     push_if!(e, o.anchor_w > 0, "poisson anchor_w must be positive")
+    push_if!(e, o.polish >= 0, "poisson polish must be ≥ 0")
     kc, n = cut_levels(o, z)
     if kc === nothing
         push!(e, "z_cut_m = $(o.z_cut_m) m lies below the height axis (bottom $(z[end]) m)")
@@ -227,6 +230,7 @@ function option_errors(o::PoissonTauOptions, lt::AbstractVector, mu = 1.0; cutna
     push_if!(e, o.precond in (:fourier, :block, :hybrid, :switch), "poisson precond must be :fourier, :block, :hybrid or :switch, got :$(o.precond)")
     push_if!(e, o.klow >= 0, "poisson klow must be ≥ 0")
     push_if!(e, o.qual_maxit >= 1, "poisson qual_maxit must be ≥ 1")
+    push_if!(e, o.polish >= 0, "poisson polish must be ≥ 0")
     push_if!(e, o.damping in (:reg, :marquardt), "poisson damping must be :reg or :marquardt, got :$(o.damping)")
     push_if!(e, o.damping != :marquardt || o.precond in (:block, :hybrid), "poisson damping = :marquardt needs precond :block or :hybrid")
     push_if!(e, lt[1] <= c <= lt[end], "$at is outside the axis [$(lt[1]), $(lt[end])]")
@@ -373,6 +377,7 @@ mutable struct EmbeddedWorkspace
     progress::Bool
     view::ViewOptions
     warm::Any                         # mhs-poisson-ltau, -logm: (ln P on levels k_c…, cut heights) of the last valid solve and of its column HSE, or nothing
+    tape::Any                         # what adjoint_embedded! needs from the last solve when it was recorded (Adjoint.jl), or nothing
 end
 
 height_mode(mode) = mode in (:column_hse_z, :mhs_poisson_z)
@@ -463,7 +468,7 @@ function prepare_embedded(comm::MPI.Comm, mode::Symbol; axis, x, y, eos, g, colu
     end
     res = EquilibriumResult(length(ax), length(ys), b.nx)
     return EmbeddedWorkspace(mode, par, ax, xs, ys, dx, dy, tab, Float64(g), col, poisson, fft, res, logf, progress,
-                             view, nothing)
+                             view, nothing, nothing)
 end
 
 """Release the communicators of the workspace's slab context (collective). The workspace cannot be used afterwards."""
@@ -494,8 +499,9 @@ last valid solution of this workspace, corrected by the change of the column HSE
 design/tau/SOLVER_TIME_DESIGN.md D4b), or from the column HSE when there is none. `status.stats["start"]` records which was used.
 """
 function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx = nothing, By = nothing, Bz = nothing;
-                         start::Symbol = :column_hse, lnne = nothing)
+                         start::Symbol = :column_hse, lnne = nothing, record::Bool = false)
     t0 = time()
+    ws.tape = nothing                                                 # any solve ends the previous record
     par = ws.par; b = par.block; shp = (length(ws.axis), b.ny, b.nx)
     colt = ws.mode in (:column_hse_ltau, :column_hse_logm)
     needB = lnne === nothing && (poisson_mode(ws.mode) || (colt && ws.column.align == "ptot"))
@@ -525,26 +531,27 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
     lT, (bx, by, bz) = inputs
     st = EquilibriumStatus()
     res = ws.res
+    rec = record && lnne === nothing ? new_record(ws) : nothing
     st.stats["ne_given"] = lnne !== nothing
     if lnne !== nothing
         ne_given!(ws, lT, Float64.(lnne), st)
         res.Pgas_start .= res.Pgas
     elseif ws.mode == :column_hse_z
-        column_z!(ws, lT, st)
+        column_z!(ws, lT, st; rec = rec)
         res.Pgas_start .= res.Pgas
     elseif ws.mode == :mhs_poisson_z
-        column_z!(ws, lT, st)
+        column_z!(ws, lT, st; rec = rec)
         res.Pgas_start .= res.Pgas
         st.valid && poisson_z!(ws, lT, bx, by, bz, st)
     elseif colt
-        column_ltau!(ws, lT, bx, by, bz, st)
+        column_ltau!(ws, lT, bx, by, bz, st; rec = rec)
         res.Pgas_start .= res.Pgas
     else
-        column_ltau!(ws, lT, bx, by, bz, st)
+        column_ltau!(ws, lT, bx, by, bz, st; rec = rec)
         res.Pgas_start .= res.Pgas
         kc = cut_levels(ws.poisson, ws.axis, ws.view.mu)[1]
         col = (res.lnP[kc:end, :, :], res.z[kc, :, :])                 # this column HSE, for the next warm start
-        st.valid && poisson_ltau!(ws, lT, bx, by, bz, st; warm = start == :previous ? ws.warm : nothing)
+        st.valid && poisson_ltau!(ws, lT, bx, by, bz, st; warm = start == :previous ? ws.warm : nothing, rec = rec)
     end
     st.valid && check_fields!(ws, st)
     if gn_mode(ws.mode) && st.valid                                   # an invalid solve keeps the earlier warm start
@@ -556,6 +563,7 @@ function solve_embedded!(ws::EmbeddedWorkspace, lnT::AbstractArray{<:Real,3}, Bx
                 st.reason == :max_steps ? max_iter : stalled
     st.seconds = time() - t0
     res.status = st
+    record && (ws.tape = lnne === nothing ? finish_record!(ws, rec, lT, bx, by, bz) : (ne_given = true,))
     return res
 end
 
@@ -604,8 +612,8 @@ end
 τ and z: heights are the axis on the height grid (τ integrated on them); on the τ grid z = ∫ μ dτ/χ₅₀₀, gauged to mean z(τ = 1) = 0."""
 function ne_given!(ws::EmbeddedWorkspace, lT, lnne, st)
     par = ws.par; res = ws.res; nk, ny, nx = size(lT)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny, k in 1:nk
+    @cols i j nx ny begin
+        @inbounds for k in 1:nk
             lp = lnP_from_lnne(ws.eos, lT[k, j, i], lnne[k, j, i])
             res.lnP[k, j, i] = lp; res.Pgas[k, j, i] = exp(lp)
         end
@@ -622,8 +630,8 @@ function ne_given!(ws::EmbeddedWorkspace, lT, lnne, st)
         height_state!(ws, lT)
     else
         τ = exp10.(ws.axis); mu = ws.view.mu
-        Threads.@threads for i in 1:nx
-            @inbounds for j in 1:ny
+        @cols i j nx ny begin
+            @inbounds begin
                 res.z[1, j, i] = 0.0
                 g0 = τ[1] / exp(state(ws.eos, lT[1, j, i], res.lnP[1, j, i])[3])
                 for k in 1:nk-1
@@ -640,7 +648,7 @@ function ne_given!(ws::EmbeddedWorkspace, lT, lnne, st)
 end
 
 """Column HSE on the height grid, every owned column independently (threaded); fills lnP, Pgas, ρ, nₑ, χ, τ, z."""
-function column_z!(ws::EmbeddedWorkspace, lT, st)
+function column_z!(ws::EmbeddedWorkspace, lT, st; rec = nothing)
     par = ws.par; res = ws.res; z = ws.axis
     o = hse_opts(ws.column, ws.g)
     nk, ny, nx = size(lT)
@@ -658,7 +666,7 @@ function column_z!(ws::EmbeddedWorkspace, lT, st)
             i = (c - 1) ÷ ny + 1
             X = @view lT[:, j, i]
             fill!(u, NaN); fill!(m, NaN)
-            fl, nmax, ak = hse_column!(u, m, X, z, ws.eos, o)
+            fl, nmax, ak = hse_column!(u, m, X, z, ws.eos, o; tape = rec === nothing ? nothing : rec.rk4[j, i])
             cst[j, i] = fl; nsub[j, i] = nmax
             if fl & COL_EOS_FAIL != 0
                 @views res.lnP[:, j, i] .= NaN; res.Pgas[:, j, i] .= NaN; res.rho[:, j, i] .= NaN
@@ -696,9 +704,10 @@ per node, as `PoissonZ.tau_columns`)."""
 function height_state!(ws::EmbeddedWorkspace, lT)
     res = ws.res; z = ws.axis; o = ws.column
     nk, ny, nx = size(lT)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         chi = zeros(nk); tc = zeros(nk)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             for k in 1:nk
                 r, n, c, s = state(ws.eos, lT[k, j, i], log(res.Pgas[k, j, i]))
                 res.rho[k, j, i] = exp(r); res.ne[k, j, i] = exp(n); chi[k] = exp(c)
@@ -732,13 +741,14 @@ function poisson_z!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
     sol = PoissonZ.solve_pressure(par, ws.eos, ws.g, lT, Lx, Ly, Lz, res.Pgas_start, z, ws.dx, ws.dy;
                                   zcut = o.z_cut_m, maxouter = o.max_steps, rtol = o.rtol, anchor_w = o.anchor_w,
                                   cg_tol = o.cg_tol, cg_maxit = o.cg_maxit, n_consec = o.n_consec, logf = ws.logf,
-                                  S = ws.fft, rms_atol = o.rms_atol)
+                                  S = ws.fft, rms_atol = o.rms_atol, polish = o.polish)
     res.Pgas .= sol.P
     res.lnP .= log.(sol.P)
     st.reason = sol.reason; st.steps = sol.steps; st.phi0 = sol.Φ0; st.phi = sol.Φ; st.rms0 = sol.rms0; st.rms = sol.rms
     st.phi0_zero = sol.phi0_zero; st.gn_decrement = sol.gn_decrement; st.grad_norm = sol.grad_norm
     st.cg_its = sol.cg_its; st.cg_rel = sol.cg_rel
     st.stats["cut_level"] = sol.kc
+    o.polish > 0 && (st.stats["polish_steps"] = sol.polish_steps; st.stats["polish_decrement"] = sol.polish_decrement)
     sol.cont_bad > 0 && fail!(st, :continuation_failed, sol.cont_bad,
                               "hydrostatic continuation above z_cut left $(sol.cont_bad) non-finite pressures")
     st.valid && height_state!(ws, lT)
@@ -751,8 +761,8 @@ function tau_state!(ws::EmbeddedWorkspace, lT)
     res = ws.res; lt = ws.axis
     nk, ny, nx = size(lT)
     lτ = mass_mode(ws.mode) ? PoissonTau.logtau_mass(lT, res.lnP, lt, ws.eos) : nothing
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             for k in 1:nk
                 r, n, c, s = state(ws.eos, lT[k, j, i], res.lnP[k, j, i])
                 res.rho[k, j, i] = exp(r); res.ne[k, j, i] = exp(n); res.chi500[k, j, i] = exp(c)
@@ -766,11 +776,11 @@ function tau_state!(ws::EmbeddedWorkspace, lT)
 end
 
 """Column HSE on the τ or mass grid (aligned on P + B²/2μ₀ if requested, gauged to mean z(τ = 1) = 0)."""
-function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st)
+function column_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; rec = nothing)
     res = ws.res; o = ws.column
     lnP, z, nfailed, Pt, nb, nbad = PoissonTau.column_hse_tau(ws.par, ws.axis, lT, bx, by, bz, ws.eos, ws.g;
                                                               align = o.align, progress = ws.progress, mu = ws.view.mu,
-                                                              mass = mass_mode(ws.mode))
+                                                              mass = mass_mode(ws.mode), rec = rec)
     res.lnP .= lnP; res.z .= z; res.Pgas .= exp.(lnP)
     st.stats["columns_failed"] = nfailed
     st.stats["align_total_pressure_Pa"] = Pt
@@ -787,13 +797,15 @@ end
 """Gauss–Newton solve on the τ or mass grid from the column-HSE start in ws.res (or a warm start on top of it: `warm` =
 (ln P on levels k_c…, cut heights) of a previous solution and of its column HSE, PoissonTau.warm_start!); gauged
 afterwards (mean z(τ = 1) = 0)."""
-function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing)
+function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing, rec = nothing)
     par = ws.par; res = ws.res; o = ws.poisson; lt = ws.axis
     u0 = copy(res.lnP); z0 = res.z
     if warm !== nothing
         z0 = copy(res.z)
         PoissonTau.warm_start!(u0, z0, cut_levels(o, lt, ws.view.mu)[1], warm...)
     end
+    rec === nothing || (rec.u_start .= u0; rec.z_start .= z0; rec.z_column .= res.z)   # the state solve_tau starts from
+    us = copy(u0); zs = copy(z0)                                       # solve_tau updates its start ln P in place
     st.stats["start"] = warm === nothing ? "column_hse" : "previous"
     u, z, Φ0, Φ, steps, kc, info = PoissonTau.solve_tau(par, ws.eos, ws.g, lt, lT, bx, by, bz, u0, z0,
                                                         ws.dx, ws.dy; logtau_cut = los_cut(o, ws.view.mu), max_steps = o.max_steps,
@@ -808,6 +820,16 @@ function poisson_ltau!(ws::EmbeddedWorkspace, lT, bx, by, bz, st; warm = nothing
     if info.reason == :eos_out_of_envelope
         fill!(res.eos_flags, EOS_OUT_OF_ENVELOPE)
         return fail!(st, :eos_out_of_envelope, 1, "the Poisson start state on the $(mass_mode(ws.mode) ? "mass" : "τ") grid lies outside the EOS table")
+    end
+    if o.polish > 0 && steps > 0                                      # to the stationary point the adjoint differentiates
+        pre = o.precond == :switch ? :block : o.precond
+        pp, c0 = PoissonTau.tp_setup(par, ws.eos, ws.g, lt, lT, bx, by, bz, zs, ws.dx, ws.dy; logtau_cut = los_cut(o, ws.view.mu),
+                                     S = ws.fft, mu = ws.view.mu, slant = slant(ws.view), precond = pre, klow = o.klow,
+                                     mass = mass_mode(ws.mode))
+        PoissonTau.evaluate!(pp, us, c0); PoissonTau.tp_weights!(pp, ws.g, ws.dx)
+        c = z[kc, :, :]
+        st.stats["polish_steps"], st.stats["polish_decrement"] = PoissonTau.tau_newton_polish!(pp, u, c; steps = o.polish)
+        z = copy(pp.z); Φ = PoissonTau.evaluate!(pp, u, c)[1]
     end
     st.stats["gauge_shift_m"] = PoissonTau.gauge!(par, z, lt, mass_mode(ws.mode) ? PoissonTau.logtau_mass(lT, u, lt, ws.eos) : nothing)
     res.lnP .= u; res.z .= z; res.Pgas .= exp.(u)

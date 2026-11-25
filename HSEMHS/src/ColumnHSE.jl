@@ -89,13 +89,16 @@ end
 Integrate one column (X = ln T, z top-first). `u` and `m` receive ln P and the raw column
 mass (zero at the anchor). anchor_k is the anchor node (0 for :height).
 """
-function hse_column!(u::AbstractVector, m::AbstractVector, X::AbstractVector, z::AbstractVector, eos, o::HSEOpts)
+function hse_column!(u::AbstractVector, m::AbstractVector, X::AbstractVector, z::AbstractVector, eos, o::HSEOpts;
+                     tape = nothing)
     NZ = length(z)
     fl = COL_OK
     nmax = 0
     lp = log(o.P_ref)
-    function step!(ka, kb, zs, uin, min)       # interval between nodes ka, kb, from zs to z[kb]
+    tape === nothing || empty!(tape)
+    function step!(ka, kb, zs, uin, min, src = ka)   # interval between nodes ka, kb, from zs to z[kb]; uin = u[src] (0: ln P_ref)
         u1, m1, nu, f, st = rk4_adaptive(eos, z[ka], X[ka], z[kb], X[kb], zs, z[kb], uin, min, o)
+        tape === nothing || record!(tape, ka, kb, zs, src, nu)
         fl |= f
         nmax = max(nmax, nu)
         if st & EOS_OUT_OF_ENVELOPE != 0
@@ -121,13 +124,13 @@ function hse_column!(u::AbstractVector, m::AbstractVector, X::AbstractVector, z:
         (z[NZ] <= o.z_ref <= z[1]) || invalid("z_ref = $(o.z_ref) m is outside the grid")
         kr = findlast(k -> z[k] >= o.z_ref, 1:NZ)
         kr == NZ && (kr = NZ - 1)
-        ok = step!(kr + 1, kr, o.z_ref, lp, 0.0)               # up to node kr
+        ok = step!(kr + 1, kr, o.z_ref, lp, 0.0, 0)               # up to node kr
         if ok
             for k in kr-1:-1:1
                 step!(k + 1, k, z[k+1], u[k+1], m[k+1]) || break
             end
         end
-        ok2 = step!(kr, kr + 1, o.z_ref, lp, 0.0)               # down to node kr+1
+        ok2 = step!(kr, kr + 1, o.z_ref, lp, 0.0, 0)               # down to node kr+1
         if ok2
             for k in kr+2:NZ
                 step!(k - 1, k, z[k-1], u[k-1], m[k-1]) || break

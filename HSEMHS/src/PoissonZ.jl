@@ -35,8 +35,8 @@ end
 """np.gradient-type ∂/∂z on a (z, y, x) array, z top first (local: columns are complete on every rank)."""
 function ddz!(o, f, z)
     mz, my, mx = size(f)
-    Threads.@threads for i in 1:mx
-        @inbounds for j in 1:my
+    @cols i j mx my begin
+        @inbounds begin
             o[1, j, i] = (f[2, j, i] - f[1, j, i]) / (z[2] - z[1])
             o[mz, j, i] = (f[mz, j, i] - f[mz-1, j, i]) / (z[mz] - z[mz-1])
             for k in 2:mz-1
@@ -65,8 +65,8 @@ function resid!(pr::Prob, Rx, Ry, Rz, u, q, ex)
     sddx!(Rx, u, pr.dx, pr.par); sddy!(Ry, u, pr.dy)
     @. Rx = pr.lx * ex - Rx; @. Ry = pr.ly * ex - Ry
     h = pr.h; lz = pr.lz; g = pr.g
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, f in 1:pr.n-1
+    @cols i j pr.nx pr.ny begin
+        @inbounds for f in 1:pr.n-1
             Rz[f, j, i] = -(u[f, j, i] - u[f+1, j, i]) / h[f] - g * (q[f, j, i] + q[f+1, j, i]) / 2 +
                           (lz[f, j, i] * ex[f, j, i] + lz[f+1, j, i] * ex[f+1, j, i]) / 2
         end
@@ -74,10 +74,10 @@ function resid!(pr::Prob, Rx, Ry, Rz, u, q, ex)
 end
 
 function phi(pr::Prob, Rx, Ry, Rz)
-    part = zeros(pr.nx); wc = pr.wc; wf = pr.wf
-    Threads.@threads for i in 1:pr.nx
+    part = zeros(pr.ny, pr.nx); wc = pr.wc; wf = pr.wf
+    @cols i j pr.nx pr.ny begin
         a = 0.0
-        @inbounds for j in 1:pr.ny
+        @inbounds begin
             for k in 1:pr.n
                 a += wc[k] * (Rx[k, j, i]^2 + Ry[k, j, i]^2)
             end
@@ -85,7 +85,7 @@ function phi(pr::Prob, Rx, Ry, Rz)
                 a += wf[f] * Rz[f, j, i]^2
             end
         end
-        part[i] = a
+        part[j, i] = a
     end
     return gsum(pr.par, sum(part))
 end
@@ -98,17 +98,17 @@ end
 """out = Jᵀ W (Rx, Ry, Rz)."""
 function JtW!(pr::Prob, out, Rx, Ry, Rz)
     wc = pr.wc; wf = pr.wf
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, k in 1:pr.n
+    @cols i j pr.nx pr.ny begin
+        @inbounds for k in 1:pr.n
             pr.tx[k, j, i] = wc[k] * Rx[k, j, i]; pr.ty[k, j, i] = wc[k] * Ry[k, j, i]
         end
     end
     sddx!(out, pr.tx, pr.dx, pr.par); sddy!(pr.jx, pr.ty, pr.dy)               # (−D)ᵀ = D
-    Threads.@threads for i in 1:pr.nx
-        @inbounds for j in 1:pr.ny, k in 1:pr.n
+    @cols i j pr.nx pr.ny begin
+        @inbounds for k in 1:pr.n
             out[k, j, i] += pr.jx[k, j, i] - pr.ex[k, j, i] * (pr.lx[k, j, i] * pr.tx[k, j, i] + pr.ly[k, j, i] * pr.ty[k, j, i])
         end
-        @inbounds for j in 1:pr.ny, f in 1:pr.n-1
+        @inbounds for f in 1:pr.n-1
             r = wf[f] * Rz[f, j, i]
             out[f, j, i] -= coef_a(pr, f, j, i) * r
             out[f+1, j, i] -= coef_b(pr, f, j, i) * r
@@ -120,10 +120,10 @@ end
 """out = (Jᵀ W J + damping + anchor) v."""
 function Aop!(pr::Prob, out, v)
     sddx!(pr.jx, v, pr.dx, pr.par); sddy!(pr.jy, v, pr.dy)
-    part = zeros(pr.nx)                                   # anchor: Σ v over the anchor cells, per x slice
-    Threads.@threads for i in 1:pr.nx
+    part = zeros(pr.ny, pr.nx)                                   # anchor: Σ v over the anchor cells, per x slice
+    @cols i j pr.nx pr.ny begin
         sa = 0.0
-        @inbounds for j in 1:pr.ny
+        @inbounds begin
             for k in 1:pr.n
                 e = pr.ex[k, j, i] * v[k, j, i]
                 pr.jx[k, j, i] = -pr.jx[k, j, i] - pr.lx[k, j, i] * e
@@ -134,12 +134,12 @@ function Aop!(pr::Prob, out, v)
                 pr.jz[f, j, i] = -(coef_a(pr, f, j, i) * v[f, j, i] + coef_b(pr, f, j, i) * v[f+1, j, i])
             end
         end
-        part[i] = sa
+        part[j, i] = sa
     end
     JtW!(pr, out, pr.jx, pr.jy, pr.jz)
     as = pr.Aanc * gsum(pr.par, sum(part))
-    Threads.@threads for i in 1:pr.nx                    # damping and anchor (threaded: masked indexing allocates)
-        @inbounds for j in 1:pr.ny, k in 1:pr.n
+    @cols i j pr.nx pr.ny begin # damping and anchor (threaded: masked indexing allocates)
+        @inbounds for k in 1:pr.n
             out[k, j, i] += pr.ereg[k] * v[k, j, i] + (pr.anc[k, j, i] ? as : 0.0)
         end
     end
@@ -183,10 +183,11 @@ function Minv!(pr::Prob, out, r)
     n = pr.n; S = pr.S; par = pr.par; Ncol = pr.ny * pr.NX
     T = fwd!(S, par, r)
     nyhl = size(T, 3)
-    Threads.@threads for jl in 1:nyhl
+    @cols jl kx nyhl S.nx begin                                   # every (kx, local ky) mode
         cp = zeros(n); dp = zeros(ComplexF64, n)
+    end begin
         ky = S.jr[par.rank+1][1] + jl - 1
-        for kx in 1:S.nx
+        begin
             x = @view T[:, kx, jl]
             thomas!(x, cp, dp, pr, pr.sx2[kx] + pr.sy2[ky])
             if kx == 1 && ky == 1
@@ -289,22 +290,11 @@ function lorentz(par, Bx, By, Bz, z, dx, dy)
 end
 
 """
-    solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
-                   anchor_w = 1.0, logf = s -> nothing)
-
-Gauss–Newton Poisson step from the start pressure P0 (z, y, x slabs; z top first) with the Lorentz force fixed. Solves
-z ≤ zcut (the mean of ln P over the anchor cells, a Bool array like P0 or the bottom plane by default, stays that of
-P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u, reason, gn_decrement,
-grad_norm, cg_its, cg_rel, rms0, rms, phi0_zero, cont_bad): `reason` is :converged, :no_descent or :max_steps;
-`gn_decrement` the relative decrease of Φ predicted by one further Gauss–Newton step (a scale-free stationarity measure)
-and `grad_norm` = ‖Jᵀ W R‖ at the returned state; `cont_bad` the global number of non-finite pressures left by the
-hydrostatic continuation above zcut. The anchor and `ereg` terms act on the increment system only (they damp changes of
-the anchor-cell mean ln P per step; Φ has no anchor term). `S` reuses a cached SlabFFT; `rms_atol` > 0 accepts a start
-with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
+The problem `solve_pressure` minimises, at its start P0: (pr, u0, Wtot, kc, zr) with pr::Prob (weights from the start's
+layer-median scale heights; pr.q, pr.qd, pr.ex are buffers for the state), u0 = ln P0 on the solved levels kc:nz, the
+total weight and the solved heights zr. Shared by the solve and its adjoint.
 """
-function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
-                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing, S = nothing,
-                        rms_atol = 0.0, stationarity = true)
+function zprob(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, anchor = nothing, anchor_w = 1.0, S = nothing)
     nz, ny, nx = size(P0); NX = par.NX
     kc = findfirst(<=(zcut), z)
     kc === nothing && H.invalid("z_cut = $zcut m lies below the grid")
@@ -343,6 +333,29 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
               Lx[R, :, :], Ly[R, :, :], Lz[R, :, :], q, qd, ex,
               similar(u), similar(u), similar(u), similar(u), zeros(n - 1, ny, nx), sx2, sy2, zeros(n), zeros(n - 1))
 
+    return pr, u0, Wtot, kc, zr
+end
+
+"""
+    solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
+                   anchor_w = 1.0, logf = s -> nothing)
+
+Gauss–Newton Poisson step from the start pressure P0 (z, y, x slabs; z top first) with the Lorentz force fixed. Solves
+z ≤ zcut (the mean of ln P over the anchor cells, a Bool array like P0 or the bottom plane by default, stays that of
+P0) and integrates each column hydrostatically above zcut. Returns (P, Φ0, Φ, steps, kc, u0, u, reason, gn_decrement,
+grad_norm, cg_its, cg_rel, rms0, rms, phi0_zero, cont_bad): `reason` is :converged, :no_descent or :max_steps;
+`gn_decrement` the relative decrease of Φ predicted by one further Gauss–Newton step (a scale-free stationarity measure)
+and `grad_norm` = ‖Jᵀ W R‖ at the returned state; `cont_bad` the global number of non-finite pressures left by the
+hydrostatic continuation above zcut. The anchor and `ereg` terms act on the increment system only (they damp changes of
+the anchor-cell mean ln P per step; Φ has no anchor term). `S` reuses a cached SlabFFT; `rms_atol` > 0 accepts a start
+with √(Φ₀/W) ≤ rms_atol as converged in zero steps.
+"""
+function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxouter = 30, rtol = 1e-4, anchor = nothing,
+                        anchor_w = 1.0, cg_tol = 1e-3, cg_maxit = 80, n_consec = 3, logf = s -> nothing, S = nothing,
+                        rms_atol = 0.0, stationarity = true, polish = 0)
+    pr, u0, Wtot, kc, zr = zprob(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut = zcut, anchor = anchor, anchor_w = anchor_w, S = S)
+    nz, ny, nx = size(P0); NX = par.NX; R = kc:nz; n = length(R)
+    u = copy(u0); q = pr.q; qd = pr.qd; ex = pr.ex
     Rx, Ry, Rz = similar(u), similar(u), zeros(n - 1, ny, nx)
     eos!(pr, q, qd, ex, u); resid!(pr, Rx, Ry, Rz, u, q, ex)
     Φ = phi(pr, Rx, Ry, Rz); Φ0 = Φ
@@ -387,6 +400,12 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
         nsmall >= n_consec && (logf(@sprintf("converged: ΔΦ/Φ < %.0e on %d consecutive steps", rtol, nsmall));
                                reason = :converged; break)
     end
+    psteps = 0; pdec = NaN
+    if polish > 0 && !start_ok                                    # to the stationary point the adjoint differentiates
+        psteps, pdec = newton_polish!(pr, u, u0; steps = polish)
+        resid!(pr, Rx, Ry, Rz, u, q, ex); Φ = phi(pr, Rx, Ry, Rz)
+        logf(@sprintf("polish: %d Newton steps, Φ %.6e, Newton decrement %.3e", psteps, Φ, pdec))
+    end
     # stationarity at the returned u (Rx, Ry, Rz and q, qd, ex belong to it): undamped Gauss–Newton step and its predicted
     # relative decrease. Diagnostics only: u is not changed.
     gnd = start_ok ? 0.0 : NaN; gn = start_ok ? 0.0 : NaN; sits = 0; srel = start_ok ? 0.0 : NaN
@@ -401,8 +420,8 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
 
     # ---- full column: solved region below z_cut, hydrostatic integration above it ----
     Pfull = copy(P0); Pfull[R, :, :] .= exp.(u)
-    Threads.@threads for i in 1:nx
-        @inbounds for j in 1:ny
+    @cols i j nx ny begin
+        @inbounds begin
             for k in kc-1:-1:1
                 Δz = z[k] - z[k+1]
                 ub = log(Pfull[k+1, j, i]); lrb, _, _ = H.lnrho_dY(tab, lnT[k+1, j, i], ub); qb = exp(lrb - ub)
@@ -420,16 +439,17 @@ function solve_pressure(par, tab, g, lnT, Lx, Ly, Lz, P0, z, dx, dy; zcut, maxou
     cont_bad = gcount(par, count(!isfinite, @view Pfull[1:kc-1, :, :]))
     return (P = Pfull, Φ0 = Φ0, Φ = Φ, steps = steps, kc = kc, u0 = u0, u = u, reason = reason, gn_decrement = gnd,
             grad_norm = gn, cg_its = sits, cg_rel = srel, rms0 = sqrt(Φ0 / Wtot), rms = sqrt(Φ / Wtot),
-            phi0_zero = phi0_zero, cont_bad = cont_bad)
+            phi0_zero = phi0_zero, cont_bad = cont_bad, polish_steps = psteps, polish_decrement = pdec)
 end
 
 """ρ, τ₅₀₀ (exp_tail top closure) and z(τ₅₀₀ = 1) for every column of (ln T, P) on the height grid z (top first)."""
 function tau_columns(tab, lnT, P, z; top = :exp_tail, H_max = 5.0e6, mu = 1.0)
     nz, ny, nx = size(P)
     rho = similar(P); tau = similar(P); zt1 = zeros(ny, nx)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         chi = zeros(nz); tc = zeros(nz)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             for k in 1:nz
                 r, _, c, _ = H.state(tab, lnT[k, j, i], log(P[k, j, i]))
                 rho[k, j, i] = exp(r); chi[k] = exp(c)
@@ -443,5 +463,7 @@ function tau_columns(tab, lnT, P, z; top = :exp_tail, H_max = 5.0e6, mu = 1.0)
     end
     return rho, tau, zt1
 end
+
+include("PoissonZAdjoint.jl")
 
 end # module PoissonZ

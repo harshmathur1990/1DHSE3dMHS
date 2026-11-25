@@ -14,3 +14,5 @@ __pycache__/
 
 # IO is a symlink to the cluster data directory (input cubes)
 IO
+# adjoint test logs (test/scripts/adjoint_parallel.sh)
+HSEMHS/test/logs/

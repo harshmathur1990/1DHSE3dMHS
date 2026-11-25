@@ -40,8 +40,8 @@ function shear_levels(par::ParCtx, A::AbstractArray{Float64,3}, z, dx, dy, t, s)
     for k in 1:nz
         G = allgather_plane(par, view(A, k, :, :))
         fx = s * t[1] * z[k] / dx; fy = s * t[2] * z[k] / dy
-        Threads.@threads for i in 1:nx
-            @inbounds for j in 1:ny
+        @cols i j nx ny begin
+            @inbounds begin
                 out[k, j, i] = pbilin(G, b.j0 + j - 2 + fy, b.i0 + i - 2 + fx)
             end
         end
@@ -59,9 +59,10 @@ the ray through each owned footprint.
 function inclined_tau!(tau, zt1, ttm, par::ParCtx, chi, z, dx, dy, mu, t; top::Symbol = :exp_tail, H_max::Float64 = 5.0e6)
     nz, ny, nx = size(chi)
     sh = shear_levels(par, chi, z, dx, dy, t, 1.0)
-    Threads.@threads for i in 1:nx
+    @cols i j nx ny begin
         tc = zeros(nz)
-        @inbounds for j in 1:ny
+    end begin
+        @inbounds begin
             ttm[j, i] = tau_column!(tc, @view(sh[:, j, i]), z; top = top, H_max = H_max, mu = mu)
             zt1[j, i] = z_tau1(tc, z)
             sh[:, j, i] .= tc
@@ -69,4 +70,54 @@ function inclined_tau!(tau, zt1, ttm, par::ParCtx, chi, z, dx, dy, mu, t; top::S
     end
     tau .= shear_levels(par, sh, z, dx, dy, t, -1.0)
     return tau
+end
+
+# ---- adjoint (design/adjoint/01) -------------------------------------------------------------------------------------
+
+"""Transpose of `shear_levels` (collective): Ā = Sᵀ Ō for the shift s·(t_x z_k/dx, t_y z_k/dy). Each rank scatters its
+owned entries of Ō into a global plane with the bilinear weights of `pbilin`; the planes are summed over the ranks and
+every rank keeps its owned block."""
+function shear_levels_t(par::ParCtx, Obar::AbstractArray{Float64,3}, z, dx, dy, t, s)
+    nz, ny, nx = size(Obar); b = par.block
+    out = zeros(nz, ny, nx)
+    G = zeros(par.NY, par.NX)
+    for k in 1:nz
+        fill!(G, 0.0)
+        fx = s * t[1] * z[k] / dx; fy = s * t[2] * z[k] / dy
+        NY, NX = size(G)
+        @inbounds for i in 1:nx, j in 1:ny
+            fj = b.j0 + j - 2 + fy; fi = b.i0 + i - 2 + fx
+            j0 = floor(Int, fj); i0 = floor(Int, fi)
+            wj = fj - j0; wi = fi - i0
+            ja = mod(j0, NY) + 1; jb = mod(j0 + 1, NY) + 1; ia = mod(i0, NX) + 1; ib = mod(i0 + 1, NX) + 1
+            o = Obar[k, j, i]
+            G[ja, ia] += (1 - wj) * (1 - wi) * o; G[ja, ib] += (1 - wj) * wi * o
+            G[jb, ia] += wj * (1 - wi) * o; G[jb, ib] += wj * wi * o
+        end
+        par.nranks > 1 && MPI.Allreduce!(G, +, par.comm)
+        @inbounds for i in 1:nx, j in 1:ny
+            out[k, j, i] = G[b.j0+j-1, b.i0+i-1]
+        end
+    end
+    return out
+end
+
+"""
+    inclined_tau_vjp!(chibar, taubar, par, chi, z, dx, dy, mu, t, ttm) -> chibar
+
+Adjoint of `inclined_tau!` (collective): adds to `chibar` the χ cotangent of the τ cotangent `taubar`, with the top-closure
+methods `ttm` of the forward rays frozen.
+"""
+function inclined_tau_vjp!(chibar, taubar, par::ParCtx, chi, z, dx, dy, mu, t, ttm)
+    nz, ny, nx = size(chi)
+    sh = shear_levels(par, chi, z, dx, dy, t, 1.0)
+    tcbar = shear_levels_t(par, taubar, z, dx, dy, t, -1.0)
+    shbar = zeros(nz, ny, nx)
+    @cols i j nx ny begin
+        @inbounds begin
+            tau_column_vjp!(@view(shbar[:, j, i]), @view(tcbar[:, j, i]), @view(sh[:, j, i]), z, ttm[j, i]; mu = mu)
+        end
+    end
+    chibar .+= shear_levels_t(par, shbar, z, dx, dy, t, 1.0)
+    return chibar
 end

@@ -43,6 +43,7 @@ include("test_view.jl")
 include("test_block.jl")
 include("test_warm.jl")
 include("test_logm.jl")
+include("test_adjoint.jl")
 
 # multi-rank tests: the same checks on 2, 4 and 6 ranks
 @testset "MPI ranks" begin
@@ -54,6 +55,14 @@ include("test_logm.jl")
         for n in (2, 4, 6)
             ok = MPI.mpiexec() do exe
                 success(pipeline(`$exe -n $n $(Base.julia_cmd()) --project=$proj -t 2 $script`;
+                                 stdout = stdout, stderr = stderr))
+            end
+            @test ok
+        end
+        ascript = joinpath(@__DIR__, "mpi", "mpi_adjoint.jl")
+        for n in (2, 3)
+            ok = MPI.mpiexec() do exe
+                success(pipeline(`$exe -n $n $(Base.julia_cmd()) --project=$proj -t 2 $ascript`;
                                  stdout = stdout, stderr = stderr))
             end
             @test ok

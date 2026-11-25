@@ -500,6 +500,41 @@ chromosphere (their histories differ), and no quantity of a single snapshot (col
 field) predicts that scatter. Above the taper (≳ 25 kK) n_HI stays LTE and is off by 2–3 dex in the simulations' hot gas;
 nₑ there is not affected. The correction is that of two Bifrost setups, not of the Sun.
 
+## Adjoint of the embedded equilibrium
+
+Every embedded mode has an adjoint: the cotangents of a solve's outputs pulled back to its inputs (ln T and the cell-centred
+B), at a cost that does not depend on how many inputs a caller varies. Design and decisions: `design/adjoint/`; results:
+`HSEMHS/reports/adjoint_phase1-3.md`, `adjoint_phase4-6.md`.
+
+```julia
+res = solve_embedded!(ws, lnT, Bx, By, Bz; record = true)      # keeps what the adjoint needs; any later solve ends it
+bar = EquilibriumCotangent(ws)                                 # zeros on this rank's slab, (vertical, y, x)
+bar.rho .= …; bar.Pgas .= …; bar.z .= …                        # any of Pgas, lnP, rho, ne, chi500, tau500, logtau500, z
+adj = adjoint_embedded!(ws, bar)                               # collective; the record is kept, so several cotangents work
+adj.lnT, adj.Bx, adj.By, adj.Bz                                # ∂ℓ/∂ln T and ∂ℓ/∂B on the slab
+adj.status                                                     # :exact, :stationary or :not_stationary; details in adj.info
+```
+
+* **Column modes** (`:exact`): the derivative of the computation the solve made, with its discrete choices (RK4 substep
+  counts, table cells, τ top-closure branch, alignment level and median column, interpolation brackets) fixed. The Heun
+  steps of the τ and mass axes are differentiated through their state-dependent lengths; the τ-hydrostatic top closure by
+  the implicit function theorem. Agrees with finite differences of the solver to 3e-10…3e-8.
+* **Poisson modes**: the implicit-function derivative of the stationary point of Φ, with the exact Hessian (Hessian–vector
+  products by differences of the exact gradient), the start-dependent weights through their layer medians, the hydrostatic
+  continuation (height grid) or the fixed part above the cut and the gauge (τ and mass axes), and the column-HSE start.
+  Directions in which Φ does not change hold their start value and pass through to it: on the height grid the anchor-cell
+  mean of ln P (a constraint); on the τ and mass axes the uniform shift of the cut heights (removed by the gauge) and the
+  Nyquist modes of the centred horizontal differences. `adj.status` is `:stationary` when one undamped Newton step from the
+  returned state predicts a relative decrease of Φ ≤ `stationary_tol` (1e-6; `adj.info["newton_decrement"]`).
+* **`poisson.polish = n`** (`PoissonZOptions`, `PoissonTauOptions`, default 0): up to n Newton steps with the exact
+  Hessian after the Gauss–Newton solve. The Gauss–Newton solves damp every step, and their own decrement is measured
+  with that damping, so a slow direction can remain far from stationary while the decrement is small: on the 11 × 12
+  height-grid fixture 1000 steps were not enough, while 30 steps and 4 Newton steps reach a decrement of 1e-25. With
+  polish the returned state is the one the adjoint differentiates (agreement 1.3e-9…1.3e-7); without it, check
+  `adj.status`.
+* Keywords of `adjoint_embedded!`: `cg_tol` (1e-10), `cg_maxit` (1000), `gauss_newton` (false: the Gauss–Newton Hessian
+  instead, for comparison), `stationary_tol` (1e-6). A solve with a given nₑ (`lnne`) is forward only and has no adjoint.
+
 ## Stopping, status and what "finished" means
 
 **Stopping policy: relative change of the objective Φ only.** Heights (z(τ=1), column offsets) are computed and logged as
@@ -587,6 +622,9 @@ inclined Jacobians, column HSE at angles), `test_block.jl` (preconditioners, PCG
 round-off acceptance, `switch`) and `test_warm.jl`; multi-rank by `test/mpi/mpi_embedded.jl` and `test/mpi/mpi_view.jl`
 (run them as `mpiexecjl -n R julia --project=. -t 2 test/mpi/<file>.jl`, R = 2, 3, 4). Status on `solver-time`
 (29 Oct 2026): block 116, warm 47, view 133, embedded 103 (hyades18 and hyades20), units/config 18; MPI suites pass on 2, 3, 4 ranks.
+The adjoint (`test_adjoint.jl`, `test/mpi/mpi_adjoint.jl` on 2 and 3 ranks; `test/run_adjoint.jl` alone) is checked against
+finite differences of `solve_embedded!` for every mode and option; `bash test/scripts/adjoint_parallel.sh` spreads its
+groups over hyades nodes (about 8 minutes for all of them).
 
 ## Measured performance
 
@@ -689,6 +727,9 @@ were not compared across cuts.
   `units = "g cm-2"` scales every pressure by 10 and cannot be detected. τ₅₀₀ on the mass axis is one trapezoid per level
   (no substeps), so it is less accurate across coarse hot-over-cool levels. No derivation PDFs yet.
 * `full-mhs-z`: no production run has met its stopping rule; a run on the full cube takes more than a day on 4 nodes.
+* Adjoint: the EOS derivatives are those of the table interpolant; at its slope breaks (table node pairs 1e-9 apart) the
+  derivative is one-sided. The Poisson adjoints are exact only at a stationary state (use `poisson.polish`); the weights'
+  dependence on the start goes through one median column per layer (exact away from ties).
 
 **Code follow-ups:** propagate the full driver's status into `scripts/run.jl`; in `solve_tau` decide whether the damping
 should also be lowered after a full *scaled* step (`α == sc`, currently only `α == 1`); convert units of T and B in the
