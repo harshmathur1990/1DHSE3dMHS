@@ -66,11 +66,30 @@ products by central differences of `resid_vjp`, CG to 1e-10), now memory-bandwid
 
 ## Across nodes
 
-Not measurable on hyades with MPI.jl's MPICH: it has no InfiniBand (verbs) provider, so it runs over TCP, also on the
-200 Gb/s IPoIB interface `ibp65s0` (`eno8303` is 1 Gb/s): 151 µs one-way latency, 2.5 GB/s. A CG iteration sends ~25
-messages (halo exchanges, three reductions, two all-to-all transposes), so with the work split over 16–48 ranks the
-latency outweighs the arithmetic: 1 node 3.2 s, 2 nodes 2.7 s, 6 nodes 3.1 s (short ltau solve, IPoIB). On Olivia
-(Slingshot, ~2 µs) or with an InfiniBand-capable MPI on hyades the same code should scale further; not yet measured.
+MPI.jl's bundled MPICH has no InfiniBand (verbs) provider and runs over TCP, also on the 200 Gb/s IPoIB interface
+`ibp65s0`: 151 µs one-way latency, and no gain across nodes (short ltau solve: 1 node 3.2 s, 2 nodes 2.7 s, 6 nodes
+3.1 s). The DOCA OpenMPI RPM on the nodes has no UCX component either. `test/scripts/poisson_scaling_ompi.sh` runs over
+InfiniBand: OpenMPI 5.0.8 built against the nodes' UCX 1.22 (`~/packages/openmpi-5.0.8-ucx`, `--with-ucx=/usr
+--without-hcoll`, built with plain gcc 13: loadgcc.sh's `CC=mpicc` links the hcoll OpenMPI) and a Julia environment
+whose MPI.jl uses it (MPIPreferences system binary; HDF5.jl on the system's serial libhdf5, since HDF5_jll's OpenMPI
+build loads a second libmpi). Ping-pong hyades10–11: 1.2 µs one way, 24 GB/s at 8 MB.
+
+mhs-poisson-ltau at 252², 25 Gauss–Newton steps + polish 3 (the full runs above), 8 ranks × 8 threads per Zen 3 node
+(hyades7, 9, 10, 12–16), one rank per NUMA domain:
+
+| Nodes (ranks) | solve | adjoint | solve + adjoint | speed-up |
+| --- | --- | --- | --- | --- |
+| 1 (8) | 63.5 s | 51.0 s | 114 s | 1 |
+| 2 (16) | 35.6 s | 31.2 s | 67 s | 1.7 |
+| 4 (32) | 28.1 s | 20.0 s | 48 s | 2.4 |
+| 8 (64) | 23.6 s | 18.1 s | 42 s | 2.7 |
+
+The work is the same on every layout (76 CG iterations, 6 evaluations). The polish and the adjoint scale; the
+Gauss–Newton steps do not: their time grows from 2.6 s (1 node) to 4.0 s (8 nodes), and the short 3-step solve is
+fastest on 2 nodes (1: 2.99 s, 2: 2.44 s, 4: 2.84 s, 8: 4.90 s). A profile of rank 0 on 8 nodes has its CG almost
+entirely in MPI: the Alltoallv of the Fourier preconditioner's transposes (~13 ms each) and the scalar Allreduces of
+the CG (~5 ms each), far more than the latency, so either the collectives at 64 ranks or waiting on slower ranks;
+not yet separated.
 
 ## Layout for Olivia
 
@@ -80,7 +99,8 @@ CPU's cores and its memory local. 252 x columns over 32 ranks is 7–8 columns p
 
 ## Open
 
-- Multi-node strong scaling with a low-latency MPI (hyades: OpenMPI/UCX or hpcx; or one CPU job on Olivia).
+- The Gauss–Newton steps beyond 2 nodes: time the transposes and reductions alone at 16–64 ranks against the
+  per-rank compute (collective cost or load imbalance), then fewer or overlapped transposes.
 - Fewer messages per CG iteration (batch the halo exchanges of one operator product).
 - The polish dominates the τ and mass-axis cost: an inexact-Newton CG tolerance instead of 1e-10 per step would cut
   its Hessian–vector products (a numerical choice; not changed).
